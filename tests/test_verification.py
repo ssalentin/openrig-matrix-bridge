@@ -174,8 +174,9 @@ def test_restart_delivers_interrupted_notification_saved_before_crash():
 
 def test_restart_delivers_timed_out_notification_saved_before_crash():
     records = {}
-    begin_verification(records, "tx-one", "!advisor:example.org", now=100)
-    expire_active_verifications(records, now=500, timeout=300)
+    now = time.time()
+    begin_verification(records, "tx-one", "!advisor:example.org", now=now - 1000)
+    expire_active_verifications(records, now=now - 500, timeout=300)
     bridge = verification_bridge(records)
 
     asyncio.run(bridge._recover_verifications())
@@ -190,8 +191,9 @@ def test_restart_delivers_timed_out_notification_saved_before_crash():
 
 def test_restart_reconciles_timed_out_record_without_notification_intent():
     records = {}
-    begin_verification(records, "tx-one", "!advisor:example.org", now=100)
-    mark_verification(records, "tx-one", "timed_out", now=200)
+    now = time.time()
+    begin_verification(records, "tx-one", "!advisor:example.org", now=now - 1000)
+    mark_verification(records, "tx-one", "timed_out", now=now - 500)
     bridge = verification_bridge(records)
 
     asyncio.run(bridge._recover_verifications())

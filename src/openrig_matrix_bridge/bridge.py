@@ -84,10 +84,12 @@ from .transcript import commentary_messages, final_answer, read_complete_records
 from .transcription import Transcriber
 from .verification import (
     TERMINAL_PHASES,
+    VERIFICATION_RECORD_RETENTION_SECONDS,
     begin_verification,
     expire_active_verifications,
     mark_verification,
     pending_verification,
+    prune_terminal_verifications,
     recover_interrupted_verifications,
 )
 
@@ -1596,6 +1598,13 @@ class MatrixBridge:
         if interrupted:
             self.state.save()
         await self._deliver_verification_notifications()
+        pruned = prune_terminal_verifications(
+            self.verification_records,
+            now=time.time(),
+            retention=VERIFICATION_RECORD_RETENTION_SECONDS,
+        )
+        if pruned:
+            self.state.save()
 
     async def _expire_verifications(self, *, now: float, timeout: float) -> None:
         expired = expire_active_verifications(
@@ -1617,6 +1626,13 @@ class MatrixBridge:
                         exc_info=True,
                     )
         await self._deliver_verification_notifications()
+        pruned = prune_terminal_verifications(
+            self.verification_records,
+            now=now,
+            retention=VERIFICATION_RECORD_RETENTION_SECONDS,
+        )
+        if pruned:
+            self.state.save()
 
     async def _deliver_verification_notifications(self) -> None:
         for record in self.verification_records.values():
