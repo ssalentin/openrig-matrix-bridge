@@ -477,6 +477,9 @@ verification](#matrix-device-verification) and Issue #1.
 ## Known limits
 
 - Only Codex seats are supported. Other OpenRig runtimes are out of scope.
+- Element X threaded replies were manually observed by the owner on 2026-10-24,
+  but the repository does not have a redacted screenshot or versioned client
+  record. Nested thread-reply delivery remains tracked by issue #16.
 - Live Element SAS and the broader cross-signing strategy are not fully verified
   by the repository; see Issue #1.
 - A mocked Matrix client is not a substitute for the committed integration run.
