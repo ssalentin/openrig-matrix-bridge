@@ -1,168 +1,168 @@
 [
   {
     "id": "openrig-01",
-    "style": "hood",
+    "style": "round bell scallop",
     "color": "coral"
   },
   {
     "id": "openrig-02",
-    "style": "hood",
-    "color": "amber"
+    "style": "pinched bell",
+    "color": "saffron"
   },
   {
     "id": "openrig-03",
-    "style": "hood",
+    "style": "stretched bell",
     "color": "lime"
   },
   {
     "id": "openrig-04",
-    "style": "hood",
-    "color": "green"
+    "style": "lobed bell",
+    "color": "jade"
   },
   {
     "id": "openrig-05",
-    "style": "hood",
-    "color": "teal"
+    "style": "pear ghost",
+    "color": "turquoise"
   },
   {
     "id": "openrig-06",
-    "style": "hood",
-    "color": "sky"
+    "style": "leaning bean",
+    "color": "azure"
   },
   {
     "id": "openrig-07",
-    "style": "hood",
-    "color": "blue"
+    "style": "almond crown",
+    "color": "periwinkle"
   },
   {
     "id": "openrig-08",
-    "style": "hood",
+    "style": "square split",
     "color": "violet"
   },
   {
     "id": "openrig-09",
-    "style": "soft",
+    "style": "flame spiral",
     "color": "coral"
   },
   {
     "id": "openrig-10",
-    "style": "soft",
-    "color": "amber"
+    "style": "candle ribbons",
+    "color": "saffron"
   },
   {
     "id": "openrig-11",
-    "style": "soft",
+    "style": "lightning hem",
     "color": "lime"
   },
   {
     "id": "openrig-12",
-    "style": "soft",
-    "color": "green"
+    "style": "side-fin teardrop",
+    "color": "jade"
   },
   {
     "id": "openrig-13",
-    "style": "soft",
-    "color": "teal"
+    "style": "cumulus",
+    "color": "turquoise"
   },
   {
     "id": "openrig-14",
-    "style": "soft",
-    "color": "sky"
+    "style": "fan ridge",
+    "color": "azure"
   },
   {
     "id": "openrig-15",
-    "style": "soft",
-    "color": "blue"
+    "style": "spread cloud",
+    "color": "periwinkle"
   },
   {
     "id": "openrig-16",
-    "style": "soft",
+    "style": "mushroom bell",
     "color": "violet"
   },
   {
     "id": "openrig-17",
-    "style": "tall",
+    "style": "comet drop",
     "color": "coral"
   },
   {
     "id": "openrig-18",
-    "style": "tall",
-    "color": "amber"
+    "style": "horned drop",
+    "color": "saffron"
   },
   {
     "id": "openrig-19",
-    "style": "tall",
+    "style": "long comet",
     "color": "lime"
   },
   {
     "id": "openrig-20",
-    "style": "tall",
-    "color": "green"
+    "style": "lantern oval",
+    "color": "jade"
   },
   {
     "id": "openrig-21",
-    "style": "tall",
-    "color": "teal"
+    "style": "classic sheet",
+    "color": "turquoise"
   },
   {
     "id": "openrig-22",
-    "style": "tall",
-    "color": "sky"
+    "style": "sleeved sheet",
+    "color": "azure"
   },
   {
     "id": "openrig-23",
-    "style": "tall",
-    "color": "blue"
+    "style": "pleated sheet",
+    "color": "periwinkle"
   },
   {
     "id": "openrig-24",
-    "style": "tall",
+    "style": "draped diagonal",
     "color": "violet"
   },
   {
     "id": "openrig-25",
-    "style": "block",
+    "style": "pebble stack",
     "color": "coral"
   },
   {
     "id": "openrig-26",
-    "style": "block",
-    "color": "amber"
+    "style": "double sphere",
+    "color": "saffron"
   },
   {
     "id": "openrig-27",
-    "style": "block",
+    "style": "totem lobes",
     "color": "lime"
   },
   {
     "id": "openrig-28",
-    "style": "block",
-    "color": "green"
+    "style": "stone bulge",
+    "color": "jade"
   },
   {
     "id": "openrig-29",
-    "style": "block",
-    "color": "teal"
+    "style": "pointed cowl",
+    "color": "turquoise"
   },
   {
     "id": "openrig-30",
-    "style": "block",
-    "color": "sky"
+    "style": "square hood",
+    "color": "azure"
   },
   {
     "id": "openrig-31",
-    "style": "block",
-    "color": "blue"
+    "style": "halo ribbons",
+    "color": "periwinkle"
   },
   {
     "id": "openrig-32",
-    "style": "block",
+    "style": "bishop fold",
     "color": "violet"
   },
   {
     "id": "openrig-profile",
-    "style": "profile",
-    "color": "sky",
+    "style": "profile ghost",
+    "color": "violet",
     "profile_only": true
   }
 ]

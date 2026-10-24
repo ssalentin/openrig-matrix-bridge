@@ -110,18 +110,22 @@ and invites the allow-listed owner.
 ## Agent avatars
 
 Every configured agent room receives a distinct avatar from the bundled
-OpenRig bot pool. Assignments are persisted in `state.json`; existing
-assignments are retained and a new agent takes the next unused avatar. The
-bridge never assigns the same pool entry twice.
+OpenRig ghost pool. The 32 assets are individual portrait characters rather
+than color variations of the same figure. Assignments are persisted in
+`state.json`; existing assignments are retained and a new agent takes the next
+unused avatar. The bridge never assigns the same pool entry twice.
 
 Existing custom room avatars are preserved by default. Set
 `avatars.replace_existing: true` to replace them, or use
 `setup --replace-avatars`. The bot profile also uses the dedicated OpenRig
 profile avatar unless `avatars.set_profile` is disabled.
 
-The 32 source SVGs live under `assets/avatars/svg/`. Their runtime PNGs and
-manifest are packaged under `src/openrig_matrix_bridge/assets/avatars/` so
-installing the bridge does not require `rsvg-convert` or another image tool.
+The runtime PNGs and manifest are packaged under
+`src/openrig_matrix_bridge/assets/avatars/`, so installing the bridge does not
+require an image generator or any raster tooling. The maintainer-only
+`tools/generate_fal_avatars.py` contains the 32 independent character prompts
+and uses fal.ai's GPT Image 2.5 Sunburst model. Set `FAL_KEY` and install
+`fal-client` only when regenerating the pool.
 
 ## Verify the bot
 

@@ -1,1 +1,1 @@
-recursive-include assets/avatars *.svg
+include tools/generate_fal_avatars.py
