@@ -89,6 +89,7 @@ def _voice_bridge(transcript="Hallo Welt", transcription_error=None):
         "mxc://matrix.example.org/voice",
         "voice.ogg",
     )
+    event.source["content"]["org.matrix.msc3245.voice"] = {}
     return bridge, room, event
 
 
@@ -445,6 +446,7 @@ def test_encrypted_voice_status_keeps_thread_and_edit_relations():
         keys["iv"],
         "audio/ogg",
     )
+    event.source["content"]["org.matrix.msc3245.voice"] = {}
 
     asyncio.run(bridge._handle_audio(room, event))
 
