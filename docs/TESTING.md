@@ -75,6 +75,7 @@ is recorded in the report.
 | `room-status-avatar` | Private room creation, owner invite/join, Megolm room state, managed avatar, ready topic, structured status |
 | `encrypted-chat-queue-typing` | Owner text, typing indicator, visible commentary, thread-related final answer, recorded pending -> in-progress -> done qitem history, raw `m.room.encrypted` event |
 | `threaded-prompt-restart` | Encrypted owner prompt already in `m.thread`; commentary and final answer under the canonical root; single qitem closure; bridge restart without duplicate prompt or response |
+| `threaded-files` | Threaded PDF and markerless audio status/final messages use the canonical root and each creates one completed qitem |
 | `fifo-queue-notice` | Per-agent FIFO ordering with second-send timestamp after first completion, plus the pinned queue notice |
 | `silent-reaction-feedback` | Reaction forwarding without a visible reply |
 | `encrypted-images` | Owner-to-agent encrypted PNG storage and agent-to-owner `send-image` byte round trip |

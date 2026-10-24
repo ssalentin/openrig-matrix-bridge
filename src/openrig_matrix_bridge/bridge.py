@@ -2206,20 +2206,20 @@ class MatrixBridge:
         if self.config.max_message_age_minutes >= 0:
             age_ms = int(time.time() * 1000) - int(event.server_timestamp)
             if age_ms > self.config.max_message_age_minutes * 60_000:
-                await self._send(
+                await self._send_to_event(
                     room.room_id,
                     "Datei ist zu alt und wurde nicht verarbeitet.",
-                    event.event_id,
+                    event,
                 )
                 return
 
         self.processed_events.add(event.event_id)
         self.state.data["processed_events"] = list(self.processed_events)[-2000:]
         self.state.save()
-        await self._send(
+        await self._send_to_event(
             room.room_id,
             "Datei empfangen, lade und entschlüssele …",
-            event.event_id,
+            event,
         )
         try:
             content = event.source.get("content", {})
@@ -2298,17 +2298,17 @@ class MatrixBridge:
             await asyncio.to_thread(write_file)
         except Exception as exc:
             LOGGER.exception("file download failed")
-            await self._send(
+            await self._send_to_event(
                 room.room_id,
                 f"Datei konnte nicht übernommen werden: {exc}",
-                event.event_id,
+                event,
             )
             return
 
-        await self._send(
+        await self._send_to_event(
             room.room_id,
             f"Datei gespeichert als `{stored.name}`.",
-            event.event_id,
+            event,
         )
         await self._enqueue_prompt(
             agent,
@@ -2321,6 +2321,7 @@ class MatrixBridge:
             f"Medientyp: {mime_type}\n"
             f"Größe: {len(attachment)} Bytes",
             "attachment",
+            relates_to=message_relation(event),
         )
 
     async def _start_request(
