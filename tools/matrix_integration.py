@@ -286,7 +286,7 @@ class MatrixOwner:
         if hasattr(response, "status_code") and response.status_code >= 400:
             raise CheckFailure(f"owner could not join invited room: {response}")
 
-    async def sync_once(self, timeout_ms: int = 1000) -> None:
+    async def sync_once(self, timeout_ms: int = 5000) -> None:
         response = await self.client.sync(timeout=timeout_ms, full_state=True)
         if hasattr(response, "status_code") and response.status_code >= 400:
             raise CheckFailure(f"owner sync failed: {response}")
@@ -301,12 +301,25 @@ class MatrixOwner:
         description: str,
     ) -> None:
         deadline = time.monotonic() + timeout
+        syncs = 0
         while time.monotonic() < deadline:
             await self.sync_once()
+            syncs += 1
             if predicate():
                 return
-            await asyncio.sleep(0.1)
-        raise CheckFailure(f"timed out waiting for {description}")
+            await asyncio.sleep(0.2)
+        recent = [
+            {
+                "event_id": message["event_id"],
+                "sender": message["sender"],
+                "body": str(message["body"])[:160],
+            }
+            for message in self.messages[-5:]
+        ]
+        raise CheckFailure(
+            f"timed out waiting for {description} after {syncs} syncs; "
+            f"owner_messages={len(self.messages)} recent={recent}"
+        )
 
     async def send_text(
         self,
