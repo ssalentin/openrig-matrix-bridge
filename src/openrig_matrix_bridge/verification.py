@@ -115,11 +115,7 @@ def pending_verification(
             matches.append((transaction_id, record))
             continue
         if phase == "interrupted":
-            interrupted_at = float(
-                record.get("interrupted_at") or record.get("updated_at") or 0
-            )
-            if now - interrupted_at <= TERMINAL_REPLY_GRACE_SECONDS:
-                matches.append((transaction_id, record))
+            matches.append((transaction_id, record))
             continue
         if phase in TERMINAL_PHASES:
             terminal_at = float(record.get("terminal_at") or record.get("updated_at") or 0)
