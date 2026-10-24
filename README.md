@@ -216,8 +216,11 @@ status literals; the words mean “ready” and “working.”
    the pinned queue card should count it.
 4. Attach a PNG, JPEG, GIF, or WebP image. The agent receives a local file path
    under the configured media inbox.
-5. Send a short voice note when transcription is enabled. The transcript is
-   posted before the agent prompt is forwarded.
+5. Send a short voice note when transcription is enabled. The bridge creates
+   one status reply in the voice-note thread, edits it to the local transcript,
+   and forwards the prompt. A rejected edit produces a clearly labeled
+   transcript fallback. A restart during processing replaces the stale status
+   with an explicit terminal message instead of duplicating the transcript.
 6. React to a bridge-authored message. The reaction is forwarded as silent
    feedback and is not mirrored as a visible answer.
 7. Publish a decision (see below) and select an option. The choice is returned
@@ -396,7 +399,8 @@ ruff check .
 The current automated suite covers configuration validation, OpenRig
 resolution and queue commands, transcript parsing, room/status construction,
 queue notices, Markdown rendering, decisions, encrypted image content,
-transcription model state, avatars, and failure handling at the unit boundary.
+voice status editing and fallback, transcription model state, avatars, and
+failure handling at the unit boundary.
 With `uv` installed, the equivalent lint command is `uv tool run ruff check .`.
 
 The reproducible Matrix integration harness requires Docker:
