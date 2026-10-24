@@ -17,7 +17,11 @@ from nio import (
 )
 from nio.crypto import encrypt_attachment
 
-from openrig_matrix_bridge.bridge import MatrixBridge, verification_decision
+from openrig_matrix_bridge.bridge import (
+    MatrixBridge,
+    verification_decision,
+    voice_transaction_id,
+)
 from openrig_matrix_bridge.config import AgentConfig
 from openrig_matrix_bridge.decisions import POLL_RESPONSE_KEY
 
@@ -1842,10 +1846,14 @@ def test_threaded_image_uses_canonical_root_for_status_and_prompt(tmp_path):
         sent.append((reply_to, kwargs))
         return RoomSendResponse(f"${len(sent)}", room_id)
 
+    async def edit(room_id, event_id, text, **kwargs):
+        return RoomSendResponse("$edit", room_id)
+
     async def enqueue_prompt(*args, **kwargs):
         forwarded.append(kwargs)
 
     bridge._send = send
+    bridge._edit_message = edit
     bridge._enqueue_prompt = enqueue_prompt
     room = SimpleNamespace(room_id="!advisor:matrix.example.org")
     event = SimpleNamespace(
@@ -1913,10 +1921,14 @@ def test_threaded_audio_uses_canonical_root_for_status_and_prompt():
         sent.append((reply_to, kwargs))
         return RoomSendResponse(f"${len(sent)}", room_id)
 
+    async def edit(room_id, event_id, text, **kwargs):
+        return RoomSendResponse("$edit", room_id)
+
     async def enqueue_prompt(*args, **kwargs):
         forwarded.append(kwargs)
 
     bridge._send = send
+    bridge._edit_message = edit
     bridge._enqueue_prompt = enqueue_prompt
     room = SimpleNamespace(room_id="!advisor:matrix.example.org")
     event = SimpleNamespace(
@@ -1981,15 +1993,15 @@ def _voice_bridge(transcript="Hallo Welt", transcription_error=None):
     bridge.edited = []
     bridge.forwarded = []
 
-    async def send(room_id, text, reply_to=None):
+    async def send(room_id, text, reply_to=None, **kwargs):
         bridge.sent.append((text, reply_to))
         return RoomSendResponse("$voice-status", room_id)
 
-    async def edit(room_id, event_id, text):
+    async def edit(room_id, event_id, text, **kwargs):
         bridge.edited.append((event_id, text))
         return RoomSendResponse("$edit", room_id)
 
-    async def enqueue_prompt(*args):
+    async def enqueue_prompt(*args, **kwargs):
         bridge.forwarded.append(args)
 
     bridge._send = send
@@ -2060,7 +2072,7 @@ def test_voice_terminal_results_edit_the_same_status_message(
 def test_rejected_voice_status_edit_falls_back_without_logging_transcript(caplog):
     bridge, room, event = _voice_bridge()
 
-    async def reject_edit(room_id, event_id, text):
+    async def reject_edit(room_id, event_id, text, **kwargs):
         bridge.edited.append((event_id, text))
         return RoomSendError("edit rejected")
 
@@ -2077,7 +2089,7 @@ def test_rejected_voice_status_edit_falls_back_without_logging_transcript(caplog
     assert bridge.state.data["voice_statuses"]["$voice"]["state"] == "fallback"
 
 
-@pytest.mark.parametrize("interrupted_state", ["processing", "recovering", "committing"])
+@pytest.mark.parametrize("interrupted_state", ["processing", "recovering"])
 def test_interrupted_voice_status_recovers_without_duplicate_transcript(
     interrupted_state,
 ):
@@ -2105,6 +2117,189 @@ def test_interrupted_voice_status_recovers_without_duplicate_transcript(
     asyncio.run(bridge._handle_audio(room, event))
     assert bridge.edited == []
     assert bridge.sent == []
+
+
+def test_legacy_committing_status_does_not_overwrite_possible_transcript():
+    bridge, room, _event = _voice_bridge()
+    bridge.state.data["voice_statuses"] = {
+        "$voice": {
+            "room_id": room.room_id,
+            "status_event_id": "$voice-status",
+            "thread_root_event_id": "$root",
+            "reply_to_event_id": "$root",
+            "state": "committing",
+        }
+    }
+    sent = []
+
+    async def send(room_id, text, reply_to=None, **kwargs):
+        sent.append((text, reply_to, kwargs))
+        return RoomSendResponse("$uncertain", room_id)
+
+    bridge._send = send
+
+    asyncio.run(bridge._recover_voice_statuses())
+
+    assert bridge.edited == []
+    assert len(sent) == 1
+    assert "nicht sicher bestimmt" in sent[0][0]
+    assert sent[0][1:] == (
+        "$root",
+        {
+            "thread_root": "$root",
+            "tx_id": voice_transaction_id(
+                "$voice",
+                "fallback-interrupted",
+            ),
+        },
+    )
+    assert bridge.state.data["voice_statuses"]["$voice"]["state"] == "fallback"
+
+
+def test_recover_committing_voice_status_preserves_terminal_transcript():
+    bridge, room, _event = _voice_bridge()
+    intent = {
+        "text": "Transkript:\nHallo Welt",
+        "terminal_state": "done",
+        "edit_tx_id": "voice-edit-transaction",
+        "fallback_text": "Transkript (Fallback):\nHallo Welt",
+        "fallback_tx_id": "voice-fallback-transaction",
+    }
+    bridge.state.data["voice_statuses"] = {
+        "$voice": {
+            "room_id": room.room_id,
+            "status_event_id": "$voice-status",
+            "thread_root_event_id": "$root",
+            "reply_to_event_id": "$root",
+            "state": "committing",
+            "terminal_intent": intent,
+        }
+    }
+    edits = []
+
+    async def edit(room_id, event_id, text, **kwargs):
+        edits.append((event_id, text, kwargs))
+        return RoomSendResponse("$edit", room_id)
+
+    bridge._edit_message = edit
+
+    asyncio.run(bridge._recover_voice_statuses())
+
+    assert edits == [
+        (
+            "$voice-status",
+            "Transkript:\nHallo Welt",
+            {"tx_id": "voice-edit-transaction"},
+        )
+    ]
+    status = bridge.state.data["voice_statuses"]["$voice"]
+    assert status["state"] == "done"
+    assert "terminal_intent" not in status
+
+
+def test_recover_unsaved_voice_status_retries_same_status_transaction():
+    bridge, room, _event = _voice_bridge()
+    bridge.state.data["voice_statuses"] = {
+        "$voice": {
+            "room_id": room.room_id,
+            "status_event_id": None,
+            "status_tx_id": "voice-status-transaction",
+            "thread_root_event_id": "$root",
+            "reply_to_event_id": "$root",
+            "state": "sending-status",
+        }
+    }
+    sent = []
+    edited = []
+
+    async def send(room_id, text, reply_to=None, **kwargs):
+        sent.append((text, reply_to, kwargs))
+        return RoomSendResponse("$voice-status", room_id)
+
+    async def edit(room_id, event_id, text, **kwargs):
+        edited.append((event_id, text, kwargs))
+        return RoomSendResponse("$edit", room_id)
+
+    bridge._send = send
+    bridge._edit_message = edit
+
+    asyncio.run(bridge._recover_voice_statuses())
+
+    assert sent[0][0] == "Sprachnachricht empfangen, transkribiere …"
+    assert sent[0][1:] == (
+        "$root",
+        {"thread_root": "$root", "tx_id": "voice-status-transaction"},
+    )
+    assert edited[0][0] == "$voice-status"
+    assert "Neustart" in edited[0][1]
+    assert bridge.state.data["voice_statuses"]["$voice"]["state"] == "interrupted"
+
+
+def test_recover_fallback_intent_does_not_retry_rejected_edit():
+    bridge, room, _event = _voice_bridge()
+    intent = {
+        "text": "Transkript:\nHallo Welt",
+        "terminal_state": "done",
+        "edit_tx_id": "voice-edit-transaction",
+        "fallback_text": "Transkript (Fallback):\nHallo Welt",
+        "fallback_tx_id": "voice-fallback-transaction",
+    }
+    bridge.state.data["voice_statuses"] = {
+        "$voice": {
+            "room_id": room.room_id,
+            "status_event_id": "$voice-status",
+            "thread_root_event_id": "$root",
+            "reply_to_event_id": "$root",
+            "state": "fallbacking",
+            "terminal_intent": intent,
+        }
+    }
+    sent = []
+
+    async def send(room_id, text, reply_to=None, **kwargs):
+        sent.append((text, reply_to, kwargs))
+        return RoomSendResponse("$fallback", room_id)
+
+    bridge._send = send
+
+    asyncio.run(bridge._recover_voice_statuses())
+
+    assert bridge.edited == []
+    assert sent == [
+        (
+            "Transkript (Fallback):\nHallo Welt",
+            "$root",
+            {
+                "thread_root": "$root",
+                "tx_id": "voice-fallback-transaction",
+            },
+        )
+    ]
+    status = bridge.state.data["voice_statuses"]["$voice"]
+    assert status["state"] == "fallback"
+    assert "terminal_intent" not in status
+
+
+def test_initial_voice_status_failure_falls_back_to_visible_terminal_message():
+    bridge, room, event = _voice_bridge()
+    sent = []
+
+    async def send(room_id, text, reply_to=None, **kwargs):
+        sent.append((text, reply_to, kwargs))
+        if len(sent) == 1:
+            return SimpleNamespace(status_code="M_UNKNOWN")
+        return RoomSendResponse("$fallback", room_id)
+
+    bridge._send = send
+
+    asyncio.run(bridge._handle_audio(room, event))
+
+    assert len(sent) == 2
+    assert "Status" in sent[1][0]
+    assert sent[1][1] == "$voice"
+    assert "tx_id" in sent[1][2]
+    assert bridge.forwarded == []
+    assert bridge.state.data["voice_statuses"]["$voice"]["state"] == "fallback"
 
 
 def test_encrypted_voice_status_keeps_thread_and_edit_relations():
@@ -2156,6 +2351,8 @@ def test_encrypted_voice_status_keeps_thread_and_edit_relations():
     assert edit_call[2]["m.new_content"]["body"] == "Transkript:\nHallo Welt"
     assert status_call[3]["ignore_unverified_devices"] is True
     assert edit_call[3]["ignore_unverified_devices"] is True
+    assert status_call[3]["tx_id"] == voice_transaction_id("$voice", "status")
+    assert edit_call[3]["tx_id"] == voice_transaction_id("$voice", "edit-done")
 
 
 async def _completed(value):

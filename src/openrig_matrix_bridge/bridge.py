@@ -79,6 +79,11 @@ LOGGER = logging.getLogger("openrig-matrix-bridge")
 AGENT_STATUS_EVENT = "dev.openrig.agent_status"
 _DEFAULT_THREAD_ROOT = object()
 MAX_DELIVERY_ATTEMPTS = 3
+VOICE_STATUS_PROGRESS = "Sprachnachricht empfangen, transkribiere …"
+VOICE_STATUS_INTERRUPTED = (
+    "Die Sprachnachricht wurde durch einen Bridge-Neustart unterbrochen "
+    "und konnte nicht abgeschlossen werden. Bitte erneut senden."
+)
 STATUS_LABELS = {
     "ready": "🟢",
     "busy": "🟡",
@@ -120,6 +125,15 @@ def message_relation(event: Any) -> dict[str, Any] | None:
         return None
     relation = content.get("m.relates_to")
     return relation if isinstance(relation, dict) else None
+
+
+def voice_transaction_id(voice_event_id: str, operation: str) -> str:
+    return str(
+        uuid.uuid5(
+            uuid.NAMESPACE_URL,
+            f"openrig-matrix-bridge:{voice_event_id}:{operation}",
+        )
+    )
 
 
 def formatted_message_content(text: str) -> dict[str, Any]:
@@ -1549,41 +1563,28 @@ class MatrixBridge:
             )
             return
 
+        target = resolve_response_target(event.event_id, message_relation(event))
         voice_statuses = self.state.data.setdefault("voice_statuses", {})
         voice_statuses[event.event_id] = {
             "room_id": room.room_id,
             "status_event_id": None,
-            "state": "starting",
+            "status_tx_id": voice_transaction_id(event.event_id, "status"),
+            "thread_root_event_id": target.thread_root_event_id,
+            "reply_to_event_id": target.reply_to_event_id,
+            "state": "sending-status",
             "updated_at": int(time.time() * 1000),
         }
         self.processed_events.add(event.event_id)
         self.state.data["processed_events"] = list(self.processed_events)[-2000:]
         self.state.save()
-        try:
-            status = await self._send_to_event(
-                room.room_id,
-                "Sprachnachricht empfangen, transkribiere …",
-                event,
-            )
-        except Exception:
-            status = None
-            LOGGER.warning(
-                "failed to create voice status for %s",
+        if not await self._send_voice_status(event.event_id):
+            await self._finish_voice_status(
                 event.event_id,
-                exc_info=True,
-            )
-        if not isinstance(status, RoomSendResponse):
-            voice_statuses[event.event_id]["state"] = "status-failed"
-            self.state.save()
-            LOGGER.warning(
-                "failed to create voice status for %s: %s",
-                event.event_id,
-                status,
+                "Sprachnachricht-Status konnte nicht erstellt werden. "
+                "Bitte erneut senden.",
+                "failed",
             )
             return
-        voice_statuses[event.event_id]["status_event_id"] = status.event_id
-        voice_statuses[event.event_id]["state"] = "processing"
-        self.state.save()
         try:
             download = await self.client.download(mxc=event.url)
             body = getattr(download, "body", None)
@@ -1637,9 +1638,12 @@ class MatrixBridge:
                 continue
             if record.get("state") in {
                 "starting",
+                "sending-status",
                 "processing",
                 "recovering",
                 "committing",
+                "fallbacking",
+                "fallback-failed",
             }:
                 await self._recover_voice_status(str(voice_event_id))
 
@@ -1649,55 +1653,220 @@ class MatrixBridge:
             return
         if record.get("state") not in {
             "starting",
+            "sending-status",
             "processing",
             "recovering",
             "committing",
+            "fallbacking",
+            "fallback-failed",
         }:
             return
         room_id = str(record.get("room_id") or "")
-        status_event_id = str(record.get("status_event_id") or "")
         if not room_id:
             record["state"] = "interrupted"
             record["updated_at"] = int(time.time() * 1000)
             self.state.save()
             return
 
-        record["state"] = "recovering"
+        intent = record.get("terminal_intent")
+        if isinstance(intent, dict):
+            await self._commit_voice_terminal(voice_event_id)
+            return
+
+        state = str(record.get("state") or "")
+        if (
+            state in {"starting", "sending-status"}
+            and not record.get("status_event_id")
+            and not await self._send_voice_status(voice_event_id)
+        ):
+            await self._start_voice_terminal(
+                voice_event_id,
+                VOICE_STATUS_INTERRUPTED,
+                "interrupted",
+            )
+            return
+
+        if state in {"committing", "fallbacking"}:
+            intent = self._voice_terminal_intent(
+                voice_event_id,
+                VOICE_STATUS_INTERRUPTED
+                + " Der vorherige Status konnte nicht sicher bestimmt werden.",
+                "interrupted",
+                skip_edit=True,
+            )
+            record["terminal_intent"] = intent
+            record["state"] = "committing"
+            record["updated_at"] = int(time.time() * 1000)
+            self.state.save()
+            await self._commit_voice_terminal(voice_event_id)
+            return
+
+        await self._start_voice_terminal(
+            voice_event_id,
+            VOICE_STATUS_INTERRUPTED,
+            "interrupted",
+        )
+
+    async def _send_voice_status(self, voice_event_id: str) -> bool:
+        record = self.state.data.setdefault("voice_statuses", {}).get(voice_event_id)
+        if not isinstance(record, dict):
+            return False
+        room_id = str(record.get("room_id") or "")
+        try:
+            response = await self._send(
+                room_id,
+                VOICE_STATUS_PROGRESS,
+                str(record.get("reply_to_event_id") or voice_event_id),
+                thread_root=record.get("thread_root_event_id"),
+                tx_id=record.get("status_tx_id"),
+            )
+        except Exception:
+            response = None
+            LOGGER.warning(
+                "failed to create voice status for %s",
+                voice_event_id,
+                exc_info=True,
+            )
+        if not isinstance(response, RoomSendResponse):
+            record["state"] = "status-send-failed"
+            record["updated_at"] = int(time.time() * 1000)
+            self.state.save()
+            LOGGER.warning(
+                "failed to create voice status for %s: %s",
+                voice_event_id,
+                response,
+            )
+            return False
+        record["status_event_id"] = response.event_id
+        record["state"] = "processing"
         record["updated_at"] = int(time.time() * 1000)
         self.state.save()
-        text = (
-            "Die Sprachnachricht wurde durch einen Bridge-Neustart unterbrochen "
-            "und konnte nicht abgeschlossen werden. Bitte erneut senden."
+        return True
+
+    @staticmethod
+    def _voice_terminal_intent(
+        voice_event_id: str,
+        text: str,
+        terminal_state: str,
+        *,
+        skip_edit: bool = False,
+    ) -> dict[str, Any]:
+        if terminal_state == "done":
+            fallback_text = (
+                "Transkript (Statusmeldung konnte nicht bearbeitet werden):\n"
+                f"{text.removeprefix('Transkript:').lstrip()}"
+            )
+        else:
+            fallback_text = (
+                f"{text}\n\n(Statusmeldung konnte nicht bearbeitet werden.)"
+            )
+        return {
+            "text": text,
+            "terminal_state": terminal_state,
+            "edit_tx_id": voice_transaction_id(
+                voice_event_id,
+                f"edit-{terminal_state}",
+            ),
+            "fallback_text": fallback_text,
+            "fallback_tx_id": voice_transaction_id(
+                voice_event_id,
+                f"fallback-{terminal_state}",
+            ),
+            "skip_edit": skip_edit,
+        }
+
+    async def _start_voice_terminal(
+        self,
+        voice_event_id: str,
+        text: str,
+        terminal_state: str,
+        *,
+        skip_edit: bool = False,
+    ) -> None:
+        record = self.state.data.setdefault("voice_statuses", {}).get(voice_event_id)
+        if not isinstance(record, dict):
+            return
+        record["terminal_intent"] = self._voice_terminal_intent(
+            voice_event_id,
+            text,
+            terminal_state,
+            skip_edit=skip_edit,
         )
+        record["state"] = "committing"
+        record["updated_at"] = int(time.time() * 1000)
+        self.state.save()
+        await self._commit_voice_terminal(voice_event_id)
+
+    async def _commit_voice_terminal(self, voice_event_id: str) -> None:
+        record = self.state.data.setdefault("voice_statuses", {}).get(voice_event_id)
+        if not isinstance(record, dict):
+            return
+        intent = record.get("terminal_intent")
+        if not isinstance(intent, dict):
+            return
+        room_id = str(record.get("room_id") or "")
+        status_event_id = str(record.get("status_event_id") or "")
+        terminal_state = str(intent.get("terminal_state") or "failed")
         response = None
-        if status_event_id:
+        edit_already_rejected = record.get("state") in {
+            "fallbacking",
+            "fallback-failed",
+        }
+        if (
+            status_event_id
+            and not intent.get("skip_edit")
+            and not edit_already_rejected
+        ):
             try:
-                response = await self._edit_message(room_id, status_event_id, text)
-            except Exception:
-                LOGGER.warning(
-                    "failed to recover voice status for %s",
-                    voice_event_id,
-                    exc_info=True,
-                )
-        if not isinstance(response, RoomSendResponse):
-            try:
-                response = await self._send(
+                response = await self._edit_message(
                     room_id,
-                    text,
-                    voice_event_id,
+                    status_event_id,
+                    str(intent.get("text") or ""),
+                    tx_id=str(intent.get("edit_tx_id") or ""),
                 )
             except Exception:
                 LOGGER.warning(
-                    "failed to report interrupted voice status for %s",
+                    "failed to edit voice status for %s",
                     voice_event_id,
                     exc_info=True,
                 )
-                response = None
-        record["state"] = (
-            "interrupted"
-            if isinstance(response, RoomSendResponse)
-            else "interrupted-undelivered"
+        if isinstance(response, RoomSendResponse):
+            record["state"] = terminal_state
+            record["result"] = terminal_state
+            record.pop("terminal_intent", None)
+            record["updated_at"] = int(time.time() * 1000)
+            self.state.save()
+            return
+
+        LOGGER.warning(
+            "voice status edit rejected for %s; sending visible fallback",
+            voice_event_id,
         )
+        record["state"] = "fallbacking"
+        record["updated_at"] = int(time.time() * 1000)
+        self.state.save()
+        try:
+            response = await self._send(
+                room_id,
+                str(intent.get("fallback_text") or ""),
+                str(record.get("reply_to_event_id") or voice_event_id),
+                thread_root=record.get("thread_root_event_id"),
+                tx_id=str(intent.get("fallback_tx_id") or ""),
+            )
+        except Exception:
+            LOGGER.warning(
+                "voice status fallback failed for %s",
+                voice_event_id,
+                exc_info=True,
+            )
+            response = None
+        if isinstance(response, RoomSendResponse):
+            record["state"] = "fallback"
+            record["result"] = terminal_state
+            record.pop("terminal_intent", None)
+        else:
+            record["state"] = "fallback-failed"
+            record["result"] = terminal_state
         record["updated_at"] = int(time.time() * 1000)
         self.state.save()
 
@@ -1707,57 +1876,11 @@ class MatrixBridge:
         text: str,
         terminal_state: str,
     ) -> None:
-        record = self.state.data.setdefault("voice_statuses", {}).get(voice_event_id)
-        if not isinstance(record, dict):
-            return
-        room_id = str(record.get("room_id") or "")
-        status_event_id = str(record.get("status_event_id") or "")
-        record["state"] = "committing"
-        record["updated_at"] = int(time.time() * 1000)
-        self.state.save()
-
-        response = None
-        if room_id and status_event_id:
-            try:
-                response = await self._edit_message(room_id, status_event_id, text)
-            except Exception:
-                LOGGER.warning(
-                    "failed to edit voice status for %s",
-                    voice_event_id,
-                    exc_info=True,
-                )
-        if isinstance(response, RoomSendResponse):
-            record["state"] = terminal_state
-            record["updated_at"] = int(time.time() * 1000)
-            self.state.save()
-            return
-
-        LOGGER.warning(
-            "voice status edit rejected for %s; sending visible fallback",
+        await self._start_voice_terminal(
             voice_event_id,
+            text,
+            terminal_state,
         )
-        if terminal_state == "done":
-            fallback = (
-                "Transkript (Statusmeldung konnte nicht bearbeitet werden):\n"
-                f"{text.removeprefix('Transkript:').lstrip()}"
-            )
-        else:
-            fallback = f"{text}\n\n(Statusmeldung konnte nicht bearbeitet werden.)"
-        try:
-            response = await self._send(room_id, fallback, voice_event_id)
-        except Exception:
-            LOGGER.warning(
-                "voice status fallback failed for %s",
-                voice_event_id,
-                exc_info=True,
-            )
-            response = None
-        record["state"] = (
-            "fallback" if isinstance(response, RoomSendResponse) else "fallback-failed"
-        )
-        record["result"] = terminal_state
-        record["updated_at"] = int(time.time() * 1000)
-        self.state.save()
 
     async def _handle_image(
         self,
@@ -2237,7 +2360,14 @@ class MatrixBridge:
                 LOGGER.debug("Matrix typing update failed", exc_info=True)
             await asyncio.sleep(20)
 
-    async def _edit_message(self, room_id: str, event_id: str, text: str):
+    async def _edit_message(
+        self,
+        room_id: str,
+        event_id: str,
+        text: str,
+        *,
+        tx_id: str | None = None,
+    ):
         new_content = formatted_message_content(text)
         content = {
             **new_content,
@@ -2250,20 +2380,26 @@ class MatrixBridge:
         }
         if "formatted_body" in new_content:
             content["formatted_body"] = f"* {new_content['formatted_body']}"
-        return await self.client.room_send(
-            room_id,
-            "m.room.message",
-            content,
-            ignore_unverified_devices=True,
-        )
+        kwargs = {"ignore_unverified_devices": True}
+        if tx_id:
+            kwargs["tx_id"] = tx_id
+        return await self.client.room_send(room_id, "m.room.message", content, **kwargs)
 
-    async def _send_to_event(self, room_id: str, text: str, event: Any):
+    async def _send_to_event(
+        self,
+        room_id: str,
+        text: str,
+        event: Any,
+        *,
+        tx_id: str | None = None,
+    ):
         target = resolve_response_target(event.event_id, message_relation(event))
         return await self._send(
             room_id,
             text,
             target.reply_to_event_id,
             thread_root=target.thread_root_event_id,
+            tx_id=tx_id,
         )
 
     async def _send(
@@ -2273,6 +2409,7 @@ class MatrixBridge:
         reply_to: str | None = None,
         *,
         thread_root: str | None | object = _DEFAULT_THREAD_ROOT,
+        tx_id: str | None = None,
     ):
         content = formatted_message_content(text)
         effective_root = reply_to if thread_root is _DEFAULT_THREAD_ROOT else thread_root
@@ -2285,10 +2422,8 @@ class MatrixBridge:
             }
         elif reply_to:
             content["m.relates_to"] = {"m.in_reply_to": {"event_id": reply_to}}
-        return await self.client.room_send(
-            room_id,
-            "m.room.message",
-            content,
-            ignore_unverified_devices=True,
-        )
+        kwargs = {"ignore_unverified_devices": True}
+        if tx_id:
+            kwargs["tx_id"] = tx_id
+        return await self.client.room_send(room_id, "m.room.message", content, **kwargs)
 

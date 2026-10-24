@@ -632,7 +632,6 @@ class IntegrationRun:
                 "owner@external",
                 "--human-id",
                 "owner",
-                "--without-voice",
                 "--skip-model",
             ],
             env=self.env(),
@@ -665,8 +664,7 @@ class IntegrationRun:
         self.bridge = subprocess.Popen(
             [
                 sys.executable,
-                "-m",
-                "openrig_matrix_bridge",
+                str(ROOT / "tools" / "deterministic_transcriber_bridge.py"),
                 "run",
                 "--config",
                 str(self.config_path),
@@ -1128,11 +1126,11 @@ class IntegrationRun:
             ),
         )
 
-    async def check_audio_gap(self, room_id: str) -> None:
+    async def check_voice_status_edit(self, room_id: str) -> None:
         assert self.owner is not None
         owner = self.owner
         before = len(owner.messages)
-        await owner.send_encrypted_file(
+        voice_event_id = await owner.send_encrypted_file(
             room_id,
             b"OggS-integration-audio-placeholder",
             msgtype="m.audio",
@@ -1142,21 +1140,95 @@ class IntegrationRun:
         )
         await owner.sync_until(
             lambda: any(
-                "Sprachnachrichten sind auf dieser Bridge deaktiviert"
-                in str(message["body"])
+                "Deterministic local transcript" in str(message["body"])
+                and message["sender"] == BRIDGE_USER
                 for message in owner.messages[before:]
             ),
             self.args.timeout,
-            description="disabled voice response",
+            description="voice status edited to transcript",
         )
+        wait_for_json_state(
+            self.state_dir / "state.json",
+            lambda value: not value.get("pending", {}).get(AGENT_KEY),
+            self.args.timeout,
+        )
+        messages = [
+            message
+            for message in owner.messages[before:]
+            if message["sender"] == BRIDGE_USER
+        ]
+        progress = [
+            message
+            for message in messages
+            if str(message["body"]) == "Sprachnachricht empfangen, transkribiere …"
+        ]
+        if len(progress) != 1:
+            raise CheckFailure(
+                f"voice note did not create exactly one progress event: {progress}"
+            )
+        progress_event_id = progress[0]["event_id"]
+        edits = [
+            message
+            for message in messages
+            if isinstance(message.get("source", {}).get("content"), dict)
+            and message["source"]["content"].get("m.relates_to", {}).get(
+                "rel_type"
+            )
+            == "m.replace"
+            and message["source"]["content"]["m.relates_to"].get("event_id")
+            == progress_event_id
+        ]
+        if len(edits) != 1:
+            raise CheckFailure(
+                f"voice note did not edit the progress event exactly once: {edits}"
+            )
+        if "Deterministic local transcript" not in str(edits[0]["body"]):
+            raise CheckFailure("voice status edit does not contain the transcript")
+        transcript_only = [
+            message
+            for message in messages
+            if "Deterministic local transcript" in str(message["body"])
+            and message["event_id"] != edits[0]["event_id"]
+        ]
+        if transcript_only:
+            raise CheckFailure(
+                f"voice transcript created a second Matrix message: {transcript_only}"
+            )
+
+        raw_progress = await owner.raw_event(room_id, progress_event_id)
+        validate_answer_relation(raw_progress, voice_event_id)
+        raw_edit = await owner.raw_event(room_id, edits[0]["event_id"])
+        relation = raw_edit.get("content", {}).get("m.relates_to")
+        if relation != {"rel_type": "m.replace", "event_id": progress_event_id}:
+            raise CheckFailure(f"voice edit relation is wrong: {relation}")
+
+        fake = json.loads((self.fake_state / "fake-openrig.json").read_text())
+        prompts = [
+            item
+            for item in fake["prompts"]
+            if "Deterministic local transcript" in item["prompt"]
+        ]
+        if len(prompts) != 1:
+            raise CheckFailure("voice transcript was not forwarded exactly once")
+        qitems = [
+            item
+            for item in fake["queue"].values()
+            if voice_event_id in str(item.get("body") or "")
+        ]
+        if len(qitems) != 1:
+            raise CheckFailure("voice note did not create exactly one qitem")
+        validate_qitem_history(qitems[0])
+        if qitems[0]["state"] != "done":
+            raise CheckFailure(f"voice qitem did not close: {qitems[0]}")
         self.record(
-            "voice-disabled-path",
+            "voice-status-edit",
             "pass",
             (
-                "An encrypted Matrix audio event reached the bridge and received "
-                "the configured disabled-voice response. Real Parakeet model "
-                "execution remains an explicit gap because setup used "
-                "`--without-voice` and no 465 MB model was downloaded."
+                "A deterministic transcriber produced one local transcript for an "
+                "encrypted voice note. Matrix showed one threaded progress event "
+                "edited in place by `m.replace`; no transcript-only reply was sent. "
+                "The prompt and single qitem each completed exactly once. Real "
+                "Parakeet execution and Element rendering remain explicit gaps."
             ),
         )
 
@@ -1376,7 +1448,7 @@ class IntegrationRun:
         await self.check_fifo(room_id)
         await self.check_reaction(room_id)
         await self.check_images(room_id)
-        await self.check_audio_gap(room_id)
+        await self.check_voice_status_edit(room_id)
         await self.check_decision_and_poll(room_id)
         await self.check_proactive_message(room_id)
         await self.check_restart(room_id)

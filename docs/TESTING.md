@@ -74,7 +74,7 @@ is recorded in the report.
 | `fifo-queue-notice` | Per-agent FIFO ordering with second-send timestamp after first completion, plus the pinned queue notice |
 | `silent-reaction-feedback` | Reaction forwarding without a visible reply |
 | `encrypted-images` | Owner-to-agent encrypted PNG storage and agent-to-owner `send-image` byte round trip |
-| `voice-disabled-path` | Encrypted audio handling with voice deliberately disabled |
+| `voice-status-edit` | Encrypted voice note, deterministic local transcript, one threaded progress event edited by `m.replace`, no transcript-only reply, one forwarded prompt and qitem closure |
 | `decision-and-poll` | Pinned decision brief, MSC3381 poll, encrypted response, prompt forwarding, unpin |
 | `proactive-message` | Explicit encrypted `send-message` |
 | `restart-recovery` | Room/state reuse and status recovery across bridge restart |
@@ -85,8 +85,9 @@ is recorded in the report.
 
 - A real Codex seat receiving the Matrix prompt and completing its native
   transcript is not automated. The harness uses a fake OpenRig subprocess.
-- Parakeet model download and real speech transcription are not run. The
-  harness deliberately uses `setup --without-voice` and no network model.
+- Parakeet model download and recognition quality are not run. The harness
+  enables the voice path with `--skip-model` and a separate-process deterministic
+  transcriber wrapper, then exercises the real Matrix status/edit lifecycle.
 - Element device-to-device emoji SAS and cross-signing require a human client
   action and remain tracked by issue #1.
 - Federation, production homeserver policy, and trust between real user-owned
