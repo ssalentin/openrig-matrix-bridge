@@ -190,12 +190,16 @@ def test_activity_card_sanitizes_tokens_paths_and_raw_output(tmp_path):
     "commentary",
     [
         "REDIS_URL=redis://default:secretpassword@host",
+        "REDIS_URL=redis://:hunter2@host",
         "Authorization header: Basic dXNlcjpwYXNzd29yZA==",
         "Authorization: Basic dXNlcjpwYXNzd29yZA==",
         "Authorization: Bearer very-secret-token",
+        "Cookie: session=abcdef1234567890",
+        "Cookie session=abcdef1234567890",
+        "Set-Cookie: sid=abcdef1234567890",
     ],
 )
-def test_activity_card_redacts_uri_and_basic_auth_credentials(
+def test_activity_card_redacts_uri_auth_and_cookie_credentials(
     tmp_path,
     commentary,
 ):
