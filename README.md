@@ -286,6 +286,13 @@ claim, finish, and fail operations reconcile through `rig queue show` after
 restart before retrying. Attachment outbox requests use the same stable
 transaction rule and are not republished after a recorded delivery.
 
+Qitem lifecycle failures are fail-closed. If qitem creation fails, the bridge
+posts an error and does not send the prompt. If claim fails, the request remains
+pending with `qitem_phase: claiming` and retries without falsely appearing
+active. If finish or fail-close fails, the request remains locally pending and
+startup reconciles the qitem with `rig queue show` before retrying or removing
+the request.
+
 The bridge identity is `matrix-bridge@kernel` by default. Change
 `openrig.sender_session` only if that identity is intentional in your OpenRig
 installation. Set `queue_inbound_messages: false` only for installations that
