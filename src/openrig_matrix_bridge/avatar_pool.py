@@ -5,6 +5,11 @@ import re
 from importlib import resources
 
 POOL_AVATAR = re.compile(r"^openrig-\d{2}\.png$")
+BRAND_PROFILE = (
+    "branding",
+    "export",
+    "relay-avatar-256.png",
+)
 
 
 def avatar_pool_ids() -> list[str]:
@@ -28,11 +33,9 @@ def avatar_png(avatar_id: str) -> bytes:
 
 
 def profile_png() -> bytes:
-    asset = (
-        resources.files("openrig_matrix_bridge.assets")
-        .joinpath("avatars")
-        .joinpath("openrig-profile.png")
-    )
+    asset = resources.files("openrig_matrix_bridge.assets")
+    for part in BRAND_PROFILE:
+        asset = asset.joinpath(part)
     return asset.read_bytes()
 
 
@@ -41,7 +44,7 @@ def avatar_pool_fingerprint() -> str:
     for avatar_id in avatar_pool_ids():
         digest.update(avatar_id.encode("ascii"))
         digest.update(avatar_png(avatar_id))
-    digest.update(b"openrig-profile")
+    digest.update(b"relay-avatar-256")
     digest.update(profile_png())
     return digest.hexdigest()
 

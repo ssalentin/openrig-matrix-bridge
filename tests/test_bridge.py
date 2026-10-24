@@ -164,7 +164,7 @@ def test_assigns_unique_repo_avatars_and_profile():
     assignments = bridge.state.data["avatar_pool"]["assignments"]
     assert len({item["id"] for item in assignments.values()}) == 2
     assert len(bridge.client.room_avatars) == 2
-    assert bridge.client.profile_avatar == "mxc://example.org/openrig-profile.png"
+    assert bridge.client.profile_avatar == "mxc://example.org/relay-avatar-256.png"
 
 
 def test_status_uses_topic_and_structured_event_instead_of_room_name():

@@ -1,3 +1,5 @@
+from pathlib import Path
+
 from openrig_matrix_bridge.avatar_pool import (
     assign_unique_avatar_ids,
     avatar_png,
@@ -5,6 +7,8 @@ from openrig_matrix_bridge.avatar_pool import (
     avatar_pool_ids,
     profile_png,
 )
+
+ROOT = Path(__file__).resolve().parents[1]
 
 
 def test_ships_a_large_unique_avatar_pool():
@@ -15,6 +19,20 @@ def test_ships_a_large_unique_avatar_pool():
     assert all(avatar_png(avatar_id).startswith(b"\x89PNG") for avatar_id in ids)
     assert profile_png().startswith(b"\x89PNG")
     assert len(avatar_pool_fingerprint()) == 64
+
+
+def test_profile_is_the_selected_relay_avatar():
+    relay_avatar = (
+        ROOT
+        / "src"
+        / "openrig_matrix_bridge"
+        / "assets"
+        / "branding"
+        / "export"
+        / "relay-avatar-256.png"
+    )
+
+    assert profile_png() == relay_avatar.read_bytes()
 
 
 def test_preserves_valid_assignments_and_never_duplicates():

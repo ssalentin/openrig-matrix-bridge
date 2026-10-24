@@ -1,4 +1,5 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" role="img" aria-labelledby="title">
+  <!-- SPDX-License-Identifier: MIT -->
   <title id="title">Relay mark, light background</title>
   <path d="M36 62c0-17 14-31 31-31h54c17 0 31 14 31 31v56c0 17-14 31-31 31H86l-30 28v-28c-12 0-20-11-20-23V62Z" fill="none" stroke="#E96B59" stroke-width="22" stroke-linejoin="round"/>
   <path d="M104 108c0-17 14-31 31-31h85v69c0 17-14 31-31 31h-5v28l-30-28h-19c-17 0-31-14-31-31v-38Z" fill="none" stroke="#5946EE" stroke-width="22" stroke-linejoin="round"/>

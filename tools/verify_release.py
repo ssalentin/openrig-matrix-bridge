@@ -77,7 +77,7 @@ def inspect_wheel(path: Path, version: str) -> None:
         f"{package}/__init__.py",
         f"{package}/cli.py",
         f"{package}/assets/avatars/manifest.json",
-        f"{package}/assets/avatars/openrig-profile.png",
+        f"{package}/assets/branding/export/relay-avatar-256.png",
         *(f"{package}/assets/avatars/openrig-{number:02}.png" for number in range(1, 33)),
     }
     missing = sorted(required - names)

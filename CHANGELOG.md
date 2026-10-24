@@ -4,6 +4,8 @@
 
 - Treat an owner leaving or rejecting an agent room as a durable opt-out instead
   of recreating the room on restart.
+- Use the owner-selected Relay symbol for the README, Matrix bot profile, and
+  released brand assets while retaining the OpenRig Matrix Bridge product name.
 
 ## 0.9.0
 

@@ -146,26 +146,6 @@ def main() -> None:
             )
             index += 1
 
-    profile_svg = (
-        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">\n'
-        + background("#38bdf8", "#b6efff")
-        + """
-  <ellipse cx="256" cy="270" rx="210" ry="82" fill="none" stroke="#b6efff"
-           stroke-width="9" opacity="0.42" transform="rotate(-16 256 270)"/>
-  <circle cx="436" cy="190" r="18" fill="#b6efff"/>
-"""
-        + render_avatar("hood", "#38bdf8", "#b6efff")
-        + "\n</svg>\n"
-    )
-    write_avatar("openrig-profile", profile_svg)
-    manifest.append(
-        {
-            "id": "openrig-profile",
-            "style": "profile",
-            "color": "sky",
-            "profile_only": True,
-        }
-    )
     (PNG_DIR / "manifest.json").write_text(
         json.dumps(manifest, indent=2) + "\n",
         encoding="utf-8",
