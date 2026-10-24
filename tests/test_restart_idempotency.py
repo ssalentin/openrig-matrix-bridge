@@ -7,6 +7,7 @@ from nio import RoomSendResponse
 
 from openrig_matrix_bridge.bridge import MatrixBridge
 from openrig_matrix_bridge.config import AgentConfig
+from openrig_matrix_bridge.openrig import GatewayError
 
 
 class SimulatedCrash(BaseException):
@@ -224,6 +225,55 @@ def test_legacy_started_prompt_without_phase_fails_closed(tmp_path):
     )
     assert len(bridge.sent) == 1
     assert bridge.sent[0][3]["tx_id"] == "failure-request-one"
+
+
+def test_legacy_tracked_done_qitem_completes_without_answer_replay(tmp_path):
+    item = request(
+        prompt_phase=None,
+        qitem_phase="failing",
+        started_at=123.0,
+        answer_text="already delivered answer",
+    )
+    bridge, _agent = operation_bridge(tmp_path, item)
+
+    class Gateway:
+        async def queue_show(self, qitem_id):
+            return {"state": "done"}
+
+    bridge.gateway = Gateway()
+
+    asyncio.run(bridge._reconcile_pending_operations())
+
+    assert bridge.state.data["pending"]["advisor"] == []
+    assert item["qitem_phase"] == "done"
+    assert bridge.sent == []
+
+
+def test_legacy_ambiguous_answer_is_not_replayed_when_fail_close_errors(tmp_path):
+    item = request(
+        prompt_phase=None,
+        qitem_phase="failing",
+        started_at=123.0,
+        answer_text="must not replay",
+    )
+    bridge, agent = operation_bridge(tmp_path, item)
+
+    class Gateway:
+        async def queue_show(self, qitem_id):
+            return {"state": "in-progress"}
+
+        async def queue_fail(self, qitem_id, session, resolution):
+            raise GatewayError("fail unavailable")
+
+    bridge.gateway = Gateway()
+
+    asyncio.run(bridge._reconcile_pending_operations())
+    asyncio.run(bridge._poll_agent(agent))
+
+    assert bridge.state.data["pending"]["advisor"] == [item]
+    assert item["ambiguous_prompt_legacy"] is True
+    assert len(bridge.sent) == 1
+    assert "nicht eindeutig" in bridge.sent[0][1]
 
 
 def test_finish_reconciliation_accepts_already_done_qitem(tmp_path):

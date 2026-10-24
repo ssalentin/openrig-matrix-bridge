@@ -2114,21 +2114,39 @@ class MatrixBridge:
         agent: AgentConfig,
         request: dict[str, Any],
     ) -> None:
+        request["ambiguous_prompt_legacy"] = True
         resolution = "Prompt delivery outcome was uncertain after bridge restart"
-        if not await self._fail_inbound_qitem(agent, request, resolution):
-            return
-        response = await self._deliver_to_request(
-            self._room_for_agent(agent.key),
-            "Der Prompt-Versand ist nach dem Neustart nicht eindeutig. "
-            "Die Anfrage wurde als fehlgeschlagen markiert und wird nicht "
-            "erneut gesendet.",
-            request,
-            tx_id=f"failure-{request['id']}",
-        )
-        if not isinstance(response, RoomSendResponse):
-            return
+        qitem_id = str(request.get("qitem_id") or "")
+        if qitem_id:
+            try:
+                item = await self.gateway.queue_show(qitem_id)
+            except (GatewayError, OSError, AttributeError):
+                item = {}
+            if item.get("state") == "done":
+                request["qitem_phase"] = "done"
+                request["terminal_error"] = "Legacy request already completed"
+                pending = self.state.data["pending"][agent.key]
+                if pending and pending[0].get("id") == request["id"]:
+                    pending.pop(0)
+                self.state.save()
+                return
+
+        closed = await self._fail_inbound_qitem(agent, request, resolution)
+        if not request.get("failure_notice_event_id"):
+            response = await self._deliver_to_request(
+                self._room_for_agent(agent.key),
+                "Der Prompt-Versand ist nach dem Neustart nicht eindeutig. "
+                "Die Anfrage wird nicht erneut gesendet.",
+                request,
+                tx_id=f"failure-{request['id']}",
+            )
+            if isinstance(response, RoomSendResponse):
+                request["failure_notice_event_id"] = response.event_id
+                self.state.save()
         request["terminal_error"] = resolution
-        request["failure_notice_event_id"] = response.event_id
+        if not closed:
+            self.state.save()
+            return
         pending = self.state.data["pending"][agent.key]
         if pending and pending[0].get("id") == request["id"]:
             pending.pop(0)
@@ -2851,6 +2869,8 @@ class MatrixBridge:
                 return
 
             request = pending[0]
+            if request.get("ambiguous_prompt_legacy"):
+                return
             if request.get("started_at") is None:
                 try:
                     ref = self.resolver.resolve(agent.session)
