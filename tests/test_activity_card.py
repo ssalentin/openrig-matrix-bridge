@@ -36,6 +36,7 @@ def activity_bridge(tmp_path, records, *, activity_state="working"):
         session="advisor-lead@kernel",
     )
     request = {
+        "id": "request-1",
         "event_id": "$prompt",
         "thread_root_event_id": "$prompt",
         "reply_to_event_id": "$prompt",
@@ -107,14 +108,14 @@ def test_activity_card_combines_known_activity_and_safe_commentary(tmp_path):
         (
             "Fertig.",
             "$prompt",
-            {"thread_root": "$prompt", "tx_id": "answer-$prompt"},
+            {"thread_root": "$prompt", "tx_id": "answer-request-1"},
         ),
     ]
     assert edited == [
         (
             "$status",
             "**Aktivität:** Abgeschlossen\n\nIch prüfe die Tests.",
-            {},
+            {"tx_id": "activity-terminal-request-1"},
         )
     ]
     assert bridge.state.data["pending"]["advisor"] == []
@@ -150,7 +151,14 @@ def test_activity_card_sanitizes_tokens_paths_and_raw_output(tmp_path):
                 (
                     "Prüfe /home/alice/private/project/secret.txt mit "
                     "Authorization: Bearer very-secret-token\n"
+                    "API_KEY=super-secret-value\n"
+                    "CLIENT_SECRET=top-secret\n"
+                    "token ghp_1234567890abcdef\n"
+                    "Reading /srv/private/customer/credentials.txt\n"
+                    "Reading /mnt/private/customer/credentials.txt\n"
+                    "Reading ../customer/credentials.txt\n"
                     "```\nraw private command output\n```\n"
+                    "~~~\nraw tilde command output\n~~~\n"
                     + "detail " * 150
                 ),
             )
@@ -161,11 +169,79 @@ def test_activity_card_sanitizes_tokens_paths_and_raw_output(tmp_path):
 
     card = sent[0][0]
     assert "very-secret-token" not in card
+    assert "super-secret-value" not in card
+    assert "top-secret" not in card
+    assert "ghp_1234567890abcdef" not in card
     assert "/home/alice/private" not in card
+    assert "/srv/private" not in card
+    assert "/mnt/private" not in card
+    assert "../customer" not in card
     assert "raw private command output" not in card
+    assert "raw tilde command output" not in card
     assert "[redacted" in card
+
+
+def test_activity_card_truncates_long_safe_commentary(tmp_path):
+    bridge, agent, _request, sent, _edited = activity_bridge(
+        tmp_path,
+        [message_record("comment-1", "commentary", "safe update " * 150)],
+    )
+
+    asyncio.run(bridge._poll_agent(agent))
+
+    card = sent[0][0]
     assert card.split("\n\n", 1)[1].endswith("…")
     assert len(card.split("\n\n", 1)[1]) <= 600
+
+
+def test_terminal_activity_edit_failure_posts_explicit_terminal_fallback(tmp_path):
+    bridge, agent, request, _sent, edited = activity_bridge(
+        tmp_path,
+        [message_record("final-1", "final_answer", "Fertig.")],
+    )
+    request.update(
+        {
+            "commentary_event_id": "$status",
+            "commentary_summary": "Working on it.",
+            "activity_card_text": "**Aktivität:** Arbeitet\n\nWorking on it.",
+        }
+    )
+    sent = []
+
+    async def send(room_id, text, reply_to=None, **kwargs):
+        sent.append((text, reply_to, kwargs))
+        return RoomSendResponse("$answer", room_id)
+
+    async def reject_edit(room_id, event_id, text, **kwargs):
+        edited.append((event_id, text, kwargs))
+        return SimpleNamespace(status_code="M_UNKNOWN")
+
+    bridge._send = send
+    bridge._edit_message = reject_edit
+
+    asyncio.run(bridge._poll_agent(agent))
+
+    assert len(edited) == 3
+    assert all(text == "**Aktivität:** Abgeschlossen\n\nWorking on it." for _, text, _ in edited)
+    assert {kwargs.get("tx_id") for _, _, kwargs in edited} == {
+        "activity-terminal-" + request["id"]
+    }
+    assert sent == [
+        (
+            "Fertig.",
+            "$prompt",
+            {"thread_root": "$prompt", "tx_id": "answer-request-1"},
+        ),
+        (
+            "**Aktivität:** Abgeschlossen\n\nWorking on it.",
+            "$prompt",
+            {
+                "thread_root": "$prompt",
+                "tx_id": "activity-terminal-" + request["id"],
+            },
+        ),
+    ]
+    assert bridge.state.data["pending"]["advisor"] == []
 
 
 def test_activity_refresh_edits_the_same_card_for_needs_input(tmp_path):
@@ -216,7 +292,7 @@ def test_activity_card_is_not_created_when_commentary_is_disabled(tmp_path):
         (
             "Fertig.",
             "$prompt",
-            {"thread_root": "$prompt", "tx_id": "answer-$prompt"},
+            {"thread_root": "$prompt", "tx_id": "answer-request-1"},
         )
     ]
     assert edited == []

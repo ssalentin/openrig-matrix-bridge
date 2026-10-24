@@ -1085,7 +1085,7 @@ def test_persistent_commentary_edit_exception_falls_through_to_final_answer(
     sent = []
     finished = []
 
-    async def edit(room_id, event_id, text):
+    async def edit(room_id, event_id, text, **kwargs):
         edits.append((event_id, text))
         raise ConnectionError("edit transport failed")
 
@@ -1116,13 +1116,23 @@ def test_persistent_commentary_edit_exception_falls_through_to_final_answer(
         ("$status", "**Aktivität:** Arbeitet\n\nIch prüfe das."),
         ("$status", "**Aktivität:** Arbeitet\n\nIch prüfe das."),
         ("$status", "**Aktivität:** Abgeschlossen\n\nIch prüfe das."),
+        ("$status", "**Aktivität:** Abgeschlossen\n\nIch prüfe das."),
+        ("$status", "**Aktivität:** Abgeschlossen\n\nIch prüfe das."),
     ]
     assert sent == [
         (
             "Fertig.",
             "$prompt",
             {"thread_root": "$prompt", "tx_id": "answer-$prompt"},
-        )
+        ),
+        (
+            "**Aktivität:** Abgeschlossen\n\nIch prüfe das.",
+            "$prompt",
+            {
+                "thread_root": "$prompt",
+                "tx_id": "activity-terminal-$prompt",
+            },
+        ),
     ]
     assert finished == ["$prompt"]
     assert bridge.state.data["pending"]["advisor"] == []

@@ -109,16 +109,37 @@ STATUS_LABELS = {
     "offline": "⚫",
     "error": "🟠",
 }
-FENCED_OUTPUT = re.compile(r"```.*?```", re.DOTALL)
-AUTHORIZATION_VALUE = re.compile(
-    r"(?i)\b(authorization|access[_ -]?token|token|password|secret)"
-    r"(\s*[:=]\s*)(\S+)"
+FENCED_OUTPUT = re.compile(
+    r"(?ms)^[ \t]*(?:`{3,}|~{3,}).*?"
+    r"(?:^[ \t]*(?:`{3,}|~{3,})[ \t]*$|\Z)"
 )
-BEARER_TOKEN = re.compile(r"(?i)\bbearer\s+\S+")
+CREDENTIAL_VALUE = re.compile(
+    r"(?i)\b(?:[a-z0-9_]*(?:token|key|secret|password)|authorization)\b"
+    r"\s*[:=]\s*(?:\"[^\"]*\"|'[^']*'|\S+)"
+)
+BARE_TOKEN = re.compile(
+    r"(?i)\b(?:"
+    r"sk-[a-z0-9_-]{8,}|"
+    r"gh[pousr]_[a-z0-9]{8,}|"
+    r"akia[0-9a-z]{16}|"
+    r"eyj[a-z0-9_-]+\.[a-z0-9_-]+\.[a-z0-9_-]+"
+    r")\b"
+)
+LABELED_SECRET = re.compile(
+    r"(?i)\b(?:token|api[_ -]?key|client[_ -]?secret|password|secret)\b"
+    r"\s+(?:is\s+|:\s*)?[a-z0-9_./+=-]{8,}"
+)
+LONG_SECRET = re.compile(
+    r"\b(?=[a-z0-9_-]{32,}\b)(?=[a-z0-9_-]*[a-z])(?=[a-z0-9_-]*\d)"
+    r"[a-z0-9_-]+\b",
+    re.IGNORECASE,
+)
 PRIVATE_PATH = re.compile(
     r"(?<![\w])"
-    r"(?:/(?:home|Users|root|tmp|var|opt|etc|usr|private|workspace)/"
-    r"[^\s`'\"<>]+|[A-Za-z]:\\[^\s`'\"<>]+)"
+    r"(?:/(?:home|Users|root|tmp|var|opt|etc|usr|private|workspace|srv|mnt)/"
+    r"[^\s`'\"<>]+|(?:\.\.?|~)/[^\s`'\"<>]+|"
+    r"[A-Za-z]:\\[^\s`'\"<>]+|"
+    r"(?:[A-Za-z0-9_.-]+/)+[A-Za-z0-9_.-]+)"
 )
 
 
@@ -131,13 +152,18 @@ def activity_card_label(activity_state: str, needs_input_count: int) -> str:
 
 
 def sanitize_activity_summary(text: str) -> str:
-    summary = FENCED_OUTPUT.sub("[redacted raw output]", text)
-    summary = BEARER_TOKEN.sub("Bearer [redacted]", summary)
-    summary = AUTHORIZATION_VALUE.sub(
-        lambda match: f"{match.group(1)}{match.group(2)}[redacted]",
-        summary,
+    unsafe = any(
+        pattern.search(text)
+        for pattern in (
+            FENCED_OUTPUT,
+            CREDENTIAL_VALUE,
+            BARE_TOKEN,
+            LABELED_SECRET,
+            LONG_SECRET,
+            PRIVATE_PATH,
+        )
     )
-    summary = PRIVATE_PATH.sub("[redacted path]", summary)
+    summary = "[redacted unsafe commentary]" if unsafe else text
     summary = " ".join(summary.split())
     if len(summary) > 600:
         summary = summary[:597].rstrip() + "…"
@@ -2977,8 +3003,12 @@ class MatrixBridge:
             if isinstance(response, RoomSendResponse):
                 request["failure_notice_event_id"] = response.event_id
             if self.config.mirror_commentary and not request.get("suppress_reply"):
-                request["activity_label"] = "Fehlgeschlagen"
-                await self._deliver_activity_card(room_id, request)
+                await self._finalize_activity_card(
+                    agent,
+                    request,
+                    room_id,
+                    "Fehlgeschlagen",
+                )
             pending = self.state.data["pending"][agent.key]
             pending.pop(0)
             self.state.save()
@@ -3060,10 +3090,11 @@ class MatrixBridge:
                         and request.get("commentary_event_id")
                         and not request.get("suppress_reply")
                     ):
-                        request["activity_label"] = "Zeitüberschreitung"
-                        await self._deliver_activity_card(
-                            self._room_for_agent(agent.key),
+                        await self._finalize_activity_card(
+                            agent,
                             request,
+                            self._room_for_agent(agent.key),
+                            "Zeitüberschreitung",
                         )
                     await self._set_typing(self._room_for_agent(agent.key), False)
                     await self._update_agent_status(agent, "error", "Zeitüberschreitung")
@@ -3200,8 +3231,12 @@ class MatrixBridge:
                     and request.get("commentary_event_id")
                     and not request.get("suppress_reply")
                 ):
-                    request["activity_label"] = "Fehlgeschlagen"
-                    await self._deliver_activity_card(room_id, request)
+                    await self._finalize_activity_card(
+                        agent,
+                        request,
+                        room_id,
+                        "Fehlgeschlagen",
+                    )
                 await self._set_typing(room_id, False)
                 await self._update_agent_status(agent, "error", "Zustellung fehlgeschlagen")
                 pending.pop(0)
@@ -3223,8 +3258,12 @@ class MatrixBridge:
                 and request.get("commentary_event_id")
                 and not request.get("suppress_reply")
             ):
-                request["activity_label"] = "Abgeschlossen"
-                await self._deliver_activity_card(room_id, request)
+                await self._finalize_activity_card(
+                    agent,
+                    request,
+                    room_id,
+                    "Abgeschlossen",
+                )
             if await self._finish_inbound_qitem(agent, request) is False:
                 return
             await self._set_typing(room_id, False)
@@ -3278,6 +3317,8 @@ class MatrixBridge:
         self,
         room_id: str,
         request: dict[str, Any],
+        *,
+        tx_id: str | None = None,
     ):
         text = activity_card_text(request)
         if text == request.get("activity_card_text"):
@@ -3285,10 +3326,12 @@ class MatrixBridge:
         commentary_event_id = request.get("commentary_event_id")
         if commentary_event_id:
             try:
+                edit_kwargs = {"tx_id": tx_id} if tx_id else {}
                 response = await self._edit_message(
                     room_id,
                     str(commentary_event_id),
                     text,
+                    **edit_kwargs,
                 )
             except Exception:
                 response = None
@@ -3306,6 +3349,57 @@ class MatrixBridge:
             request["commentary_failure_count"] = 0
             self.state.save()
         return response
+
+    async def _finalize_activity_card(
+        self,
+        agent: AgentConfig,
+        request: dict[str, Any],
+        room_id: str,
+        label: str,
+    ) -> None:
+        request["activity_label"] = label
+        tx_id = (
+            "activity-terminal-"
+            + str(request.get("id") or request["event_id"])
+        )
+        for attempt in range(MAX_DELIVERY_ATTEMPTS):
+            response = await self._deliver_activity_card(
+                room_id,
+                request,
+                tx_id=tx_id,
+            )
+            if response is True or isinstance(response, RoomSendResponse):
+                return
+            LOGGER.warning(
+                "terminal activity-card update failed for %s (%s/%s): %s",
+                agent.key,
+                attempt + 1,
+                MAX_DELIVERY_ATTEMPTS,
+                response,
+            )
+
+        text = activity_card_text(request)
+        try:
+            response = await self._send(
+                room_id,
+                text,
+                self._reply_target(request),
+                **self._delivery_kwargs(request),
+                tx_id=tx_id,
+            )
+        except Exception:
+            LOGGER.warning(
+                "terminal activity-card fallback failed for %s",
+                agent.key,
+                exc_info=True,
+            )
+            return
+        if not isinstance(response, RoomSendResponse):
+            LOGGER.warning(
+                "terminal activity-card fallback failed for %s: %s",
+                agent.key,
+                response,
+            )
 
     async def _poll_agent_statuses(self) -> None:
         while True:
