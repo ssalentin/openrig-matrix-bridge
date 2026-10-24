@@ -17,9 +17,10 @@ path whenever a manual or integration check is performed.
 ## Provenance
 
 The clean combined source under test is
-`b35945549dc913846ea06c4aa7479bd62c0e857e`. It contains the product base
+`88dccb3c92329918c62b68f871022d0972377cd8`. It contains the product base
 `78ae4be5128d632a0b1b6df5ac4b0c3afc69cb0d`, the engine evidence fix
-`aac588a16219736d34cf7b16e04ca2474b0838a8`, and the positioning correction.
+`aac588a16219736d34cf7b16e04ca2474b0838a8`, the engine test portability fix
+`bda0e5d`, and the positioning correction.
 The integration report records this source commit and
 `target.source.worktree_clean: true`.
 
@@ -58,12 +59,12 @@ Observed results from the clean combined source:
 
 | Check | Exact command | Commit | Observed result |
 |---|---|---|---|
-| Unit tests | `.venv/bin/python -m pytest -q` | `b35945549dc913846ea06c4aa7479bd62c0e857e` | 74 passed in 0.92s |
-| Python lint | `.venv/bin/ruff check .` | `b35945549dc913846ea06c4aa7479bd62c0e857e` | All checks passed |
-| Markdown structure | `npx --yes markdownlint-cli2` | `b35945549dc913846ea06c4aa7479bd62c0e857e` | 5 files, 0 issues |
-| Relative links | Documentation link-check command below | `b35945549dc913846ea06c4aa7479bd62c0e857e` | checked=5, missing=0 |
-| Release artifacts | `.venv/bin/python -m build` then `.venv/bin/python tools/verify_release.py --dist <dir>` | `b35945549dc913846ea06c4aa7479bd62c0e857e` | Wheel and sdist clean installs passed; 32 avatars present |
-| Matrix integration | `.venv/bin/python tools/matrix_integration.py --timeout 60 --source-commit b35945549dc913846ea06c4aa7479bd62c0e857e` | `b35945549dc913846ea06c4aa7479bd62c0e857e` | `evidence_valid: true`, 13 checks passed in 24.6s |
+| Unit tests | `.venv/bin/python -m pytest -q` | `88dccb3c92329918c62b68f871022d0972377cd8` | 74 passed in 0.38s |
+| Python lint | `.venv/bin/ruff check .` | `88dccb3c92329918c62b68f871022d0972377cd8` | All checks passed |
+| Markdown structure | `npx --yes markdownlint-cli2` | `88dccb3c92329918c62b68f871022d0972377cd8` | 5 files, 0 issues |
+| Relative links | Documentation link-check command below | `88dccb3c92329918c62b68f871022d0972377cd8` | checked=5, missing=0 |
+| Release artifacts | `.venv/bin/python -m build` then `.venv/bin/python tools/verify_release.py --dist <dir>` | `88dccb3c92329918c62b68f871022d0972377cd8` | Wheel and sdist clean installs passed; 32 avatars present |
+| Matrix integration | `.venv/bin/python tools/matrix_integration.py --timeout 60 --source-commit 88dccb3c92329918c62b68f871022d0972377cd8` | `88dccb3c92329918c62b68f871022d0972377cd8` | `evidence_valid: true`, 13 checks passed in 24.2s |
 
 With `uv` installed, `uv tool run ruff check .` is equivalent to the lint
 command above.
@@ -119,11 +120,11 @@ The observed run used:
 ```bash
 .venv/bin/python tools/matrix_integration.py \
   --timeout 60 \
-  --source-commit b35945549dc913846ea06c4aa7479bd62c0e857e
+  --source-commit 88dccb3c92329918c62b68f871022d0972377cd8
 ```
 
 It reported `status: pass` with 13 checks at
-`2026-10-24T17:19:52Z` in 24.6 seconds, with
+`2026-10-24T17:22:44Z` in 24.2 seconds, with
 `target.source.commit` equal to the tested source SHA and
 `target.source.worktree_clean: true`. The digest-pinned Synapse image is
 recorded in the report. The owner client was a real `matrix-nio` client; the

@@ -1,6 +1,6 @@
 OpenRig Matrix Bridge - ordinary chat evidence
-Tested source commit: b35945549dc913846ea06c4aa7479bd62c0e857e
-Generated from the clean-worktree harness report at 2026-10-24T17:19:52Z
+Tested source commit: 88dccb3c92329918c62b68f871022d0972377cd8
+Generated from the clean-worktree harness report at 2026-10-24T17:22:44Z
 
 Environment:
   Matrix: disposable Synapse on loopback

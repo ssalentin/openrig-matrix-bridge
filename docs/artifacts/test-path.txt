@@ -1,11 +1,11 @@
 OpenRig Matrix Bridge - verification path
-Tested source commit: b35945549dc913846ea06c4aa7479bd62c0e857e
+Tested source commit: 88dccb3c92329918c62b68f871022d0972377cd8
 Base revision: 78ae4be5128d632a0b1b6df5ac4b0c3afc69cb0d
-Engine evidence change: aac588a16219736d34cf7b16e04ca2474b0838a8
+Engine evidence change: bda0e5d
 
 Unit path:
   .venv/bin/python -m pytest -q
-  74 passed in 0.92s
+  74 passed in 0.38s
 
   .venv/bin/ruff check .
   All checks passed
@@ -26,14 +26,14 @@ Release path:
 
 Integration path:
   .venv/bin/python tools/matrix_integration.py --timeout 60 \
-    --source-commit b35945549dc913846ea06c4aa7479bd62c0e857e
+    --source-commit 88dccb3c92329918c62b68f871022d0972377cd8
 
   The harness starts disposable Synapse and uses a real matrix-nio client for
   the owner side. Its OpenRig boundary is tools/fake_openrig.py, not a live
   Codex process. The bridge itself runs as a separate subprocess and creates,
   joins, encrypts, publishes, restarts, and rejects the test room.
 
-  Result: pass (13 checks, 24.6 seconds)
+  Result: pass (13 checks, 24.2 seconds)
   Report: docs/artifacts/integration-report.json
   evidence_valid: true
   target.source.worktree_clean: true
