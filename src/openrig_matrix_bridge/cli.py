@@ -19,7 +19,7 @@ import yaml
 
 from . import __version__
 from .bridge import MatrixBridge
-from .config import load_config
+from .config import ConfigError, load_config, validate_homeserver
 from .decisions import normalize_questions
 from .media import detect_image_type
 from .openrig import AgentSessionNotFound, OpenRigSessionResolver
@@ -208,7 +208,12 @@ async def _set_matrix_device_name(
 
 
 def run_setup(args: argparse.Namespace) -> None:
-    homeserver = (args.homeserver or input("Matrix homeserver URL: ")).strip().rstrip("/")
+    try:
+        homeserver = validate_homeserver(
+            (args.homeserver or input("Matrix homeserver URL: ")).strip()
+        )
+    except ConfigError as exc:
+        raise SystemExit(str(exc)) from exc
     user_id = (args.user_id or input("Bot Matrix user ID: ")).strip()
     device_id = (args.device_id or input("Bot Matrix device ID: ")).strip()
     allowed_user = (args.allowed_user or input("Owner Matrix user ID: ")).strip()
