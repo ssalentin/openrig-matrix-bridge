@@ -120,6 +120,16 @@ Tracked legacy requests are also excluded from the normal poller; an
 authoritative done qitem completes locally without answer replay, while a
 transient qitem-close error emits one stable failure and stops polling.
 
+### Issue #12 qitem lifecycle evidence
+
+Issue #12 source `91eeb4d06ec4148d647d982b722d289de3f409cf` passed 158 tests
+and the exact-source Matrix harness (`evidence_valid: true`, 19/19 checks in
+51.6s). The fake transport injects create, claim, finish, and fail errors.
+Bridge tests verify creation failure sends no prompt, claim failure remains
+retryable, and finish/fail failure remains pending for restart reconciliation.
+The report is
+[`issue-12-integration-report.json`](artifacts/issue-12-integration-report.json).
+
 ## Documentation checks
 
 Check every relative Markdown link from the repository root:
