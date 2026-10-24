@@ -152,7 +152,7 @@ Keep these rows open until evidence is actually committed:
 | FIFO queue | Second prompt waits; pinned count updates; answers remain ordered. | Pass with fake transport; `ordinary-chat.txt` |
 | Status and typing | Topic switches `bereit`/`arbeitet`; typing is visible while working. | Pass on disposable Synapse; `room-status.txt` and `ordinary-chat.txt` |
 | Image exchange | Incoming encrypted image is decrypted to the media inbox; outgoing image is encrypted. | Pass byte-for-byte on disposable Synapse |
-| Voice note | Local model transcribes a short sample, posts text, and forwards it. | Encrypted disabled-voice path passed; model execution is an explicit skipped gap |
+| Voice note | Local model transcribes a short sample; one threaded status message is edited to the transcript and the prompt is forwarded. No-speech, transcription failure, edit rejection, and restart recovery have explicit terminal paths. | Status lifecycle is unit-verified; the encrypted disabled-voice path passed. Live model execution and Element edit rendering remain explicit gaps. |
 | Decision/poll | Brief and poll are pinned; selection is returned; pinned event is cleared. | Pass on disposable Synapse; Element rendering remains manual |
 | Reaction feedback | Owner reaction reaches the agent but produces no visible bot answer. | Pass with fake transport on disposable Synapse |
 | Restart/recovery | Accepted state and room mapping survive restart; active queue behavior is reported honestly. | Pass on disposable Synapse; report |

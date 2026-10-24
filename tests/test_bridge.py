@@ -6,9 +6,12 @@ from types import SimpleNamespace
 import pytest
 from nio import (
     ProfileSetAvatarResponse,
+    RoomEncryptedAudio,
     RoomEncryptedImage,
     RoomGetEventResponse,
     RoomGetStateEventResponse,
+    RoomMessageAudio,
+    RoomSendError,
     RoomSendResponse,
     UploadResponse,
 )
@@ -1933,6 +1936,226 @@ def test_threaded_audio_uses_canonical_root_for_status_and_prompt():
         for reply_to, kwargs in sent
     )
     assert forwarded[0]["relates_to"] == relation
+
+
+def _voice_bridge(transcript="Hallo Welt", transcription_error=None):
+    agent = AgentConfig(
+        key="advisor",
+        display_name="Advisor",
+        session="advisor-lead@kernel",
+    )
+    bridge = object.__new__(MatrixBridge)
+    bridge.config = SimpleNamespace(
+        user_id="@openrig:matrix.example.org",
+        allowed_users=("@owner:matrix.example.org",),
+        max_message_age_minutes=-1,
+        agents={"advisor": agent},
+        transcription=SimpleNamespace(
+            enabled=True,
+            max_audio_bytes=1024 * 1024,
+        ),
+    )
+    bridge.room_agents = {"!advisor:matrix.example.org": "advisor"}
+    bridge.processed_events = set()
+    bridge.state = SimpleNamespace(
+        save=lambda: None,
+        data={"processed_events": []},
+    )
+
+    class VoiceClient:
+        async def download(self, mxc):
+            assert mxc == "mxc://matrix.example.org/voice"
+            return SimpleNamespace(body=b"audio bytes")
+
+    class VoiceTranscriber:
+        def transcribe(self, audio, filename):
+            assert audio == b"audio bytes"
+            assert filename == "voice.ogg"
+            if transcription_error is not None:
+                raise transcription_error
+            return transcript
+
+    bridge.client = VoiceClient()
+    bridge.transcriber = VoiceTranscriber()
+    bridge.sent = []
+    bridge.edited = []
+    bridge.forwarded = []
+
+    async def send(room_id, text, reply_to=None):
+        bridge.sent.append((text, reply_to))
+        return RoomSendResponse("$voice-status", room_id)
+
+    async def edit(room_id, event_id, text):
+        bridge.edited.append((event_id, text))
+        return RoomSendResponse("$edit", room_id)
+
+    async def enqueue_prompt(*args):
+        bridge.forwarded.append(args)
+
+    bridge._send = send
+    bridge._edit_message = edit
+    bridge._enqueue_prompt = enqueue_prompt
+    room = SimpleNamespace(room_id="!advisor:matrix.example.org")
+    event = RoomMessageAudio(
+        {
+            "event_id": "$voice",
+            "sender": "@owner:matrix.example.org",
+            "origin_server_ts": 1_700_000_000_000,
+            "type": "m.room.message",
+            "content": {
+                "msgtype": "m.audio",
+                "url": "mxc://matrix.example.org/voice",
+                "body": "voice.ogg",
+            },
+        },
+        "mxc://matrix.example.org/voice",
+        "voice.ogg",
+    )
+    return bridge, room, event
+
+
+def test_voice_transcript_edits_the_single_status_message():
+    bridge, room, event = _voice_bridge()
+
+    asyncio.run(bridge._handle_audio(room, event))
+
+    assert bridge.sent == [
+        ("Sprachnachricht empfangen, transkribiere …", "$voice")
+    ]
+    assert bridge.edited == [("$voice-status", "Transkript:\nHallo Welt")]
+    status = bridge.state.data["voice_statuses"]["$voice"]
+    assert status["status_event_id"] == "$voice-status"
+    assert status["state"] == "done"
+    assert bridge.forwarded[0][4].endswith("Hallo Welt")
+
+
+@pytest.mark.parametrize(
+    ("transcript", "error", "expected"),
+    [
+        ("", None, "kein Text erkannt"),
+        ("", RuntimeError("decoder failed"), "konnte nicht transkribiert werden"),
+    ],
+)
+def test_voice_terminal_results_edit_the_same_status_message(
+    transcript,
+    error,
+    expected,
+):
+    bridge, room, event = _voice_bridge(transcript, error)
+
+    asyncio.run(bridge._handle_audio(room, event))
+
+    assert len(bridge.sent) == 1
+    assert bridge.sent[0][1] == "$voice"
+    assert len(bridge.edited) == 1
+    assert bridge.edited[0][0] == "$voice-status"
+    assert expected in bridge.edited[0][1]
+    assert bridge.forwarded == []
+    assert bridge.state.data["voice_statuses"]["$voice"]["state"] in {
+        "no-speech",
+        "failed",
+    }
+
+
+def test_rejected_voice_status_edit_falls_back_without_logging_transcript(caplog):
+    bridge, room, event = _voice_bridge()
+
+    async def reject_edit(room_id, event_id, text):
+        bridge.edited.append((event_id, text))
+        return RoomSendError("edit rejected")
+
+    bridge._edit_message = reject_edit
+
+    with caplog.at_level("WARNING", logger="openrig-matrix-bridge"):
+        asyncio.run(bridge._handle_audio(room, event))
+
+    assert len(bridge.sent) == 2
+    assert bridge.sent[1][1] == "$voice"
+    assert "Hallo Welt" in bridge.sent[1][0]
+    assert "Statusmeldung" in bridge.sent[1][0]
+    assert "Hallo Welt" not in caplog.text
+    assert bridge.state.data["voice_statuses"]["$voice"]["state"] == "fallback"
+
+
+@pytest.mark.parametrize("interrupted_state", ["processing", "recovering", "committing"])
+def test_interrupted_voice_status_recovers_without_duplicate_transcript(
+    interrupted_state,
+):
+    bridge, room, event = _voice_bridge()
+    bridge.processed_events.add("$voice")
+    bridge.state.data["processed_events"] = ["$voice"]
+    bridge.state.data["voice_statuses"] = {
+        "$voice": {
+            "room_id": room.room_id,
+            "status_event_id": "$voice-status",
+            "state": interrupted_state,
+        }
+    }
+
+    asyncio.run(bridge._recover_voice_statuses())
+
+    assert bridge.sent == []
+    assert len(bridge.edited) == 1
+    assert bridge.edited[0][0] == "$voice-status"
+    assert "Neustart" in bridge.edited[0][1]
+    assert bridge.forwarded == []
+    assert bridge.state.data["voice_statuses"]["$voice"]["state"] == "interrupted"
+
+    bridge.edited.clear()
+    asyncio.run(bridge._handle_audio(room, event))
+    assert bridge.edited == []
+    assert bridge.sent == []
+
+
+def test_encrypted_voice_status_keeps_thread_and_edit_relations():
+    encrypted, keys = encrypt_attachment(b"audio bytes")
+    bridge, room, _event = _voice_bridge()
+
+    class EncryptedVoiceClient:
+        def __init__(self):
+            self.calls = []
+
+        async def download(self, mxc):
+            assert mxc == "mxc://matrix.example.org/voice"
+            return SimpleNamespace(body=encrypted)
+
+        async def room_send(self, room_id, message_type, content, **kwargs):
+            self.calls.append((room_id, message_type, content, kwargs))
+            event_id = "$voice-status" if len(self.calls) == 1 else "$edit"
+            return RoomSendResponse(event_id, room_id)
+
+    bridge.client = EncryptedVoiceClient()
+    del bridge._send
+    del bridge._edit_message
+    bridge._send = MatrixBridge._send.__get__(bridge, MatrixBridge)
+    bridge._edit_message = MatrixBridge._edit_message.__get__(bridge, MatrixBridge)
+    event = RoomEncryptedAudio(
+        {
+            "event_id": "$voice",
+            "sender": "@owner:matrix.example.org",
+            "origin_server_ts": 1_700_000_000_000,
+            "type": "m.room.encrypted",
+            "content": {},
+        },
+        "mxc://matrix.example.org/voice",
+        "voice.ogg",
+        keys["key"],
+        keys["hashes"],
+        keys["iv"],
+        "audio/ogg",
+    )
+
+    asyncio.run(bridge._handle_audio(room, event))
+
+    status_call, edit_call = bridge.client.calls
+    assert status_call[2]["m.relates_to"]["event_id"] == "$voice"
+    assert edit_call[2]["m.relates_to"] == {
+        "rel_type": "m.replace",
+        "event_id": "$voice-status",
+    }
+    assert edit_call[2]["m.new_content"]["body"] == "Transkript:\nHallo Welt"
+    assert status_call[3]["ignore_unverified_devices"] is True
+    assert edit_call[3]["ignore_unverified_devices"] is True
 
 
 async def _completed(value):

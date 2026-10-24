@@ -74,7 +74,8 @@ and private infrastructure out of frame.
    it runs, then the final answer in the thread.
 4. Send a second prompt while the first is active. Show the pinned queue card.
 5. Send a screenshot and ask the agent to describe it.
-6. Send a short voice note. Show the local transcript before the answer.
+6. Send a short voice note. Show its single threaded status message change into
+   the local transcript before the answer.
 7. Show a decision poll and return the selected option to the agent.
 8. React to a bridge message. Explain that the reaction is silent feedback.
 9. Close on the durable qitem and the README setup path.
