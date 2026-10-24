@@ -1818,6 +1818,12 @@ class MatrixBridge:
                     "claiming",
                 } and not await self._claim_inbound_qitem(agent, request):
                     continue
+                if (
+                    request.get("prompt_phase") is None
+                    and request.get("started_at") is not None
+                ):
+                    await self._fail_ambiguous_prompt(agent, request)
+                    continue
                 if request.get("prompt_phase") in {None, "pending"}:
                     await self._start_request(
                         agent,

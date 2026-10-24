@@ -198,6 +198,34 @@ def test_recovered_claim_waits_for_busy_agent_then_sends_once(tmp_path):
     assert item["prompt_phase"] == "sent"
 
 
+def test_legacy_started_prompt_without_phase_fails_closed(tmp_path):
+    item = request(
+        prompt_phase=None,
+        qitem_phase="not_tracked",
+        qitem_id=None,
+        started_at=123.0,
+        text="legacy prompt",
+    )
+    bridge, _agent = operation_bridge(tmp_path, item)
+    prompts = []
+
+    class Gateway:
+        async def send_prompt(self, ref, text):
+            prompts.append(text)
+
+    bridge.gateway = Gateway()
+
+    asyncio.run(bridge._reconcile_pending_operations())
+
+    assert prompts == []
+    assert bridge.state.data["pending"]["advisor"] == []
+    assert item["terminal_error"] == (
+        "Prompt delivery outcome was uncertain after bridge restart"
+    )
+    assert len(bridge.sent) == 1
+    assert bridge.sent[0][3]["tx_id"] == "failure-request-one"
+
+
 def test_finish_reconciliation_accepts_already_done_qitem(tmp_path):
     item = request(
         answer_phase="sent",
