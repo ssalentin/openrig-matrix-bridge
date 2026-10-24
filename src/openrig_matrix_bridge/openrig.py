@@ -15,6 +15,8 @@ class AgentSessionRef:
     transcript_path: Path
     tmux_session: str
     busy: bool
+    activity_state: str = "unknown"
+    needs_input_count: int = 0
 
 
 class AgentSessionNotFound(RuntimeError):
@@ -70,17 +72,46 @@ class OpenRigSessionResolver:
             transcript = self._transcript_path(entry, session_id)
             if transcript is None:
                 continue
-            activity = entry.get("agentActivity")
-            activity_state = (
-                activity.get("state") if isinstance(activity, dict) else None
-            )
+            activity_state, needs_input_count = self._safe_activity(entry)
             resolved[session_name] = AgentSessionRef(
                 session_id=session_id,
                 transcript_path=transcript,
                 tmux_session=session_name,
-                busy=activity_state == "running",
+                busy=activity_state == "working",
+                activity_state=activity_state,
+                needs_input_count=needs_input_count,
             )
         return resolved
+
+    @staticmethod
+    def _safe_activity(entry: dict[str, Any]) -> tuple[str, int]:
+        activity = entry.get("activityState")
+        if isinstance(activity, dict):
+            state = activity.get("activity")
+            needs_input = activity.get("needsInput")
+            count = needs_input.get("count") if isinstance(needs_input, dict) else 0
+            if isinstance(state, str) and state in {
+                "working",
+                "idle-at-prompt",
+                "unknown",
+            }:
+                safe_count = (
+                    count
+                    if isinstance(count, int) and not isinstance(count, bool)
+                    and count > 0
+                    else 0
+                )
+                return state, safe_count
+
+        legacy = entry.get("agentActivity")
+        state = legacy.get("state") if isinstance(legacy, dict) else None
+        if state == "running":
+            return "working", 0
+        if state == "idle":
+            return "idle-at-prompt", 0
+        if state == "needs_input":
+            return "idle-at-prompt", 1
+        return "unknown", 0
 
     def resolve(self, session_name: str) -> AgentSessionRef:
         resolved = self.resolve_many({session_name})
