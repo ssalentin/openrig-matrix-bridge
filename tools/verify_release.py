@@ -32,6 +32,7 @@ SDIST_SUPPORT_FILES = {
     "docs/TESTING.md",
     "docs/VERIFICATION.md",
     "docs/artifacts/README.md",
+    "docs/artifacts/final-0.11.0-integration-report.json",
     "docs/branding/artifacts/relay-avatar-dark-bg-preview.png",
     "docs/branding/artifacts/relay-avatar-light-bg-preview.png",
     "docs/branding/README.md",

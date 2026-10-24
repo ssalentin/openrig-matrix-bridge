@@ -19,6 +19,7 @@ PUBLISHED_DOCS = {
     "docs/TESTING.md",
     "docs/VERIFICATION.md",
     "docs/artifacts/README.md",
+    "docs/artifacts/final-0.11.0-integration-report.json",
 }
 RELAY_PREVIEWS = {
     "docs/branding/artifacts/relay-avatar-light-bg-preview.png",

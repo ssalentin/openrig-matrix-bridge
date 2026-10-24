@@ -34,13 +34,10 @@ version.
 
 ## Provenance
 
-The clean combined source under test is
-`88dccb3c92329918c62b68f871022d0972377cd8`. It contains the product base
-`78ae4be5128d632a0b1b6df5ac4b0c3afc69cb0d`, the engine evidence fix
-`aac588a16219736d34cf7b16e04ca2474b0838a8`, the engine test portability fix
-`bda0e5d`, and the positioning correction.
-The integration report records this source commit and
-`target.source.worktree_clean: true`.
+The final 0.11.0 source under test is
+`3b21b72330a9b0810457a3ee4d11fdd2c144ae90`. It is a descendant of `main`
+and includes the accepted runbook. The final Matrix report records this source
+commit and `target.source.worktree_clean: true`.
 
 The commit that publishes these evidence edits follows the tested source
 commit. A commit cannot contain the hash it will derive after changing its own
@@ -79,16 +76,16 @@ python -m pip install ruff
 ruff check .
 ```
 
-Observed results from the clean combined source:
+Observed results from the clean final source:
 
 | Check | Exact command | Commit | Observed result |
 |---|---|---|---|
-| Unit tests | `.venv/bin/python -m pytest -q` | `88dccb3c92329918c62b68f871022d0972377cd8` | 74 passed in 0.38s |
-| Python lint | `.venv/bin/ruff check .` | `88dccb3c92329918c62b68f871022d0972377cd8` | All checks passed |
-| Markdown structure | `npm ci && npx --no-install markdownlint-cli2` | `88dccb3c92329918c62b68f871022d0972377cd8` | 5 files, 0 issues |
-| Relative links | Documentation link-check command below | `88dccb3c92329918c62b68f871022d0972377cd8` | checked=5, missing=0 |
-| Release artifacts | `.venv/bin/python -m build` then `.venv/bin/python tools/verify_release.py --dist <dir>` | `88dccb3c92329918c62b68f871022d0972377cd8` | Wheel and sdist clean installs passed; 32 avatars present |
-| Matrix integration | `.venv/bin/python tools/matrix_integration.py --timeout 60 --source-commit 88dccb3c92329918c62b68f871022d0972377cd8` | `88dccb3c92329918c62b68f871022d0972377cd8` | `evidence_valid: true`, 13 checks passed in 24.2s |
+| Unit tests | `.venv/bin/python -m pytest -q` | `3b21b72330a9b0810457a3ee4d11fdd2c144ae90` | 243 passed in 1.25s |
+| Python lint | `.venv/bin/ruff check .` | `3b21b72330a9b0810457a3ee4d11fdd2c144ae90` | All checks passed |
+| Markdown structure | `npm ci && npx --no-install markdownlint-cli2` | `3b21b72330a9b0810457a3ee4d11fdd2c144ae90` | 10 files, 0 issues |
+| Relative links | `python tools/check_markdown_links.py` | `3b21b72330a9b0810457a3ee4d11fdd2c144ae90` | checked=10, missing=0 |
+| Release artifacts | `.venv/bin/python -m build` then `.venv/bin/python tools/verify_release.py` | `3b21b72330a9b0810457a3ee4d11fdd2c144ae90` | Wheel and sdist clean installs passed; 32 avatars present |
+| Matrix integration | Exact-source command below | `3b21b72330a9b0810457a3ee4d11fdd2c144ae90` | `evidence_valid: true`, 20/20 checks passed in 49.9s |
 
 With `uv` installed, `uv tool run ruff check .` is equivalent to the lint
 command above.
@@ -184,19 +181,20 @@ manually.
 
 The engine slice provides `tools/matrix_integration.py`. It starts disposable
 Docker Synapse and drives the bridge as a subprocess through a deterministic
-OpenRig CLI fixture. Its JSON report is
-`docs/artifacts/integration-report.json` (schema version 1).
+OpenRig CLI fixture. The final report is
+[`final-0.11.0-integration-report.json`](artifacts/final-0.11.0-integration-report.json)
+(schema version 1).
 
 The observed run used:
 
 ```bash
 .venv/bin/python tools/matrix_integration.py \
   --timeout 60 \
-  --source-commit 88dccb3c92329918c62b68f871022d0972377cd8
+  --source-commit 3b21b72330a9b0810457a3ee4d11fdd2c144ae90
 ```
 
-It reported `status: pass` with 13 checks at
-`2026-10-24T17:22:44Z` in 24.2 seconds, with
+It reported `status: pass` with 20 checks at
+`2026-10-24T22:30:43Z` in 49.9 seconds, with
 `target.source.commit` equal to the tested source SHA and
 `target.source.worktree_clean: true`. The digest-pinned Synapse image is
 recorded in the report. The owner client was a real `matrix-nio` client; the
