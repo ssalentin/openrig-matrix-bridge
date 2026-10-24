@@ -4,7 +4,7 @@
     "rejected_rooms": 1,
     "rooms": 0
   },
-  "duration_seconds": 45.5,
+  "duration_seconds": 50.4,
   "environment": {
     "command": "python tools/matrix_integration.py",
     "element_sas": "not exercised; requires a human client action",
@@ -14,7 +14,7 @@
     "voice_model": "not downloaded or executed"
   },
   "evidence_valid": true,
-  "generated_at": "2026-10-24T19:01:40.686130+00:00",
+  "generated_at": "2026-10-24T19:06:06.695613+00:00",
   "known_gaps": [
     "Real Codex prompt delivery and native transcript completion are represented by the fake OpenRig subprocess transport.",
     "The Parakeet model and real voice transcription were not run.",
@@ -36,7 +36,7 @@
     },
     {
       "automated": true,
-      "evidence": "`setup` wrote one agent room; `doctor` exited 0 (wrote /tmp/openrig-matrix-integration.lzh4_j59/config.yaml with 1 agent room(s))",
+      "evidence": "`setup` wrote one agent room; `doctor` exited 0 (wrote /tmp/openrig-matrix-integration.ca9i3sye/config.yaml with 1 agent room(s))",
       "id": "setup-and-doctor",
       "status": "pass"
     },
@@ -66,7 +66,7 @@
     },
     {
       "automated": true,
-      "evidence": "A second owner message arrived during a deliberately slow first turn; Matrix showed the pinned queue notice and the fake OpenRig transport received the second prompt only after recording completion of the first (1792868477.824033 < 1792868478.160843).",
+      "evidence": "A second owner message arrived during a deliberately slow first turn; Matrix showed the pinned queue notice and the fake OpenRig transport received the second prompt only after recording completion of the first (1792868742.459092 < 1792868742.75437).",
       "id": "fifo-queue-notice",
       "status": "pass"
     },
@@ -142,7 +142,7 @@
   "target": {
     "package": "openrig-matrix-bridge",
     "source": {
-      "commit": "32f566a7a6a548be77e45486a1eccba221c0610d",
+      "commit": "35159c664b2d0fda9dc6c54f381387705c8cb36f",
       "source": "git",
       "worktree_clean": true
     },
