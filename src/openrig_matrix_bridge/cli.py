@@ -411,8 +411,8 @@ def run_setup(args: argparse.Namespace) -> None:
     """
     config_path = args.config
 
-    # Check for existing config - fail in non-interactive mode
-    if config_path.exists():
+    # Check for existing config
+    if config_path.exists() and not args.replace_config:
         raise SystemExit(
             f"config file already exists: {config_path}. "
             "Pass --replace-config to overwrite it."
@@ -931,6 +931,8 @@ def build_parser() -> argparse.ArgumentParser:
         choices=("A", "B", "C", "D"),
         default="B",
     )
+    parser.add_argument("--replace-config", action="store_true",
+                        help="Overwrite existing config file")
     parser.add_argument("--replace-human", action="store_true")
     parser.add_argument("--no-human-registration", action="store_true")
     parser.add_argument("--no-commentary", action="store_true")
