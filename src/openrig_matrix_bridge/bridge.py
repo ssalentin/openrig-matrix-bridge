@@ -48,7 +48,7 @@ from .avatar_pool import (
     avatar_pool_fingerprint,
     profile_png,
 )
-from .config import AgentConfig, BridgeConfig
+from .config import AgentConfig, BridgeConfig, safe_agent_directory
 from .decisions import (
     POLL_RESPONSE_TYPE,
     POLL_START_TYPE,
@@ -1648,7 +1648,7 @@ class MatrixBridge:
                 raise MediaError("unsupported image type; use PNG, JPEG, GIF, or WebP")
             if len(image) > self.config.media.max_image_bytes:
                 raise MediaError("image exceeds the configured size limit")
-            agent_inbox = self.config.media.inbox_dir / agent.key
+            agent_inbox = safe_agent_directory(self.config.media.inbox_dir, agent.key)
             agent_inbox.mkdir(parents=True, exist_ok=True, mode=0o700)
             stored = agent_inbox / f"{uuid.uuid4().hex}{image_type.suffix}"
 

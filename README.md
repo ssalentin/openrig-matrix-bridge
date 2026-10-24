@@ -139,6 +139,12 @@ management instructions.
 Set the token in the environment. Gather the bot user ID, bot device ID, and
 owner user ID from your Matrix account configuration.
 
+The homeserver must use HTTPS. Plain `http://` is accepted only for loopback
+test servers such as `http://127.0.0.1:8008`; the bridge rejects credentials,
+queries and fragments in the homeserver URL. Configuration agent keys must start
+with an alphanumeric character and contain only letters, digits, underscores or
+hyphens (maximum 64 characters), so they remain safe per-agent directory names.
+
 ```bash
 export MATRIX_ACCESS_TOKEN='...'
 
