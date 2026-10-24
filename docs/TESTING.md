@@ -71,6 +71,15 @@ not prove delivery into a live Codex terminal. The fake transport refuses a
 second concurrent `rig send` while its simulated agent is busy. That limitation
 is recorded in the report.
 
+### Matrix timing-failure policy
+
+The voice-transcript exactly-once assertion is intentionally strict and must
+not be weakened or suppressed. A single failure records the exact source,
+preserves its failed report, and permits one rerun at the same commit because
+the failure has appeared as a transient timing result. The handoff must cite
+both runs; a passing rerun does not erase the first failure from the evidence.
+Two consecutive failures at the same commit are a release blocker.
+
 ### Automated integration coverage
 
 | Check | What is exercised |
