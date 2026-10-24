@@ -277,6 +277,15 @@ With `openrig.queue_inbound_messages: true`:
 - A single pinned queue-status message is edited as the count changes and
   unpinned when the queue drains.
 
+Prompt and final-answer delivery persist an operation phase before remote
+effects. If a bridge exits after starting a prompt but before recording an
+acknowledgement, restart fails that request explicitly rather than risking a
+duplicate prompt. Final answers retry with a stable Matrix transaction ID, so a
+restart can replay the send without creating a second visible event. Qitem
+claim, finish, and fail operations reconcile through `rig queue show` after
+restart before retrying. Attachment outbox requests use the same stable
+transaction rule and are not republished after a recorded delivery.
+
 The bridge identity is `matrix-bridge@kernel` by default. Change
 `openrig.sender_session` only if that identity is intentional in your OpenRig
 installation. Set `queue_inbound_messages: false` only for installations that

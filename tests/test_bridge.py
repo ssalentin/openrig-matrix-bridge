@@ -487,7 +487,7 @@ def test_poll_answer_delivery_uses_decision_brief_as_thread_root():
     )
     sent = []
 
-    async def send(room_id, text, reply_to=None):
+    async def send(room_id, text, reply_to=None, **kwargs):
         sent.append((room_id, text, reply_to))
         return RoomSendResponse("$answer", room_id)
 
@@ -603,7 +603,7 @@ def test_silent_feedback_does_not_post_agent_answer():
     sent = []
     notices = []
 
-    async def send(room_id, text, reply_to=None):
+    async def send(room_id, text, reply_to=None, **kwargs):
         sent.append((room_id, text, reply_to))
         return RoomSendResponse("$answer", room_id)
 
@@ -693,7 +693,7 @@ def test_poll_delivers_commentary_then_final_answer(tmp_path):
     )
     sent = []
 
-    async def send(room_id, text, reply_to=None):
+    async def send(room_id, text, reply_to=None, **kwargs):
         sent.append((text, reply_to))
         return RoomSendResponse(f"${len(sent)}", room_id)
 
@@ -1002,7 +1002,13 @@ def test_persistent_commentary_failure_falls_through_to_final_answer(tmp_path):
             break
         asyncio.run(bridge._poll_agent(agent))
 
-    assert sent == [("Fertig.", "$prompt", {"thread_root": "$prompt"})]
+    assert sent == [
+        (
+            "Fertig.",
+            "$prompt",
+            {"thread_root": "$prompt", "tx_id": "answer-$prompt"},
+        )
+    ]
     assert finished == ["$prompt"]
     assert bridge.state.data["pending"]["advisor"] == []
     assert request["commentary_failure_count"] == 3
@@ -1097,7 +1103,13 @@ def test_persistent_commentary_edit_exception_falls_through_to_final_answer(
         asyncio.run(bridge._poll_agent(agent))
 
     assert edits == [("$status", "Ich prüfe das.")] * 3
-    assert sent == [("Fertig.", "$prompt", {"thread_root": "$prompt"})]
+    assert sent == [
+        (
+            "Fertig.",
+            "$prompt",
+            {"thread_root": "$prompt", "tx_id": "answer-$prompt"},
+        )
+    ]
     assert finished == ["$prompt"]
     assert bridge.state.data["pending"]["advisor"] == []
 
@@ -1314,7 +1326,7 @@ def test_commentary_updates_one_status_message_instead_of_reply_spam(tmp_path):
             },
         }
 
-    async def send(room_id, text, reply_to=None):
+    async def send(room_id, text, reply_to=None, **kwargs):
         sent.append((text, reply_to))
         return RoomSendResponse("$status", room_id)
 
@@ -1497,7 +1509,14 @@ def test_poll_agent_uses_persisted_canonical_thread_root(tmp_path):
 
     assert sent == [
         ("Ich prüfe das.", "$root", {"thread_root": "$root"}),
-        ("Fertig.", "$root", {"thread_root": "$root"}),
+            (
+                "Fertig.",
+                "$root",
+                {
+                    "thread_root": "$root",
+                    "tx_id": "answer-$nested-reply",
+                },
+            ),
     ]
 
 
