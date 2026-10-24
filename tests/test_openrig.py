@@ -14,7 +14,11 @@ from openrig_matrix_bridge.openrig import (
 )
 
 
-def node_payload(transcript: Path, activity: str = "idle"):
+def node_payload(
+    transcript: Path,
+    activity: str = "idle",
+    activity_state: dict | None = None,
+):
     return [
         {
             "canonicalSessionName": "advisor-lead@kernel",
@@ -22,6 +26,7 @@ def node_payload(transcript: Path, activity: str = "idle"):
             "runtime": "codex",
             "resumeToken": "01a1654e-3934-7162-b01e-81e809069786",
             "agentActivity": {"state": activity},
+            "activityState": activity_state,
             "contextUsage": {"transcriptPath": str(transcript)},
         }
     ]
@@ -47,6 +52,61 @@ def test_resolves_live_codex_session_from_rig_inventory(tmp_path, monkeypatch):
     assert ref.session_id == "01a1654e-3934-7162-b01e-81e809069786"
     assert ref.transcript_path == transcript
     assert ref.busy is True
+
+
+def test_resolves_safe_activity_state_and_needs_input_count(tmp_path, monkeypatch):
+    transcript = tmp_path / "rollout.jsonl"
+    transcript.write_text("{}\n", encoding="utf-8")
+    payload = node_payload(
+        transcript,
+        activity="running",
+        activity_state={
+            "activity": "working",
+            "needsInput": {
+                "count": 1,
+                "reason": "permission prompt",
+            },
+        },
+    )
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda *args, **kwargs: subprocess.CompletedProcess(
+            args,
+            0,
+            stdout=json.dumps(payload),
+            stderr="",
+        ),
+    )
+
+    ref = OpenRigSessionResolver("/opt/rig", tmp_path).resolve("advisor-lead@kernel")
+
+    assert ref.activity_state == "working"
+    assert ref.needs_input_count == 1
+
+
+def test_falls_back_to_legacy_activity_when_taxonomy_is_unavailable(
+    tmp_path,
+    monkeypatch,
+):
+    transcript = tmp_path / "rollout.jsonl"
+    transcript.write_text("{}\n", encoding="utf-8")
+    payload = node_payload(transcript, activity="idle")
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda *args, **kwargs: subprocess.CompletedProcess(
+            args,
+            0,
+            stdout=json.dumps(payload),
+            stderr="",
+        ),
+    )
+
+    ref = OpenRigSessionResolver("/opt/rig", tmp_path).resolve("advisor-lead@kernel")
+
+    assert ref.activity_state == "idle-at-prompt"
+    assert ref.needs_input_count == 0
 
 
 def test_finds_codex_transcript_by_thread_id_when_usage_has_no_path(

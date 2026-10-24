@@ -27,14 +27,19 @@ def test_release_version_is_synchronized_across_metadata():
 
 
 def test_release_requires_installed_avatar_assets():
-    avatar_dir = (
+    branding_dir = (
         resources.files("openrig_matrix_bridge.assets")
-        .joinpath("avatars")
+        .joinpath("branding")
+        .joinpath("export")
     )
+    avatar_dir = resources.files("openrig_matrix_bridge.assets").joinpath("avatars")
 
     assert avatar_dir.joinpath("manifest.json").is_file()
     assert len(avatar_pool_ids()) == 32
-    assert profile_png().startswith(b"\x89PNG")
+    assert (
+        profile_png()
+        == branding_dir.joinpath("relay-avatar-256.png").read_bytes()
+    )
 
 
 def test_dev_extra_contains_release_validation_tools():

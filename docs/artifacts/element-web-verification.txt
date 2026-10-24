@@ -1,0 +1,27 @@
+Element Web verification investigation
+Date: 2026-10-24
+Client image: vectorim/element-web@sha256:f8700633d4336258af7a05b53865a4f479e0d628cf2d9ca83d28b5939314d4ce
+Homeserver: disposable Synapse on loopback with synthetic accounts
+Automation: Chrome through agent-browser
+
+Observed:
+- Element Web loaded from the real client image and signed in as a synthetic owner.
+- An encrypted owner message was accepted, and the bridge response appeared in the
+  same Element Web thread.
+- The bridge account profile displayed "(User verification unavailable)"; no
+  Verify action was exposed.
+- A manually uploaded synthetic cross-signing key set and device signature did
+  not change the Element result.
+- A fresh Element Web device could not decrypt historical room messages until
+  that device was trusted, as expected from the direct-device trust model.
+
+Conclusion:
+- This is real Element Web client evidence, not a mock.
+- It does not prove successful SAS verification, warning removal, cross-signing
+  trust, or the owner's Element X device state.
+- Issue #1 remains open until a supported cross-signing implementation and a
+  real-client SAS run are recorded.
+
+Redaction:
+- No access token, room ID, private MXID, homeserver deployment, recovery key
+  or device private key is retained here.

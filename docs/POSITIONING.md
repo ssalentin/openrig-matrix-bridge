@@ -11,8 +11,12 @@ own private, encrypted Matrix room, so work can continue from a phone or another
 Matrix client without starting a second agent.
 
 **Short description:** The bridge connects existing OpenRig Codex terminals to
-private Encrypted Matrix rooms. Status, progress, images, voice transcription,
-polls, reactions, and durable queue items stay attached to the same live seat.
+private Encrypted Matrix rooms. Status, progress, images, arbitrary files,
+voice transcription, polls, reactions, and durable queue items stay attached
+to the same live seat.
+
+**Identity:** Relay is the selected 0.11.0 product symbol. The product name
+remains OpenRig Matrix Bridge.
 
 **Who it is for:** A single OpenRig operator who wants a convenient,
 multi-device Matrix interface without rebuilding the agent runtime around a new
@@ -35,16 +39,19 @@ must omit capabilities still marked unverified.
   artifact](artifacts/ordinary-chat.txt).
 - **State is visible where the conversation happens.** The room topic and a
   structured Matrix state event carry agent status; typing is refreshed during
-  work. The [status event test](../tests/test_bridge.py#L122) covers payload
-  construction, and the [live Matrix artifact](artifacts/ordinary-chat.txt)
-  records the owner client observing the typing indicator on disposable
-  Synapse. Element rendering remains a separate client check.
-- **Media and decisions stay in context.** Encrypted images, local voice
-  transcription, pinned briefs, polls, reactions, and queue cards are
-  represented in the same room. See the [image](../tests/test_media.py#L15) and
-  [poll](../tests/test_decisions.py#L36) protocol tests plus the
-  [13-check integration report](artifacts/integration-report.json). Local voice
-  model execution remains explicitly unverified in the claim matrix.
+  work. The editable commentary card also shows the safe runtime activity
+  (`Arbeitet`, `Bereit`, or `Wartet auf Eingabe`) beside the latest sanitized
+  visible update. The [status event test](../tests/test_bridge.py#L122) covers
+  payload construction, and the [live Matrix
+  artifact](artifacts/ordinary-chat.txt) records the owner client observing the
+  typing indicator on disposable Synapse. Element rendering remains a separate
+  client check.
+- **Media and decisions stay in context.** Encrypted images and arbitrary
+  files, local voice transcription, pinned briefs, polls, reactions, and queue
+  cards are represented in the same room. See the
+  [image](../tests/test_media.py#L15), [file](../tests/test_media.py),
+  [poll](../tests/test_decisions.py#L36), and integration harness tests. Local
+  voice model execution remains explicitly unverified in the claim matrix.
 - **OpenRig remains the work ledger.** Matrix prompts become prioritized
   OpenRig qitems, are claimed when work starts, and close after answer delivery.
   See the [queue command tests](../tests/test_openrig.py#L159), [qitem lifecycle
@@ -74,10 +81,12 @@ and private infrastructure out of frame.
    it runs, then the final answer in the thread.
 4. Send a second prompt while the first is active. Show the pinned queue card.
 5. Send a screenshot and ask the agent to describe it.
-6. Send a short voice note. Show the local transcript before the answer.
-7. Show a decision poll and return the selected option to the agent.
-8. React to a bridge message. Explain that the reaction is silent feedback.
-9. Close on the durable qitem and the README setup path.
+6. Send a PDF as a downloadable encrypted file.
+7. Send a short voice note. Show its single threaded status message change into
+   the local transcript before the answer.
+8. Show a decision poll and return the selected option to the agent.
+9. React to a bridge message. Explain that the reaction is silent feedback.
+10. Close on the durable qitem and the README setup path.
 
 Every demo item should name the corresponding evidence row. Omit unsupported
 items rather than recording a simulated success.

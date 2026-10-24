@@ -1,0 +1,145 @@
+{
+  "bridge_state_summary": {
+    "processed_matrix_events": 13,
+    "rejected_rooms": 1,
+    "rooms": 0
+  },
+  "duration_seconds": 43.3,
+  "environment": {
+    "command": "python tools/matrix_integration.py",
+    "element_sas": "not exercised; requires a human client action",
+    "matrix_homeserver": "ephemeral Synapse on loopback",
+    "openrig_transport": "tools/fake_openrig.py subprocess protocol; not live Codex",
+    "synapse_image": "matrixdotorg/synapse@sha256:390f5e67227378eb87c84627b57f0582cdb235fcc8159d89f371f37bf7cccfd7",
+    "voice_model": "not downloaded or executed"
+  },
+  "evidence_valid": true,
+  "generated_at": "2026-10-24T18:38:02.776199+00:00",
+  "known_gaps": [
+    "Real Codex prompt delivery and native transcript completion are represented by the fake OpenRig subprocess transport.",
+    "The Parakeet model and real voice transcription were not run.",
+    "Element device-to-device SAS verification was not run.",
+    "Federation, public homeserver policy, and production E2EE device trust were not exercised."
+  ],
+  "redaction": {
+    "access_tokens": "not written to the report or bridge log",
+    "ephemeral_state": "removed after the run unless --keep-workdir is set",
+    "room_ids": "omitted",
+    "user_ids": "synthetic localhost fixtures"
+  },
+  "results": [
+    {
+      "automated": true,
+      "evidence": "Started disposable Synapse matrixdotorg/synapse@sha256:390f5e67227378eb87c84627b57f0582cdb235fcc8159d89f371f37bf7cccfd7 on loopback; the container and state directory are removed at exit unless `--keep-workdir` is set.",
+      "id": "ephemeral-matrix",
+      "status": "pass"
+    },
+    {
+      "automated": true,
+      "evidence": "`setup` wrote one agent room; `doctor` exited 0 (wrote /tmp/openrig-matrix-integration.06ywjo6n/config.yaml with 1 agent room(s))",
+      "id": "setup-and-doctor",
+      "status": "pass"
+    },
+    {
+      "automated": true,
+      "evidence": "Synapse accepted the owner invite and join; the room uses `m.megolm.v1.aes-sha2`, has a managed avatar, and publishes ready topic plus `dev.openrig.agent_status` state.",
+      "id": "room-status-avatar",
+      "status": "pass"
+    },
+    {
+      "automated": true,
+      "evidence": "Owner text was encrypted by matrix-nio; the fake OpenRig subprocess received it exactly once, and the recorded qitem history is pending -> in-progress -> done. Typing was observed, commentary was mirrored, and the final answer returned in-thread. The raw thread relation references the owner prompt. The homeserver API reported the final event as raw `m.room.encrypted` with Megolm ciphertext.",
+      "id": "encrypted-chat-queue-typing",
+      "status": "pass"
+    },
+    {
+      "automated": true,
+      "evidence": "An encrypted owner prompt already in m.thread survived a bridge restart while the fake seat was busy. Commentary and final answer were each delivered once under the canonical thread root, and the single Matrix qitem completed pending -> in-progress -> done.",
+      "id": "threaded-prompt-restart",
+      "status": "pass"
+    },
+    {
+      "automated": true,
+      "evidence": "A second owner message arrived during a deliberately slow first turn; Matrix showed the pinned queue notice and the fake OpenRig transport received the second prompt only after recording completion of the first (1792867059.8382616 < 1792867060.0612373).",
+      "id": "fifo-queue-notice",
+      "status": "pass"
+    },
+    {
+      "automated": true,
+      "evidence": "Owner reaction reached the fake OpenRig transport as silent feedback and did not create a visible bot reply.",
+      "id": "silent-reaction-feedback",
+      "status": "pass"
+    },
+    {
+      "automated": true,
+      "evidence": "Owner PNG was decrypted, signature-checked, stored byte-for-byte, and forwarded; `send-image` produced an encrypted Matrix image that the owner client downloaded and decrypted byte-for-byte.",
+      "id": "encrypted-images",
+      "status": "pass"
+    },
+    {
+      "automated": true,
+      "evidence": "Encrypted PDF and unknown binary attachments were transferred in both directions through disposable Synapse, and markerless audio used the generic attachment path. Inbound files were stored under generated agent inbox paths with original metadata; outbound m.file events used private snapshots with preserved filename, MIME type and size, decrypted byte-for-byte, and were Megolm-encrypted on the wire.",
+      "id": "encrypted-files",
+      "status": "pass"
+    },
+    {
+      "automated": true,
+      "evidence": "A generic-file request was durably queued while the bridge was stopped, then delivered exactly once after restart. The persisted success record names the same Matrix event ID observed by the owner; the delivered bytes came from the private snapshot even after the mutable source was replaced.",
+      "id": "attachment-restart-recovery",
+      "status": "pass"
+    },
+    {
+      "automated": true,
+      "evidence": "A PDF and markerless audio sent from inside an existing m.thread were stored and forwarded. Every file status and final bridge message used the original canonical thread root, and each input created one completed qitem.",
+      "id": "threaded-files",
+      "status": "pass"
+    },
+    {
+      "automated": true,
+      "evidence": "An encrypted Matrix audio event reached the bridge and received the configured disabled-voice response. Real Parakeet model execution remains an explicit gap because setup used `--without-voice` and no 465 MB model was downloaded.",
+      "id": "voice-disabled-path",
+      "status": "pass"
+    },
+    {
+      "automated": true,
+      "evidence": "Decision brief and MSC3381 poll were published and pinned; an encrypted poll response was returned to the fake transport as a decision prompt and the decision events were unpinned.",
+      "id": "decision-and-poll",
+      "status": "pass"
+    },
+    {
+      "automated": true,
+      "evidence": "`send-message` delivered an encrypted proactive message to the owner.",
+      "id": "proactive-message",
+      "status": "pass"
+    },
+    {
+      "automated": true,
+      "evidence": "Stopping and restarting the bridge preserved the exact Matrix room mapping and returned the room to ready status without creating a duplicate room.",
+      "id": "restart-recovery",
+      "status": "pass"
+    },
+    {
+      "automated": true,
+      "evidence": "`doctor` exited non-zero and reported the invalid Matrix token.",
+      "id": "doctor-invalid-token",
+      "status": "pass"
+    },
+    {
+      "automated": true,
+      "evidence": "Owner leave was detected, the bridge left the room, persisted a rejection tombstone, and a restart did not recreate it.",
+      "id": "rejected-room-recovery",
+      "status": "pass"
+    }
+  ],
+  "schema_version": 1,
+  "status": "pass",
+  "target": {
+    "package": "openrig-matrix-bridge",
+    "source": {
+      "commit": "fe6f1271758773dc90ac73975f03763515db7732",
+      "source": "git",
+      "worktree_clean": true
+    },
+    "version": "0.10.0"
+  }
+}

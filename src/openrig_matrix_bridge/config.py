@@ -1,16 +1,55 @@
 from __future__ import annotations
 
 import os
+import re
 import shutil
 from dataclasses import dataclass
+from ipaddress import ip_address
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 import yaml
+
+SAFE_AGENT_KEY = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}")
 
 
 class ConfigError(ValueError):
     pass
+
+
+def safe_agent_directory(root: Path, key: str) -> Path:
+    if SAFE_AGENT_KEY.fullmatch(key) is None:
+        raise ConfigError(
+            "agent keys must start with an alphanumeric character and contain "
+            "only letters, digits, underscores, or hyphens (maximum 64 characters)"
+        )
+    resolved_root = root.resolve()
+    directory = (resolved_root / key).resolve()
+    if directory.parent != resolved_root:
+        raise ConfigError(f"agent key resolves outside the media inbox: {key}")
+    return directory
+
+
+def validate_homeserver(value: str) -> str:
+    homeserver = value.rstrip("/")
+    parts = urlsplit(homeserver)
+    if parts.scheme not in {"http", "https"} or not parts.hostname:
+        raise ConfigError("matrix.homeserver must be a valid HTTP(S) URL")
+    if parts.username is not None or parts.password is not None:
+        raise ConfigError("matrix.homeserver must not contain credentials")
+    if parts.query or parts.fragment:
+        raise ConfigError("matrix.homeserver must not contain a query or fragment")
+    if parts.scheme == "http":
+        try:
+            loopback = ip_address(parts.hostname).is_loopback
+        except ValueError:
+            loopback = parts.hostname == "localhost"
+        if not loopback:
+            raise ConfigError(
+                "matrix.homeserver must use HTTPS except for loopback test servers"
+            )
+    return homeserver
 
 
 @dataclass(frozen=True)
@@ -33,6 +72,7 @@ class MediaConfig:
     enabled: bool
     inbox_dir: Path
     max_image_bytes: int
+    max_file_bytes: int
 
 
 @dataclass(frozen=True)
@@ -92,13 +132,11 @@ def load_config(path: str | Path) -> BridgeConfig:
     media = _mapping(root.get("media", {}), "media")
     avatars = _mapping(root.get("avatars", {}), "avatars")
 
-    homeserver = str(matrix.get("homeserver", "")).rstrip("/")
+    homeserver = validate_homeserver(str(matrix.get("homeserver", "")))
     user_id = str(matrix.get("user_id", ""))
     device_id = str(matrix.get("device_id", ""))
     allowed = matrix.get("allowed_users")
 
-    if not homeserver.startswith(("https://", "http://")):
-        raise ConfigError("matrix.homeserver must be an HTTP(S) URL")
     if not user_id.startswith("@") or ":" not in user_id:
         raise ConfigError("matrix.user_id must be a full Matrix user ID")
     if not device_id:
@@ -111,8 +149,11 @@ def load_config(path: str | Path) -> BridgeConfig:
     agents: dict[str, AgentConfig] = {}
     sessions: set[str] = set()
     for key, value in agents_raw.items():
-        if not isinstance(key, str) or not key or any(ch.isspace() for ch in key):
-            raise ConfigError("agent keys must be non-empty strings without whitespace")
+        if not isinstance(key, str) or SAFE_AGENT_KEY.fullmatch(key) is None:
+            raise ConfigError(
+                "agent keys must start with an alphanumeric character and contain "
+                "only letters, digits, underscores, or hyphens (maximum 64 characters)"
+            )
         item = _mapping(value, f"agents.{key}")
         session = str(item.get("session", "")).strip()
         if not session or "@" not in session:
@@ -184,6 +225,9 @@ def load_config(path: str | Path) -> BridgeConfig:
     max_image_bytes = int(media.get("max_image_bytes", 25 * 1024 * 1024))
     if max_image_bytes <= 0:
         raise ConfigError("media.max_image_bytes must be positive")
+    max_file_bytes = int(media.get("max_file_bytes", 25 * 1024 * 1024))
+    if max_file_bytes <= 0:
+        raise ConfigError("media.max_file_bytes must be positive")
     media_inbox = Path(str(media.get("inbox_dir", state_dir / "media-inbox")))
 
     return BridgeConfig(
@@ -218,6 +262,7 @@ def load_config(path: str | Path) -> BridgeConfig:
             enabled=bool(media.get("enabled", True)),
             inbox_dir=media_inbox,
             max_image_bytes=max_image_bytes,
+            max_file_bytes=max_file_bytes,
         ),
         avatars=AvatarConfig(
             enabled=bool(avatars.get("enabled", True)),

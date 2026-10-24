@@ -26,17 +26,25 @@ validate_qitem_history = HARNESS_MODULE.validate_qitem_history
 validate_source_provenance = HARNESS_MODULE.validate_source_provenance
 
 
-def fake(root: Path, *args: str) -> subprocess.CompletedProcess[str]:
+def fake(
+    root: Path,
+    *args: str,
+    fail: str | None = None,
+    delay: str = "0.2",
+) -> subprocess.CompletedProcess[str]:
+    environment = {
+        **os.environ,
+        "OPENRIG_FAKE_RESPONSE_DELAY": delay,
+        "OPENRIG_FAKE_STATE": str(root),
+    }
+    if fail:
+        environment["OPENRIG_FAKE_FAIL"] = fail
     return subprocess.run(
         [str(FAKE), *args],
         check=False,
         capture_output=True,
         text=True,
-        env={
-            **os.environ,
-            "OPENRIG_FAKE_RESPONSE_DELAY": "0.2",
-            "OPENRIG_FAKE_STATE": str(root),
-        },
+        env=environment,
         timeout=10,
     )
 
@@ -89,6 +97,106 @@ def test_fake_transport_records_qitem_transition_history(tmp_path: Path):
     ]
 
 
+def test_fake_transport_rejects_duplicate_qitem_claim(tmp_path: Path):
+    created = fake(
+        tmp_path,
+        "queue",
+        "create",
+        "--source",
+        "owner@external",
+        "--destination",
+        "integration-agent@local",
+        "--summary",
+        "Matrix message",
+        "--body",
+        "hello",
+        "--priority",
+        "urgent",
+        "--tags",
+        "matrix,inbound",
+        "--no-nudge",
+        "--json",
+    )
+    qitem_id = json.loads(created.stdout)["qitemId"]
+
+    assert fake(tmp_path, "queue", "claim", qitem_id, "--json").returncode == 0
+    duplicate = fake(tmp_path, "queue", "claim", qitem_id, "--json")
+
+    assert duplicate.returncode != 0
+    assert "qitem_not_claimable" in duplicate.stderr
+
+
+@pytest.mark.parametrize("failure", ["create", "claim", "finish", "fail"])
+def test_fake_transport_injects_qitem_lifecycle_failures(
+    tmp_path: Path,
+    failure: str,
+):
+    if failure == "create":
+        result = fake(
+            tmp_path,
+            "queue",
+            "create",
+            "--source",
+            "owner@external",
+            "--destination",
+            "integration-agent@local",
+            "--summary",
+            "Matrix message",
+            "--body",
+            "hello",
+            "--priority",
+            "urgent",
+            "--json",
+            fail=failure,
+        )
+        assert result.returncode != 0
+        assert f"injected queue {failure} failure" in result.stderr
+        return
+
+    created = fake(
+        tmp_path,
+        "queue",
+        "create",
+        "--source",
+        "owner@external",
+        "--destination",
+        "integration-agent@local",
+        "--summary",
+        "Matrix message",
+        "--body",
+        "hello",
+        "--priority",
+        "urgent",
+        "--json",
+    )
+    qitem_id = json.loads(created.stdout)["qitemId"]
+    if failure == "claim":
+        result = fake(
+            tmp_path,
+            "queue",
+            "claim",
+            qitem_id,
+            "--json",
+            fail=failure,
+        )
+    else:
+        result = fake(
+            tmp_path,
+            "queue",
+            "update",
+            qitem_id,
+            "--state",
+            "done" if failure == "finish" else "failed",
+            "--resolution",
+            "failure probe",
+            "--json",
+            fail=failure,
+        )
+
+    assert result.returncode != 0
+    assert f"injected queue {failure} failure" in result.stderr
+
+
 def test_fake_transport_rejects_send_while_agent_is_busy(tmp_path: Path):
     first = fake(
         tmp_path,
@@ -97,6 +205,7 @@ def test_fake_transport_rejects_send_while_agent_is_busy(tmp_path: Path):
         "ordinary prompt",
         "--raw",
         "--json",
+        delay="5.0",
     )
     assert first.returncode == 0
 

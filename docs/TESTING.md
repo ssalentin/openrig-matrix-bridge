@@ -14,6 +14,9 @@ uv venv --python 3.11 .venv
 uv pip install --python .venv/bin/python -e '.[dev]'
 .venv/bin/python -m pytest -q
 .venv/bin/ruff check .
+python3 tools/check_markdown_links.py
+npm ci
+npx --no-install markdownlint-cli2
 ```
 
 Build both distributable artifacts, then inspect them and install each into
@@ -26,8 +29,18 @@ separate clean virtual environments:
 
 `verify_release.py` checks the exact wheel/sdist filenames, wheel license and
 avatar data, source-distribution support files, console entry point, installed
-distribution metadata, and the 32-avatar runtime pool. It runs from temporary
-working directories so the source checkout cannot satisfy imports accidentally.
+distribution metadata, and the 32-avatar runtime pool. The source-distribution
+checks require the release plan, positioning, testing, verification, and
+artifact-manifest documents. It runs from temporary working directories so the
+source checkout cannot satisfy imports accidentally.
+
+CI runs the unit, lint, documentation, artifact, and Matrix integration jobs on
+every push and pull request. The Markdown linter is installed from the pinned
+`package-lock.json`, so the job does not resolve a moving latest release.
+
+Fast tests also drive the fake OpenRig transport’s deterministic create, claim,
+finish, and fail error injection. These prove bridge command-error handling and
+restart state, but they are not counted as Matrix integration checks.
 
 ## Executable Matrix integration
 
@@ -47,6 +60,10 @@ after the run. Use `--keep-workdir` only for local diagnosis; never commit that
 state. Use `--report PATH` to select another output location and `--timeout N`
 to bound individual wait operations.
 
+The issue #3 attachment run is preserved separately at
+`docs/artifacts/issue-3-integration-report.json`; it binds the report to source
+commit `fe6f1271758773dc90ac73975f03763515db7732`.
+
 The harness uses `tools/fake_openrig.py` as a separate deterministic OpenRig CLI
 process. It exercises the bridge's real `rig ps`, `rig send`, and `rig queue`
 subprocess contracts, transcript polling, and final-answer extraction. It does
@@ -54,18 +71,38 @@ not prove delivery into a live Codex terminal. The fake transport refuses a
 second concurrent `rig send` while its simulated agent is busy. That limitation
 is recorded in the report.
 
+### Matrix timing-failure policy
+
+The voice-transcript exactly-once assertion is intentionally strict and must
+not be weakened or suppressed. A single failure records the exact source,
+preserves its failed report, and permits one rerun at the same commit because
+the failure has appeared as a transient timing result. The handoff must cite
+both runs; a passing rerun does not erase the first failure from the evidence.
+Two consecutive failures at the same commit are a release blocker.
+
+The voice check waits for the transcript prompt to reach the fake OpenRig
+transport before treating an empty bridge pending list as idle. This separates
+the deliberate status-before-enqueue ordering from the exact-one prompt
+assertion and prevents the evidence reader from observing the gap as a missing
+forward.
+
 ### Automated integration coverage
 
 | Check | What is exercised |
 |---|---|
 | `setup-and-doctor` | Public `setup` and `doctor` commands against Synapse and the fake OpenRig transport |
 | `room-status-avatar` | Private room creation, owner invite/join, Megolm room state, managed avatar, ready topic, structured status |
-| `encrypted-chat-queue-typing` | Owner text, typing indicator, visible commentary, thread-related final answer, recorded pending -> in-progress -> done qitem history, raw `m.room.encrypted` event |
+| `encrypted-chat-queue-typing` | Owner text, typing indicator, activity-labelled commentary card, separate thread-related final answer, recorded pending -> in-progress -> done qitem history, raw `m.room.encrypted` event |
 | `threaded-prompt-restart` | Encrypted owner prompt already in `m.thread`; commentary and final answer under the canonical root; single qitem closure; bridge restart without duplicate prompt or response |
+| `answer-crash-recovery` | Test-only process exit immediately after final answer send; stable transaction retry produces no duplicate Matrix event and reconciles one qitem |
+| `threaded-files` | Threaded PDF and markerless audio status/final messages use the canonical root and each creates one completed qitem |
 | `fifo-queue-notice` | Per-agent FIFO ordering with second-send timestamp after first completion, plus the pinned queue notice |
 | `silent-reaction-feedback` | Reaction forwarding without a visible reply |
 | `encrypted-images` | Owner-to-agent encrypted PNG storage and agent-to-owner `send-image` byte round trip |
-| `voice-disabled-path` | Encrypted audio handling with voice deliberately disabled |
+| `voice-status-edit` | Encrypted voice note, deterministic local transcript, one threaded progress event edited by `m.replace`, no transcript-only reply, one forwarded prompt and qitem closure |
+| `encrypted-files` | Encrypted PDF and unknown-binary transfer in both directions; markerless audio fallback; generated safe inbox paths; private admitted snapshots; `m.file` metadata and byte-preserving decryption |
+| `attachment-restart-recovery` | A generic-file request queued while stopped is delivered exactly once after restart from its snapshot after the source is changed, and records the observed Matrix event ID |
+| `voice-disabled-path` | A voice-message-marked encrypted audio event reaches transcription handling while voice is deliberately disabled |
 | `decision-and-poll` | Pinned decision brief, MSC3381 poll, encrypted response, prompt forwarding, unpin |
 | `proactive-message` | Explicit encrypted `send-message` |
 | `restart-recovery` | Room/state reuse and status recovery across bridge restart |
@@ -76,12 +113,17 @@ is recorded in the report.
 
 - A real Codex seat receiving the Matrix prompt and completing its native
   transcript is not automated. The harness uses a fake OpenRig subprocess.
-- Parakeet model download and real speech transcription are not run. The
-  harness deliberately uses `setup --without-voice` and no network model.
+- Parakeet model download and recognition quality are not run. The harness
+  enables the voice path with `--skip-model` and a separate-process deterministic
+  transcriber wrapper, then exercises the real Matrix status/edit lifecycle.
 - Element device-to-device emoji SAS and cross-signing require a human client
   action and remain tracked by issue #1.
 - Federation, production homeserver policy, and trust between real user-owned
   devices are outside this local harness.
+- Attachment malware scanning, client-specific previews, and operator-managed
+  inbox retention are not implemented.
+- The integration OpenRig transport is deterministic. It exercises the bridge's
+  crash boundaries, but a live Codex process crash remains unverified.
 
 ## Report schema
 

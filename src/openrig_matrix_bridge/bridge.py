@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import os
+import re
+import stat
 import tempfile
 import time
 import uuid
@@ -26,11 +29,13 @@ from nio import (
     ReactionEvent,
     RoomCreateResponse,
     RoomEncryptedAudio,
+    RoomEncryptedFile,
     RoomEncryptedImage,
     RoomGetEventResponse,
     RoomGetStateEventResponse,
     RoomMemberEvent,
     RoomMessageAudio,
+    RoomMessageFile,
     RoomMessageImage,
     RoomMessageText,
     RoomSendResponse,
@@ -48,7 +53,7 @@ from .avatar_pool import (
     avatar_pool_fingerprint,
     profile_png,
 )
-from .config import AgentConfig, BridgeConfig
+from .config import AgentConfig, BridgeConfig, safe_agent_directory
 from .decisions import (
     POLL_RESPONSE_TYPE,
     POLL_START_TYPE,
@@ -63,7 +68,10 @@ from .media import (
     MediaError,
     detect_image_file,
     detect_image_type,
+    encrypted_file_content,
     encrypted_image_content,
+    is_voice_message_content,
+    normalize_mime_type,
 )
 from .openrig import (
     AgentSessionNotFound,
@@ -74,17 +82,185 @@ from .openrig import (
 )
 from .transcript import commentary_messages, final_answer, read_complete_records
 from .transcription import Transcriber
+from .verification import (
+    TERMINAL_PHASES,
+    VERIFICATION_RECORD_RETENTION_SECONDS,
+    begin_verification,
+    expire_active_verifications,
+    mark_verification,
+    pending_verification,
+    prune_terminal_verifications,
+    recover_interrupted_verifications,
+)
 
 LOGGER = logging.getLogger("openrig-matrix-bridge")
 AGENT_STATUS_EVENT = "dev.openrig.agent_status"
+VERIFICATION_TIMEOUT_SECONDS = 600
 _DEFAULT_THREAD_ROOT = object()
 MAX_DELIVERY_ATTEMPTS = 3
+VOICE_STATUS_PROGRESS = "Sprachnachricht empfangen, transkribiere …"
+VOICE_STATUS_INTERRUPTED = (
+    "Die Sprachnachricht wurde durch einen Bridge-Neustart unterbrochen "
+    "und konnte nicht abgeschlossen werden. Bitte erneut senden."
+)
 STATUS_LABELS = {
     "ready": "🟢",
     "busy": "🟡",
     "offline": "⚫",
     "error": "🟠",
 }
+FENCED_OUTPUT = re.compile(
+    r"(?ms)^[ \t]*(?:`{3,}|~{3,}).*?"
+    r"(?:^[ \t]*(?:`{3,}|~{3,})[ \t]*$|\Z)"
+)
+CREDENTIAL_VALUE = re.compile(
+    r"(?i)\b(?:[a-z0-9_]*(?:token|key|secret|password)|authorization)\b"
+    r"\s*[:=]\s*(?:\"[^\"]*\"|'[^']*'|\S+)"
+)
+URI_USERINFO = re.compile(
+    r"(?i)\b[a-z][a-z0-9+.-]*://(?:[^\s/@:]*):[^\s/@]+@"
+)
+AUTHORIZATION_SCHEME = re.compile(
+    r"(?i)\b(?:proxy-)?authorization\b[^\r\n]{0,40}"
+    r"\b(?:basic|bearer|digest|token)\s+\S+"
+)
+COOKIE_VALUE = re.compile(
+    r"(?i)\b(?:set-)?cookie\b(?:\s*[:=]\s*|\s+)"
+    r"(?:[a-z0-9_-]+\s*=\s*)?\S+"
+)
+BARE_TOKEN = re.compile(
+    r"(?i)\b(?:"
+    r"sk-[a-z0-9_-]{8,}|"
+    r"gh[pousr]_[a-z0-9]{8,}|"
+    r"akia[0-9a-z]{16}|"
+    r"eyj[a-z0-9_-]+\.[a-z0-9_-]+\.[a-z0-9_-]+"
+    r")\b"
+)
+LABELED_SECRET = re.compile(
+    r"(?i)\b(?:token|api[_ -]?key|client[_ -]?secret|password|secret)\b"
+    r"\s+(?:is\s+|:\s*)?[a-z0-9_./+=-]{8,}"
+)
+LONG_SECRET = re.compile(
+    r"\b(?=[a-z0-9_-]{32,}\b)(?=[a-z0-9_-]*[a-z])(?=[a-z0-9_-]*\d)"
+    r"[a-z0-9_-]+\b",
+    re.IGNORECASE,
+)
+PRIVATE_PATH = re.compile(
+    r"(?<![\w])"
+    r"(?:/(?:home|Users|root|tmp|var|opt|etc|usr|private|workspace|srv|mnt)/"
+    r"[^\s`'\"<>]+|(?:\.\.?|~)/[^\s`'\"<>]+|"
+    r"[A-Za-z]:\\[^\s`'\"<>]+|"
+    r"(?:[A-Za-z0-9_.-]+/)+[A-Za-z0-9_.-]+)"
+)
+
+
+def activity_card_label(activity_state: str, needs_input_count: int) -> str:
+    if needs_input_count > 0:
+        return "Wartet auf Eingabe"
+    if activity_state == "idle-at-prompt":
+        return "Bereit"
+    return "Arbeitet"
+
+
+def sanitize_activity_summary(text: str) -> str:
+    unsafe = any(
+        pattern.search(text)
+        for pattern in (
+            FENCED_OUTPUT,
+            CREDENTIAL_VALUE,
+            URI_USERINFO,
+            AUTHORIZATION_SCHEME,
+            COOKIE_VALUE,
+            BARE_TOKEN,
+            LABELED_SECRET,
+            LONG_SECRET,
+            PRIVATE_PATH,
+        )
+    )
+    summary = "[redacted unsafe commentary]" if unsafe else text
+    summary = " ".join(summary.split())
+    if len(summary) > 600:
+        summary = summary[:597].rstrip() + "…"
+    return summary
+
+
+def activity_card_text(request: dict[str, Any]) -> str:
+    label = str(
+        request.get("activity_label")
+        or activity_card_label(
+            str(request.get("activity_state") or "unknown"),
+            int(request.get("needs_input_count") or 0),
+        )
+    )
+    summary = str(request.get("commentary_summary") or "").strip()
+    text = f"**Aktivität:** {label}"
+    if summary:
+        text += f"\n\n{summary}"
+    return text
+
+
+class QitemLifecycleError(GatewayError):
+    pass
+
+
+def _has_complete_encryption_metadata(encryption: object) -> bool:
+    if not isinstance(encryption, dict):
+        return False
+    key = encryption.get("key")
+    hashes = encryption.get("hashes")
+    return (
+        isinstance(key, dict)
+        and isinstance(key.get("k"), str)
+        and bool(key["k"])
+        and isinstance(hashes, dict)
+        and isinstance(hashes.get("sha256"), str)
+        and bool(hashes["sha256"])
+        and isinstance(encryption.get("iv"), str)
+        and bool(encryption["iv"])
+    )
+
+
+def _open_verified_snapshot(
+    path: Path,
+    *,
+    expected_size: int,
+    expected_sha256: str,
+    max_file_bytes: int,
+) -> Any:
+    descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    try:
+        metadata = os.fstat(descriptor)
+        if not stat.S_ISREG(metadata.st_mode):
+            raise MediaError("file snapshot is not a regular file")
+        if metadata.st_size != expected_size:
+            raise MediaError(
+                "file snapshot size changed: "
+                f"{metadata.st_size} instead of {expected_size} bytes"
+            )
+        if metadata.st_size <= 0 or metadata.st_size > max_file_bytes:
+            raise MediaError(
+                "file size must be between 1 and "
+                f"{max_file_bytes} bytes"
+            )
+        handle = os.fdopen(descriptor, "rb")
+        descriptor = -1
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+
+    try:
+        digest = hashlib.sha256()
+        size = 0
+        while chunk := handle.read(1024 * 1024):
+            size += len(chunk)
+            digest.update(chunk)
+        if size != expected_size or digest.hexdigest() != expected_sha256:
+            raise MediaError("file snapshot digest does not match admission metadata")
+        handle.seek(0)
+        return handle
+    except Exception:
+        handle.close()
+        raise
 
 
 def room_name(agent: AgentConfig) -> str:
@@ -122,6 +298,15 @@ def message_relation(event: Any) -> dict[str, Any] | None:
     return relation if isinstance(relation, dict) else None
 
 
+def voice_transaction_id(voice_event_id: str, operation: str) -> str:
+    return str(
+        uuid.uuid5(
+            uuid.NAMESPACE_URL,
+            f"openrig-matrix-bridge:{voice_event_id}:{operation}",
+        )
+    )
+
+
 def formatted_message_content(text: str) -> dict[str, Any]:
     content: dict[str, Any] = {"msgtype": "m.text", "body": text[:60000]}
     formatted_body = markdown_to_matrix_html(text[:60000])
@@ -149,9 +334,11 @@ class StateStore:
             "transcripts": {},
             "pending": {},
             "processed_events": [],
+            "voice_statuses": {},
             "welcomed": {},
             "decisions": {},
             "media": {},
+            "media_failures": {},
             "messages": {},
             "queue_notices": {},
             "queue_mirror": {"initialized": False, "seen": {}},
@@ -197,7 +384,7 @@ class MatrixBridge:
         self.locks = {key: asyncio.Lock() for key in config.agents}
         self.room_agents: dict[str, str] = {}
         self.processed_events: set[str] = set(self.state.data.get("processed_events", []))
-        self.verification_rooms: dict[str, str] = {}
+        self.verification_records = self.state.data.setdefault("verifications", {})
         self.typing_tasks: dict[str, asyncio.Task[None]] = {}
         self.pin_locks = {
             str(room["room_id"]): asyncio.Lock()
@@ -244,6 +431,7 @@ class MatrixBridge:
         self.client.add_event_callback(self._on_reaction, ReactionEvent)
         self.client.add_event_callback(self._on_audio, (RoomMessageAudio, RoomEncryptedAudio))
         self.client.add_event_callback(self._on_image, (RoomMessageImage, RoomEncryptedImage))
+        self.client.add_event_callback(self._on_file, (RoomMessageFile, RoomEncryptedFile))
         self.client.add_event_callback(self._on_invite, InviteMemberEvent)
         self.client.add_event_callback(self._on_member, RoomMemberEvent)
         self.client.add_event_callback(self._on_unknown_event, UnknownEvent)
@@ -251,7 +439,9 @@ class MatrixBridge:
 
     async def run(self) -> None:
         await self._initial_sync()
+        await self._recover_verifications()
         self._load_room_index()
+        await self._recover_voice_statuses()
         await self._reconcile_room_memberships()
         if any(key not in self.state.data["rooms"] for key in self.config.agents):
             await self._create_rooms()
@@ -259,6 +449,7 @@ class MatrixBridge:
         await self._ensure_room_avatars()
         self._initialize_transcript_offsets()
         self._repair_decision_reply_targets()
+        await self._reconcile_pending_operations()
         await self._refresh_agent_statuses(force=True)
         poller = asyncio.create_task(self._poll_answers(), name="openrig-matrix-poller")
         status_poller = asyncio.create_task(
@@ -281,6 +472,10 @@ class MatrixBridge:
             self._poll_human_queue(),
             name="openrig-matrix-human-queue",
         )
+        verification_poller = asyncio.create_task(
+            self._poll_verification_timeouts(),
+            name="openrig-matrix-verification-timeouts",
+        )
         try:
             await self.client.sync_forever(
                 timeout=30000,
@@ -294,9 +489,16 @@ class MatrixBridge:
             media_poller.cancel()
             message_poller.cancel()
             human_queue_poller.cancel()
+            verification_poller.cancel()
             for room_id in list(self.typing_tasks):
                 await self._set_typing(room_id, False)
             await self.client.close()
+
+    @staticmethod
+    def _crash_after_effect(point: str) -> None:
+        if os.environ.get("OPENRIG_BRIDGE_TEST_CRASH_AFTER") == point:
+            LOGGER.critical("test fault injection after %s", point)
+            os._exit(86)
 
     async def _initial_sync(self) -> None:
         response = await self.client.sync(timeout=0, full_state=True)
@@ -575,20 +777,56 @@ class MatrixBridge:
 
     async def _process_media_outbox(self) -> None:
         for path in sorted(self.media_outbox.glob("*.json")):
+            request_id = path.stem
+            if request_id in self.state.data.get("media", {}):
+                os.replace(path, self.media_sent / path.name)
+                continue
+            if request_id in self.state.data.get("media_failures", {}):
+                os.replace(path, self.media_failed / path.name)
+                continue
             try:
                 request = json.loads(path.read_text(encoding="utf-8"))
                 if not isinstance(request, dict):
                     raise MediaError("media request must be an object")
-                await self._publish_image(request)
-            except (MediaError, json.JSONDecodeError, OSError):
-                LOGGER.warning("invalid media request: %s", path, exc_info=True)
+                request_id = str(request.get("id") or path.stem)
+                if request.get("kind") == "file":
+                    await self._publish_file(request)
+                else:
+                    await self._publish_image(request)
+            except MediaError as exc:
+                LOGGER.warning("rejected media request: %s", path, exc_info=True)
+                self._record_media_failure(request_id, path, str(exc))
                 os.replace(path, self.media_failed / path.name)
                 continue
-            except Exception:
+            except (json.JSONDecodeError, OSError) as exc:
+                LOGGER.warning("invalid media request: %s", path, exc_info=True)
+                self._record_media_failure(
+                    request_id,
+                    path,
+                    f"invalid media request: {exc}",
+                )
+                os.replace(path, self.media_failed / path.name)
+                continue
+            except Exception as exc:
                 LOGGER.exception("failed to publish media request: %s", path)
+                self._record_media_failure(request_id, path, str(exc))
                 os.replace(path, self.media_failed / path.name)
                 continue
             os.replace(path, self.media_sent / path.name)
+
+    def _record_media_failure(
+        self,
+        request_id: str,
+        path: Path,
+        error: str,
+    ) -> None:
+        failures = self.state.data.setdefault("media_failures", {})
+        failures[request_id] = {
+            "error": error[:2000],
+            "request": path.name,
+            "failed_at": int(time.time() * 1000),
+        }
+        self.state.save()
 
     async def _publish_image(self, request: dict[str, Any]) -> None:
         if not self.config.media.enabled:
@@ -619,7 +857,9 @@ class MatrixBridge:
             encrypt=True,
             filesize=size,
         )
-        if not isinstance(upload, UploadResponse) or not isinstance(encryption, dict):
+        if not isinstance(upload, UploadResponse) or not _has_complete_encryption_metadata(
+            encryption
+        ):
             raise ConnectionError(f"encrypted image upload failed: {upload}")
 
         caption = str(request.get("caption") or "").strip()[:10_000]
@@ -635,10 +875,12 @@ class MatrixBridge:
                 encryption=encryption,
                 formatted_caption=markdown_to_matrix_html(caption),
             ),
+            tx_id=request_id,
             ignore_unverified_devices=True,
         )
         if not isinstance(response, RoomSendResponse):
             raise ConnectionError(f"encrypted image message failed: {response}")
+        self._crash_after_effect("image_send")
         self.state.data["media"][request_id] = {
             "agent": agent.key,
             "event_id": response.event_id,
@@ -649,6 +891,98 @@ class MatrixBridge:
         }
         self.state.save()
         LOGGER.info("published encrypted image %s in %s", request_id, agent.session)
+
+    async def _publish_file(self, request: dict[str, Any]) -> None:
+        if not self.config.media.enabled:
+            raise MediaError("file exchange is disabled")
+        request_id = str(request.get("id") or "").strip()
+        agent_key = str(request.get("agent") or "").strip()
+        agent = self.config.agents.get(agent_key)
+        if not request_id or agent is None:
+            raise MediaError("file request needs an id and configured agent")
+        room = self.state.data["rooms"].get(agent.key)
+        if not room:
+            raise MediaError(f"no Matrix room configured for: {agent.key}")
+
+        file_path = Path(str(request.get("path") or ""))
+        snapshot_value = str(request.get("snapshot_path") or "")
+        expected_size = request.get("size")
+        expected_sha256 = request.get("sha256")
+        if (
+            not snapshot_value
+            or isinstance(expected_size, bool)
+            or not isinstance(expected_size, int)
+            or not isinstance(expected_sha256, str)
+            or len(expected_sha256) != 64
+        ):
+            raise MediaError("file request lacks snapshot size or digest metadata")
+        snapshot_path = Path(snapshot_value)
+        snapshot_root = self.config.state_dir / "media-outbox" / "files"
+        if not snapshot_path.is_absolute() or snapshot_path.parent != snapshot_root:
+            raise MediaError("file snapshot is outside the private outbox")
+        filename = str(request.get("filename") or file_path.name)
+        mime_type = normalize_mime_type(
+            request.get("mime_type") or "application/octet-stream"
+        )
+        try:
+            snapshot_handle = await asyncio.to_thread(
+                _open_verified_snapshot,
+                snapshot_path,
+                expected_size=expected_size,
+                expected_sha256=expected_sha256,
+                max_file_bytes=self.config.media.max_file_bytes,
+            )
+        except OSError as exc:
+            raise MediaError(f"file snapshot could not be opened: {exc}") from exc
+        size = expected_size
+        try:
+            upload, encryption = await self.client.upload(
+                snapshot_handle,
+                content_type=mime_type,
+                filename=filename,
+                encrypt=True,
+                filesize=size,
+            )
+        finally:
+            snapshot_handle.close()
+        if not isinstance(upload, UploadResponse) or not _has_complete_encryption_metadata(
+            encryption
+        ):
+            raise MediaError(
+                "encrypted file upload returned incomplete encryption metadata"
+            )
+
+        caption = str(request.get("caption") or "").strip()[:10_000]
+        response = await self.client.room_send(
+            str(room["room_id"]),
+            "m.room.message",
+            encrypted_file_content(
+                filename=filename,
+                caption=caption,
+                mime_type=mime_type,
+                size=size,
+                upload_url=upload.content_uri,
+                encryption=encryption,
+                formatted_caption=markdown_to_matrix_html(caption),
+            ),
+            tx_id=request_id,
+            ignore_unverified_devices=True,
+        )
+        if not isinstance(response, RoomSendResponse):
+            raise ConnectionError(f"encrypted file message failed: {response}")
+        self._crash_after_effect("attachment_send")
+        self.state.data["media"][request_id] = {
+            "agent": agent.key,
+            "event_id": response.event_id,
+            "path": str(file_path),
+            "snapshot_path": str(snapshot_path),
+            "filename": filename,
+            "mime_type": mime_type,
+            "size": size,
+            "sent_at": int(time.time() * 1000),
+        }
+        self.state.save()
+        LOGGER.info("published encrypted file %s in %s", request_id, agent.session)
 
     async def _add_pinned(self, room_id: str, event_ids: list[str]) -> None:
         lock = self.pin_locks.setdefault(room_id, asyncio.Lock())
@@ -846,7 +1180,7 @@ class MatrixBridge:
                 upload, _encryption = await self.client.upload(
                     BytesIO(image_data),
                     content_type="image/png",
-                    filename="openrig-profile.png",
+                    filename="relay-avatar-256.png",
                     filesize=len(image_data),
                 )
                 if isinstance(upload, UploadResponse):
@@ -1033,6 +1367,15 @@ class MatrixBridge:
         event: RoomMessageImage | RoomEncryptedImage,
     ) -> None:
         asyncio.create_task(self._handle_image(room, event))
+
+    def _on_file(
+        self,
+        room: MatrixRoom,
+        event: RoomMessageFile | RoomEncryptedFile,
+    ) -> None:
+        if isinstance(event, (RoomMessageAudio, RoomEncryptedAudio)):
+            return
+        asyncio.create_task(self._handle_file(room, event))
 
     def _on_unknown_event(self, room: MatrixRoom, event: UnknownEvent) -> None:
         if event.type in {POLL_RESPONSE_TYPE, STABLE_POLL_RESPONSE_TYPE}:
@@ -1244,35 +1587,211 @@ class MatrixBridge:
         decision = verification_decision(text)
         if decision is None:
             return False
-        transaction_id = next(
-            (
-                tx_id
-                for tx_id, room_id in self.verification_rooms.items()
-                if room_id == room.room_id
-            ),
-            None,
+        now = time.time()
+        selected = pending_verification(
+            self.verification_records,
+            room.room_id,
+            now=now,
         )
-        if transaction_id is None:
+        if selected is None:
             return False
+        transaction_id, verification = selected
         self.processed_events.add(event.event_id)
+        self.state.data["processed_events"] = list(self.processed_events)[-2000:]
+        phase = str(verification.get("phase") or "")
+        if phase == "interrupted":
+            verification["interrupted_reply_at"] = now
+            self.state.save()
+            await self._send(
+                room.room_id,
+                "Für dieses Gerät läuft keine aktive Verifikation mehr. "
+                "Bitte starte die Verifikation erneut.",
+                event.event_id,
+            )
+            return True
+        if phase != "awaiting_confirmation":
+            if phase in TERMINAL_PHASES:
+                mark_verification(
+                    self.verification_records,
+                    transaction_id,
+                    "stale_reply",
+                    now=now,
+                )
+                self.state.save()
+                await self._send(
+                    room.room_id,
+                    "Für dieses Gerät läuft keine aktive Verifikation mehr. "
+                    "Bitte starte die Verifikation erneut.",
+                    event.event_id,
+                )
+            else:
+                await self._send(
+                    room.room_id,
+                    "Die Geräteverifikation ist noch nicht bereit für `ja` oder `nein`.",
+                    event.event_id,
+                )
+            return True
         if decision:
+            mark_verification(
+                self.verification_records,
+                transaction_id,
+                "confirming",
+                now=now,
+            )
+            self.state.save()
             result = await self.client.confirm_short_auth_string(transaction_id)
             if isinstance(result, ToDeviceError):
+                mark_verification(
+                    self.verification_records,
+                    transaction_id,
+                    "failed",
+                    now=time.time(),
+                )
+                self.state.save()
                 await self._send(room.room_id, f"Bestätigung fehlgeschlagen: {result}", event.event_id)
             else:
+                mark_verification(
+                    self.verification_records,
+                    transaction_id,
+                    "awaiting_mac",
+                    now=time.time(),
+                )
+                self.state.save()
                 await self._send(
                     room.room_id,
                     "SAS bestätigt. Bestätige den Vorgang jetzt auch im Element-Dialog.",
                     event.event_id,
                 )
         else:
+            mark_verification(
+                self.verification_records,
+                transaction_id,
+                "cancelling",
+                now=now,
+            )
+            self.state.save()
             result = await self.client.cancel_key_verification(transaction_id, reject=True)
             if isinstance(result, ToDeviceError):
+                mark_verification(
+                    self.verification_records,
+                    transaction_id,
+                    "failed",
+                    now=time.time(),
+                )
+                self.state.save()
                 await self._send(room.room_id, f"Abbruch fehlgeschlagen: {result}", event.event_id)
             else:
-                self.verification_rooms.pop(transaction_id, None)
+                mark_verification(
+                    self.verification_records,
+                    transaction_id,
+                    "rejected",
+                    now=time.time(),
+                )
+                self.state.save()
                 await self._send(room.room_id, "Geräteverifikation abgelehnt.", event.event_id)
         return True
+
+    async def _recover_verifications(self) -> None:
+        interrupted = recover_interrupted_verifications(
+            self.verification_records,
+            now=time.time(),
+        )
+        if interrupted:
+            self.state.save()
+        await self._deliver_verification_notifications()
+        pruned = prune_terminal_verifications(
+            self.verification_records,
+            now=time.time(),
+            retention=VERIFICATION_RECORD_RETENTION_SECONDS,
+        )
+        if pruned:
+            self.state.save()
+
+    async def _expire_verifications(self, *, now: float, timeout: float) -> None:
+        expired = expire_active_verifications(
+            self.verification_records,
+            now=now,
+            timeout=timeout,
+        )
+        if expired:
+            self.state.save()
+        for transaction_id, room_id in expired:
+            sas = self.client.key_verifications.get(transaction_id)
+            if sas is not None:
+                try:
+                    await self.client.cancel_key_verification(transaction_id)
+                except Exception:
+                    LOGGER.warning(
+                        "could not cancel timed-out verification %s",
+                        transaction_id,
+                        exc_info=True,
+                    )
+        await self._deliver_verification_notifications()
+        pruned = prune_terminal_verifications(
+            self.verification_records,
+            now=now,
+            retention=VERIFICATION_RECORD_RETENTION_SECONDS,
+        )
+        if pruned:
+            self.state.save()
+
+    async def _deliver_verification_notifications(self) -> None:
+        for record in self.verification_records.values():
+            notification = record.get("terminal_notification")
+            if not isinstance(notification, dict):
+                continue
+            if notification.get("state") == "delivered":
+                continue
+            room_id = str(notification.get("room_id") or "")
+            text = str(notification.get("text") or "")
+            tx_id = str(notification.get("tx_id") or "")
+            if not room_id or not text or not tx_id:
+                LOGGER.warning("invalid verification notification: %s", notification)
+                continue
+            try:
+                response = await self._send(
+                    room_id,
+                    text,
+                    tx_id=tx_id,
+                )
+            except Exception:
+                LOGGER.warning(
+                    "could not deliver verification notification %s",
+                    tx_id,
+                    exc_info=True,
+                )
+                continue
+            event_id = str(getattr(response, "event_id", "") or "")
+            if not event_id:
+                LOGGER.warning(
+                    "verification notification %s failed: %s",
+                    tx_id,
+                    response,
+                )
+                continue
+            notification.update(
+                {
+                    "state": "delivered",
+                    "event_id": event_id,
+                    "delivered_at": time.time(),
+                }
+            )
+            self.state.save()
+
+    async def _poll_verification_timeouts(self) -> None:
+        while True:
+            try:
+                await asyncio.sleep(
+                    min(30.0, max(1.0, float(self.config.status_refresh_seconds)))
+                )
+                await self._expire_verifications(
+                    now=time.time(),
+                    timeout=VERIFICATION_TIMEOUT_SECONDS,
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                LOGGER.exception("verification timeout polling failed")
 
     def _verification_room(self) -> str:
         advisor_room = self.state.data["rooms"].get("advisor", {}).get("room_id")
@@ -1287,17 +1806,44 @@ class MatrixBridge:
         if isinstance(event, KeyVerificationStart):
             if "emoji" not in event.short_authentication_string:
                 return
+            begin_verification(
+                self.verification_records,
+                event.transaction_id,
+                room_id,
+                now=time.time(),
+            )
+            self.state.save()
             response = await self.client.accept_key_verification(event.transaction_id)
             if isinstance(response, ToDeviceError):
+                mark_verification(
+                    self.verification_records,
+                    event.transaction_id,
+                    "failed",
+                    now=time.time(),
+                )
+                self.state.save()
                 await self._send(room_id, f"Matrix-Verifikation konnte nicht gestartet werden: {response}")
                 return
             sas = self.client.key_verifications.get(event.transaction_id)
             if sas is not None:
                 response = await self.client.to_device(sas.share_key())
                 if isinstance(response, ToDeviceError):
+                    mark_verification(
+                        self.verification_records,
+                        event.transaction_id,
+                        "failed",
+                        now=time.time(),
+                    )
+                    self.state.save()
                     await self._send(room_id, f"Schlüsselaustausch fehlgeschlagen: {response}")
                     return
-            self.verification_rooms[event.transaction_id] = room_id
+            mark_verification(
+                self.verification_records,
+                event.transaction_id,
+                "awaiting_key",
+                now=time.time(),
+            )
+            self.state.save()
             await self._send(
                 room_id,
                 "Matrix-Verifikationsanfrage empfangen. Die Emoji-Prüfung folgt gleich.",
@@ -1311,7 +1857,20 @@ class MatrixBridge:
             emojis = sas.get_emoji()
             rendered = " ".join(emoji for emoji, _name in emojis)
             named = ", ".join(f"{emoji} {name}" for emoji, name in emojis)
-            self.verification_rooms[event.transaction_id] = room_id
+            if event.transaction_id not in self.verification_records:
+                begin_verification(
+                    self.verification_records,
+                    event.transaction_id,
+                    room_id,
+                    now=time.time(),
+                )
+            mark_verification(
+                self.verification_records,
+                event.transaction_id,
+                "awaiting_confirmation",
+                now=time.time(),
+            )
+            self.state.save()
             await self._send(
                 room_id,
                 "Vergleiche diese sieben Emojis mit dem Element-Dialog:\n\n"
@@ -1323,7 +1882,14 @@ class MatrixBridge:
         if isinstance(event, KeyVerificationMac):
             sas = self.client.key_verifications.get(event.transaction_id)
             if sas is not None and sas.verified:
-                self.verification_rooms.pop(event.transaction_id, None)
+                if event.transaction_id in self.verification_records:
+                    mark_verification(
+                        self.verification_records,
+                        event.transaction_id,
+                        "verified",
+                        now=time.time(),
+                    )
+                    self.state.save()
                 await self._send(
                     room_id,
                     f"Gerät `{sas.other_olm_device.id}` wurde erfolgreich verifiziert.",
@@ -1331,7 +1897,14 @@ class MatrixBridge:
             return
 
         if isinstance(event, KeyVerificationCancel):
-            self.verification_rooms.pop(event.transaction_id, None)
+            if event.transaction_id in self.verification_records:
+                mark_verification(
+                    self.verification_records,
+                    event.transaction_id,
+                    "cancelled",
+                    now=time.time(),
+                )
+                self.state.save()
             await self._send(
                 room_id,
                 f"Geräteverifikation abgebrochen: {event.reason or event.code}",
@@ -1362,12 +1935,26 @@ class MatrixBridge:
             )
             qitem_id = None
             if queue_tracked:
-                qitem_id = await self._create_inbound_qitem(
-                    agent,
-                    event_id=event_id,
-                    text=text,
-                    source_label=source_label or "message",
-                )
+                try:
+                    qitem_id = await self._create_inbound_qitem(
+                        agent,
+                        event_id=event_id,
+                        text=text,
+                        source_label=source_label or "message",
+                    )
+                except (GatewayError, OSError) as exc:
+                    LOGGER.exception(
+                        "could not create durable qitem for Matrix event %s",
+                        event_id,
+                    )
+                    await self._send(
+                        room.room_id,
+                        "OpenRig konnte das Queue-Item für diese Anfrage nicht "
+                        f"anlegen. Die Anfrage wurde nicht an den Agenten gesendet: {exc}",
+                        target.reply_to_event_id,
+                        thread_root=target.thread_root_event_id,
+                    )
+                    return
             request = {
                 "id": uuid.uuid4().hex,
                 "event_id": event_id,
@@ -1386,6 +1973,9 @@ class MatrixBridge:
                 ),
                 "text": text,
                 "enqueued_at": time.time(),
+                "prompt_phase": "pending",
+                "answer_phase": None,
+                "qitem_phase": "pending" if qitem_id else "not_tracked",
                 "started_at": None,
                 "session_id": None,
                 "transcript_path": None,
@@ -1417,8 +2007,7 @@ class MatrixBridge:
             getattr(self.config, "inbound_queue_source", "")
         ).strip()
         if not source_session:
-            LOGGER.warning("inbound queue source is not configured")
-            return None
+            raise GatewayError("inbound queue source is not configured")
         first_line = next(
             (line.strip() for line in text.splitlines() if line.strip()),
             f"Matrix {source_label}",
@@ -1426,26 +2015,18 @@ class MatrixBridge:
         priority = str(
             getattr(self.config, "inbound_message_priority", "urgent")
         )
-        try:
-            qitem_id = await self.gateway.queue_create(
-                source_session=source_session,
-                destination_session=agent.session,
-                summary=f"Matrix ({source_label}): {first_line[:180]}",
-                body=(
-                    f"Matrix message for {agent.session}\n"
-                    f"Event: {event_id}\n"
-                    f"Priority: {priority}\n\n"
-                    f"{text}"
-                ),
-                priority=priority,
-            )
-        except (GatewayError, OSError):
-            LOGGER.warning(
-                "could not create priority qitem for Matrix event %s",
-                event_id,
-                exc_info=True,
-            )
-            return None
+        qitem_id = await self.gateway.queue_create(
+            source_session=source_session,
+            destination_session=agent.session,
+            summary=f"Matrix ({source_label}): {first_line[:180]}",
+            body=(
+                f"Matrix message for {agent.session}\n"
+                f"Event: {event_id}\n"
+                f"Priority: {priority}\n\n"
+                f"{text}"
+            ),
+            priority=priority,
+        )
         LOGGER.info(
             "created %s qitem %s for Matrix event %s",
             priority,
@@ -1458,10 +2039,36 @@ class MatrixBridge:
         self,
         agent: AgentConfig,
         request: dict[str, Any],
-    ) -> None:
+    ) -> bool:
         qitem_id = str(request.get("qitem_id") or "").strip()
         if not qitem_id:
-            return
+            request["qitem_phase"] = "not_tracked"
+            return True
+        phase = str(request.get("qitem_phase") or "")
+        if phase == "claimed":
+            return True
+        if phase == "claiming":
+            try:
+                item = await self.gateway.queue_show(qitem_id)
+            except (GatewayError, OSError):
+                LOGGER.warning("could not inspect Matrix qitem %s", qitem_id, exc_info=True)
+                return False
+            state = str(item.get("state") or "")
+            waiting = item.get("waiting", {})
+            owner = waiting.get("owner") if isinstance(waiting, dict) else None
+            if state == "in-progress" and agent.session in {
+                item.get("claimed_by"),
+                owner,
+            }:
+                request["qitem_phase"] = "claimed"
+                self.state.save()
+                return True
+            if state in {"done", "failed", "canceled", "denied"}:
+                request["qitem_phase"] = state
+                self.state.save()
+                return False
+        request["qitem_phase"] = "claiming"
+        self.state.save()
         try:
             await self.gateway.queue_claim(qitem_id, agent.session)
         except (GatewayError, OSError):
@@ -1470,15 +2077,36 @@ class MatrixBridge:
                 qitem_id,
                 exc_info=True,
             )
+            return False
+        self._crash_after_effect("qitem_claim")
+        request["qitem_phase"] = "claimed"
+        self.state.save()
+        return True
 
     async def _finish_inbound_qitem(
         self,
         agent: AgentConfig,
         request: dict[str, Any],
-    ) -> None:
+    ) -> bool:
         qitem_id = str(request.get("qitem_id") or "").strip()
         if not qitem_id:
-            return
+            request["qitem_phase"] = "not_tracked"
+            return True
+        phase = str(request.get("qitem_phase") or "")
+        if phase == "done":
+            return True
+        if phase == "finishing":
+            try:
+                item = await self.gateway.queue_show(qitem_id)
+            except (GatewayError, OSError):
+                LOGGER.warning("could not inspect Matrix qitem %s", qitem_id, exc_info=True)
+                return False
+            if item.get("state") == "done":
+                request["qitem_phase"] = "done"
+                self.state.save()
+                return True
+        request["qitem_phase"] = "finishing"
+        self.state.save()
         try:
             await self.gateway.queue_finish(
                 qitem_id,
@@ -1491,16 +2119,37 @@ class MatrixBridge:
                 qitem_id,
                 exc_info=True,
             )
+            return False
+        self._crash_after_effect("qitem_finish")
+        request["qitem_phase"] = "done"
+        self.state.save()
+        return True
 
     async def _fail_inbound_qitem(
         self,
         agent: AgentConfig,
         request: dict[str, Any],
         resolution: str,
-    ) -> None:
+    ) -> bool:
         qitem_id = str(request.get("qitem_id") or "").strip()
         if not qitem_id:
-            return
+            request["qitem_phase"] = "not_tracked"
+            return True
+        phase = str(request.get("qitem_phase") or "")
+        if phase == "failed":
+            return True
+        if phase == "failing":
+            try:
+                item = await self.gateway.queue_show(qitem_id)
+            except (GatewayError, OSError):
+                LOGGER.warning("could not inspect Matrix qitem %s", qitem_id, exc_info=True)
+                return False
+            if item.get("state") == "failed":
+                request["qitem_phase"] = "failed"
+                self.state.save()
+                return True
+        request["qitem_phase"] = "failing"
+        self.state.save()
         try:
             await self.gateway.queue_fail(
                 qitem_id,
@@ -1513,12 +2162,257 @@ class MatrixBridge:
                 qitem_id,
                 exc_info=True,
             )
+            return False
+        self._crash_after_effect("qitem_fail")
+        request["qitem_phase"] = "failed"
+        self.state.save()
+        return True
+
+    async def _reconcile_pending_operations(self) -> None:
+        for agent in self.config.agents.values():
+            async with self.locks[agent.key]:
+                pending = self.state.data["pending"].get(agent.key, [])
+                if not pending:
+                    continue
+                request = pending[0]
+                terminal_intent = request.get("activity_terminal_intent")
+                if isinstance(terminal_intent, dict):
+                    acknowledged = await self._finalize_activity_card(
+                        agent,
+                        request,
+                        self._room_for_agent(agent.key),
+                        str(
+                            terminal_intent.get("label")
+                            or "Fehlgeschlagen"
+                        ),
+                        disposition=str(
+                            terminal_intent.get("disposition")
+                            or "delivery_failed"
+                        ),
+                        status_detail=str(
+                            terminal_intent.get("status_detail") or ""
+                        ),
+                    )
+                    if acknowledged:
+                        await self._advance_terminal_request(
+                            agent,
+                            request,
+                            self._room_for_agent(agent.key),
+                            disposition=str(
+                                terminal_intent.get("disposition")
+                                or "delivery_failed"
+                            ),
+                            status_detail=str(
+                                terminal_intent.get("status_detail") or ""
+                            ),
+                        )
+                    continue
+                if request.get("qitem_id") and request.get("qitem_phase") in {
+                    "pending",
+                    "claiming",
+                } and not await self._claim_inbound_qitem(agent, request):
+                    if request.get("qitem_phase") in {
+                        "done",
+                        "failed",
+                        "canceled",
+                        "denied",
+                    }:
+                        await self._abandon_terminal_qitem(
+                            agent,
+                            request,
+                            self._room_for_agent(agent.key),
+                        )
+                    continue
+                if request.get("qitem_phase") in {
+                    "done",
+                    "failed",
+                    "canceled",
+                    "denied",
+                }:
+                    await self._abandon_terminal_qitem(
+                        agent,
+                        request,
+                        self._room_for_agent(agent.key),
+                    )
+                    continue
+                if (
+                    request.get("prompt_phase") is None
+                    and request.get("started_at") is not None
+                ):
+                    await self._fail_ambiguous_prompt(agent, request)
+                    continue
+                if request.get("prompt_phase") in {None, "pending"}:
+                    await self._start_request(
+                        agent,
+                        request,
+                        self._room_for_agent(agent.key),
+                    )
+                    continue
+                if request.get("prompt_phase") == "sending":
+                    await self._fail_ambiguous_prompt(agent, request)
+                    continue
+                if request.get("answer_phase") == "failed":
+                    if (
+                        getattr(self.config, "mirror_commentary", False)
+                        and request.get("commentary_event_id")
+                        and not request.get("suppress_reply")
+                    ):
+                        acknowledged = await self._finalize_activity_card(
+                            agent,
+                            request,
+                            self._room_for_agent(agent.key),
+                            "Fehlgeschlagen",
+                            disposition="delivery_failed",
+                            status_detail="Zustellung fehlgeschlagen",
+                        )
+                        if not acknowledged:
+                            continue
+                    await self._complete_failed_answer(agent, request, pending)
+                    continue
+                if (
+                    request.get("prompt_phase") == "sent"
+                    and request.get("answer_phase") == "sent"
+                ):
+                    if (
+                        getattr(self.config, "mirror_commentary", False)
+                        and request.get("commentary_event_id")
+                        and not request.get("suppress_reply")
+                    ):
+                        acknowledged = await self._finalize_activity_card(
+                            agent,
+                            request,
+                            self._room_for_agent(agent.key),
+                            "Abgeschlossen",
+                            disposition="completed",
+                            status_detail="bereit",
+                        )
+                        if not acknowledged:
+                            continue
+                    await self._advance_terminal_request(
+                        agent,
+                        request,
+                        self._room_for_agent(agent.key),
+                        disposition="completed",
+                        status_detail="bereit",
+                    )
+
+    async def _fail_ambiguous_prompt(
+        self,
+        agent: AgentConfig,
+        request: dict[str, Any],
+    ) -> None:
+        request["ambiguous_prompt_legacy"] = True
+        resolution = "Prompt delivery outcome was uncertain after bridge restart"
+        qitem_id = str(request.get("qitem_id") or "")
+        if qitem_id:
+            try:
+                item = await self.gateway.queue_show(qitem_id)
+            except (GatewayError, OSError, AttributeError):
+                item = {}
+            if item.get("state") == "done":
+                request["qitem_phase"] = "done"
+                request["terminal_error"] = "Legacy request already completed"
+                pending = self.state.data["pending"][agent.key]
+                if pending and pending[0].get("id") == request["id"]:
+                    pending.pop(0)
+                self.state.save()
+                return
+
+        closed = await self._fail_inbound_qitem(agent, request, resolution)
+        if not request.get("failure_notice_event_id"):
+            response = await self._deliver_to_request(
+                self._room_for_agent(agent.key),
+                "Der Prompt-Versand ist nach dem Neustart nicht eindeutig. "
+                "Die Anfrage wird nicht erneut gesendet.",
+                request,
+                tx_id=f"failure-{request['id']}",
+            )
+            if isinstance(response, RoomSendResponse):
+                request["failure_notice_event_id"] = response.event_id
+                self.state.save()
+            else:
+                self.state.save()
+                return
+        request["terminal_error"] = resolution
+        if not closed:
+            self.state.save()
+            return
+        pending = self.state.data["pending"][agent.key]
+        if pending and pending[0].get("id") == request["id"]:
+            pending.pop(0)
+        self.state.save()
+
+    async def _complete_failed_answer(
+        self,
+        agent: AgentConfig,
+        request: dict[str, Any],
+        pending: list[dict[str, Any]],
+    ) -> bool:
+        resolution = str(
+            request.get("terminal_error")
+            or "Matrix answer delivery failed before restart"
+        )
+        if await self._fail_inbound_qitem(agent, request, resolution) is False:
+            return False
+        if not request.get("failure_notice_event_id"):
+            response = await self._deliver_to_request(
+                self._room_for_agent(agent.key),
+                f"Die Matrix-Antwort konnte nicht zugestellt werden: {resolution}",
+                request,
+                tx_id=f"failure-{request['id']}",
+            )
+            if not isinstance(response, RoomSendResponse):
+                return False
+            request["failure_notice_event_id"] = response.event_id
+        if pending and pending[0].get("id") == request["id"]:
+            pending.pop(0)
+        self.state.save()
+        return True
+
+    async def _abandon_terminal_qitem(
+        self,
+        agent: AgentConfig,
+        request: dict[str, Any],
+        room_id: str,
+    ) -> None:
+        request["terminal_error"] = (
+            f"OpenRig qitem ended before Matrix delivery: {request.get('qitem_phase')}"
+        )
+        response = await self._send(
+            room_id,
+            f"OpenRig Queue-Item {request.get('qitem_id')} ist bereits "
+            f"{request.get('qitem_phase')}. Die Anfrage wird nicht gesendet.",
+            self._reply_target(request),
+            tx_id=f"failure-{request.get('id') or request['event_id']}",
+            **self._delivery_kwargs(request),
+        )
+        if isinstance(response, RoomSendResponse):
+            request["failure_notice_event_id"] = response.event_id
+        else:
+            self.state.save()
+            return
+        pending = self.state.data["pending"][agent.key]
+        if pending and pending[0].get("id") == request.get("id"):
+            pending.pop(0)
+            self.state.save()
+            await self._update_queue_notice(
+                agent,
+                room_id,
+                max(0, len(pending) - 1),
+            )
+            if pending:
+                await self._start_request(agent, pending[0], room_id)
 
     async def _handle_audio(
         self,
         room: MatrixRoom,
         event: RoomMessageAudio | RoomEncryptedAudio,
     ) -> None:
+        if event.event_id in self.processed_events:
+            return
+        if not is_voice_message_content(event.source.get("content", {})):
+            await self._handle_file(room, event)
+            return
         if event.sender == self.config.user_id:
             return
         agent = self._agent_for_room(room.room_id)
@@ -1526,8 +2420,6 @@ class MatrixBridge:
             return
         if event.sender not in self.config.allowed_users:
             LOGGER.warning("ignoring Matrix sender %s in %s", event.sender, room.room_id)
-            return
-        if event.event_id in self.processed_events:
             return
         if self.config.max_message_age_minutes >= 0:
             age_ms = int(time.time() * 1000) - int(event.server_timestamp)
@@ -1546,14 +2438,28 @@ class MatrixBridge:
             )
             return
 
+        target = resolve_response_target(event.event_id, message_relation(event))
+        voice_statuses = self.state.data.setdefault("voice_statuses", {})
+        voice_statuses[event.event_id] = {
+            "room_id": room.room_id,
+            "status_event_id": None,
+            "status_tx_id": voice_transaction_id(event.event_id, "status"),
+            "thread_root_event_id": target.thread_root_event_id,
+            "reply_to_event_id": target.reply_to_event_id,
+            "state": "sending-status",
+            "updated_at": int(time.time() * 1000),
+        }
         self.processed_events.add(event.event_id)
         self.state.data["processed_events"] = list(self.processed_events)[-2000:]
         self.state.save()
-        await self._send_to_event(
-            room.room_id,
-            "Sprachnachricht empfangen, transkribiere …",
-            event,
-        )
+        if not await self._send_voice_status(event.event_id):
+            await self._finish_voice_status(
+                event.event_id,
+                "Sprachnachricht-Status konnte nicht erstellt werden. "
+                "Bitte erneut senden.",
+                "failed",
+            )
+            return
         try:
             download = await self.client.download(mxc=event.url)
             body = getattr(download, "body", None)
@@ -1572,20 +2478,24 @@ class MatrixBridge:
             text = await asyncio.to_thread(self.transcriber.transcribe, audio, event.body)
         except Exception as exc:
             LOGGER.exception("audio transcription failed")
-            await self._send_to_event(
-                room.room_id,
+            await self._finish_voice_status(
+                event.event_id,
                 f"Sprachnachricht konnte nicht transkribiert werden: {exc}",
-                event,
+                "failed",
             )
             return
         if not text:
-            await self._send_to_event(
-                room.room_id,
+            await self._finish_voice_status(
+                event.event_id,
                 "In der Sprachnachricht wurde kein Text erkannt.",
-                event,
+                "no-speech",
             )
             return
-        await self._send_to_event(room.room_id, f"Transkript:\n{text}", event)
+        await self._finish_voice_status(
+            event.event_id,
+            f"Transkript:\n{text}",
+            "done",
+        )
         await self._enqueue_prompt(
             agent,
             room,
@@ -1594,6 +2504,259 @@ class MatrixBridge:
             f"Sprachnachricht von {event.sender} via Matrix (lokal transkribiert):\n\n{text}",
             "audio",
             relates_to=message_relation(event),
+        )
+
+    async def _recover_voice_statuses(self) -> None:
+        statuses = self.state.data.setdefault("voice_statuses", {})
+        for voice_event_id, record in list(statuses.items()):
+            if not isinstance(record, dict):
+                continue
+            if record.get("state") in {
+                "starting",
+                "sending-status",
+                "status-send-failed",
+                "processing",
+                "recovering",
+                "committing",
+                "fallbacking",
+                "fallback-failed",
+            }:
+                await self._recover_voice_status(str(voice_event_id))
+
+    async def _recover_voice_status(self, voice_event_id: str) -> None:
+        record = self.state.data.setdefault("voice_statuses", {}).get(voice_event_id)
+        if not isinstance(record, dict):
+            return
+        if record.get("state") not in {
+            "starting",
+            "sending-status",
+            "status-send-failed",
+            "processing",
+            "recovering",
+            "committing",
+            "fallbacking",
+            "fallback-failed",
+        }:
+            return
+        room_id = str(record.get("room_id") or "")
+        if not room_id:
+            record["state"] = "interrupted"
+            record["updated_at"] = int(time.time() * 1000)
+            self.state.save()
+            return
+
+        intent = record.get("terminal_intent")
+        if isinstance(intent, dict):
+            await self._commit_voice_terminal(voice_event_id)
+            return
+
+        state = str(record.get("state") or "")
+        if (
+            state in {"starting", "sending-status", "status-send-failed"}
+            and not record.get("status_event_id")
+            and not await self._send_voice_status(voice_event_id)
+        ):
+            await self._start_voice_terminal(
+                voice_event_id,
+                VOICE_STATUS_INTERRUPTED,
+                "interrupted",
+            )
+            return
+
+        if state in {"committing", "fallbacking"}:
+            intent = self._voice_terminal_intent(
+                voice_event_id,
+                VOICE_STATUS_INTERRUPTED
+                + " Der vorherige Status konnte nicht sicher bestimmt werden.",
+                "interrupted",
+                skip_edit=True,
+            )
+            record["terminal_intent"] = intent
+            record["state"] = "committing"
+            record["updated_at"] = int(time.time() * 1000)
+            self.state.save()
+            await self._commit_voice_terminal(voice_event_id)
+            return
+
+        await self._start_voice_terminal(
+            voice_event_id,
+            VOICE_STATUS_INTERRUPTED,
+            "interrupted",
+        )
+
+    async def _send_voice_status(self, voice_event_id: str) -> bool:
+        record = self.state.data.setdefault("voice_statuses", {}).get(voice_event_id)
+        if not isinstance(record, dict):
+            return False
+        room_id = str(record.get("room_id") or "")
+        try:
+            response = await self._send(
+                room_id,
+                VOICE_STATUS_PROGRESS,
+                str(record.get("reply_to_event_id") or voice_event_id),
+                thread_root=record.get("thread_root_event_id"),
+                tx_id=record.get("status_tx_id"),
+            )
+        except Exception:
+            response = None
+            LOGGER.warning(
+                "failed to create voice status for %s",
+                voice_event_id,
+                exc_info=True,
+            )
+        if not isinstance(response, RoomSendResponse):
+            record["state"] = "status-send-failed"
+            record["updated_at"] = int(time.time() * 1000)
+            self.state.save()
+            LOGGER.warning(
+                "failed to create voice status for %s: %s",
+                voice_event_id,
+                response,
+            )
+            return False
+        record["status_event_id"] = response.event_id
+        record["state"] = "processing"
+        record["updated_at"] = int(time.time() * 1000)
+        self.state.save()
+        return True
+
+    @staticmethod
+    def _voice_terminal_intent(
+        voice_event_id: str,
+        text: str,
+        terminal_state: str,
+        *,
+        skip_edit: bool = False,
+    ) -> dict[str, Any]:
+        if terminal_state == "done":
+            fallback_text = (
+                "Transkript (Statusmeldung konnte nicht bearbeitet werden):\n"
+                f"{text.removeprefix('Transkript:').lstrip()}"
+            )
+        else:
+            fallback_text = (
+                f"{text}\n\n(Statusmeldung konnte nicht bearbeitet werden.)"
+            )
+        return {
+            "text": text,
+            "terminal_state": terminal_state,
+            "edit_tx_id": voice_transaction_id(
+                voice_event_id,
+                f"edit-{terminal_state}",
+            ),
+            "fallback_text": fallback_text,
+            "fallback_tx_id": voice_transaction_id(
+                voice_event_id,
+                f"fallback-{terminal_state}",
+            ),
+            "skip_edit": skip_edit,
+        }
+
+    async def _start_voice_terminal(
+        self,
+        voice_event_id: str,
+        text: str,
+        terminal_state: str,
+        *,
+        skip_edit: bool = False,
+    ) -> None:
+        record = self.state.data.setdefault("voice_statuses", {}).get(voice_event_id)
+        if not isinstance(record, dict):
+            return
+        record["terminal_intent"] = self._voice_terminal_intent(
+            voice_event_id,
+            text,
+            terminal_state,
+            skip_edit=skip_edit,
+        )
+        record["state"] = "committing"
+        record["updated_at"] = int(time.time() * 1000)
+        self.state.save()
+        await self._commit_voice_terminal(voice_event_id)
+
+    async def _commit_voice_terminal(self, voice_event_id: str) -> None:
+        record = self.state.data.setdefault("voice_statuses", {}).get(voice_event_id)
+        if not isinstance(record, dict):
+            return
+        intent = record.get("terminal_intent")
+        if not isinstance(intent, dict):
+            return
+        room_id = str(record.get("room_id") or "")
+        status_event_id = str(record.get("status_event_id") or "")
+        terminal_state = str(intent.get("terminal_state") or "failed")
+        response = None
+        edit_already_rejected = record.get("state") in {
+            "fallbacking",
+            "fallback-failed",
+        }
+        if (
+            status_event_id
+            and not intent.get("skip_edit")
+            and not edit_already_rejected
+        ):
+            try:
+                response = await self._edit_message(
+                    room_id,
+                    status_event_id,
+                    str(intent.get("text") or ""),
+                    tx_id=str(intent.get("edit_tx_id") or ""),
+                )
+            except Exception:
+                LOGGER.warning(
+                    "failed to edit voice status for %s",
+                    voice_event_id,
+                    exc_info=True,
+                )
+        if isinstance(response, RoomSendResponse):
+            record["state"] = terminal_state
+            record["result"] = terminal_state
+            record.pop("terminal_intent", None)
+            record["updated_at"] = int(time.time() * 1000)
+            self.state.save()
+            return
+
+        LOGGER.warning(
+            "voice status edit rejected for %s; sending visible fallback",
+            voice_event_id,
+        )
+        record["state"] = "fallbacking"
+        record["updated_at"] = int(time.time() * 1000)
+        self.state.save()
+        try:
+            response = await self._send(
+                room_id,
+                str(intent.get("fallback_text") or ""),
+                str(record.get("reply_to_event_id") or voice_event_id),
+                thread_root=record.get("thread_root_event_id"),
+                tx_id=str(intent.get("fallback_tx_id") or ""),
+            )
+        except Exception:
+            LOGGER.warning(
+                "voice status fallback failed for %s",
+                voice_event_id,
+                exc_info=True,
+            )
+            response = None
+        if isinstance(response, RoomSendResponse):
+            record["state"] = "fallback"
+            record["result"] = terminal_state
+            record.pop("terminal_intent", None)
+        else:
+            record["state"] = "fallback-failed"
+            record["result"] = terminal_state
+        record["updated_at"] = int(time.time() * 1000)
+        self.state.save()
+
+    async def _finish_voice_status(
+        self,
+        voice_event_id: str,
+        text: str,
+        terminal_state: str,
+    ) -> None:
+        await self._start_voice_terminal(
+            voice_event_id,
+            text,
+            terminal_state,
         )
 
     async def _handle_image(
@@ -1648,7 +2811,7 @@ class MatrixBridge:
                 raise MediaError("unsupported image type; use PNG, JPEG, GIF, or WebP")
             if len(image) > self.config.media.max_image_bytes:
                 raise MediaError("image exceeds the configured size limit")
-            agent_inbox = self.config.media.inbox_dir / agent.key
+            agent_inbox = safe_agent_directory(self.config.media.inbox_dir, agent.key)
             agent_inbox.mkdir(parents=True, exist_ok=True, mode=0o700)
             stored = agent_inbox / f"{uuid.uuid4().hex}{image_type.suffix}"
 
@@ -1686,6 +2849,154 @@ class MatrixBridge:
             relates_to=message_relation(event),
         )
 
+    async def _handle_file(
+        self,
+        room: MatrixRoom,
+        event: (
+            RoomMessageFile
+            | RoomEncryptedFile
+            | RoomMessageAudio
+            | RoomEncryptedAudio
+        ),
+    ) -> None:
+        content = event.source.get("content", {})
+        if (
+            isinstance(content, dict)
+            and content.get("msgtype") == "m.audio"
+            and is_voice_message_content(content)
+        ):
+            await self._handle_audio(room, event)
+            return
+        if not self.config.media.enabled:
+            return
+        if event.sender == self.config.user_id:
+            return
+        agent = self._agent_for_room(room.room_id)
+        if agent is None or event.sender not in self.config.allowed_users:
+            return
+        if event.event_id in self.processed_events:
+            return
+        if self.config.max_message_age_minutes >= 0:
+            age_ms = int(time.time() * 1000) - int(event.server_timestamp)
+            if age_ms > self.config.max_message_age_minutes * 60_000:
+                await self._send_to_event(
+                    room.room_id,
+                    "Datei ist zu alt und wurde nicht verarbeitet.",
+                    event,
+                )
+                return
+
+        self.processed_events.add(event.event_id)
+        self.state.data["processed_events"] = list(self.processed_events)[-2000:]
+        self.state.save()
+        await self._send_to_event(
+            room.room_id,
+            "Datei empfangen, lade und entschlüssele …",
+            event,
+        )
+        try:
+            content = event.source.get("content", {})
+            filename = str(content.get("filename") or event.body or "attachment")
+            info = content.get("info", {})
+            mime_type = normalize_mime_type(
+                info.get("mimetype")
+                or getattr(event, "mimetype", None)
+                or "application/octet-stream"
+            )
+            declared_size = info.get("size")
+            if declared_size is not None:
+                if (
+                    isinstance(declared_size, bool)
+                    or not isinstance(declared_size, int)
+                    or declared_size < 0
+                ):
+                    raise MediaError("Angekündigte Dateigröße ist ungültig")
+                if declared_size > self.config.media.max_file_bytes:
+                    raise MediaError(
+                        "Datei überschreitet das konfigurierte Limit von "
+                        f"{self.config.media.max_file_bytes} Bytes"
+                    )
+            download = await self.client.download(mxc=event.url)
+            body = getattr(download, "body", None)
+            if not isinstance(body, bytes):
+                raise ConnectionError(str(download))
+            if len(body) > self.config.media.max_file_bytes + 4096:
+                raise MediaError(
+                    "Datei überschreitet das konfigurierte Limit von "
+                    f"{self.config.media.max_file_bytes} Bytes"
+                )
+            attachment = body
+            if isinstance(event, (RoomEncryptedAudio, RoomEncryptedFile)):
+                attachment = decrypt_attachment(
+                    body,
+                    event.key["k"],
+                    event.hashes["sha256"],
+                    event.iv,
+                )
+            if not attachment:
+                raise MediaError("Datei ist leer")
+            if len(attachment) > self.config.media.max_file_bytes:
+                raise MediaError(
+                    "Datei überschreitet das konfigurierte Limit von "
+                    f"{self.config.media.max_file_bytes} Bytes"
+                )
+            if declared_size is not None and declared_size != len(attachment):
+                raise MediaError(
+                    "Angekündigte Dateigröße stimmt nicht mit den empfangenen "
+                    f"Bytes überein ({declared_size} statt {len(attachment)})"
+                )
+
+            suffix = Path(filename).suffix
+            if not re.fullmatch(r"\.[A-Za-z0-9]{1,10}", suffix):
+                suffix = ".bin"
+            agent_inbox = safe_agent_directory(self.config.media.inbox_dir, agent.key)
+            agent_inbox.mkdir(parents=True, exist_ok=True, mode=0o700)
+            stored = agent_inbox / f"{uuid.uuid4().hex}{suffix.lower()}"
+            temporary = agent_inbox / f".{stored.name}.part"
+
+            def write_file() -> None:
+                try:
+                    with temporary.open("xb") as handle:
+                        handle.write(attachment)
+                        handle.flush()
+                        os.fsync(handle.fileno())
+                    temporary.chmod(0o600)
+                    os.replace(temporary, stored)
+                finally:
+                    try:
+                        temporary.unlink()
+                    except FileNotFoundError:
+                        pass
+
+            await asyncio.to_thread(write_file)
+        except Exception as exc:
+            LOGGER.exception("file download failed")
+            await self._send_to_event(
+                room.room_id,
+                f"Datei konnte nicht übernommen werden: {exc}",
+                event,
+            )
+            return
+
+        await self._send_to_event(
+            room.room_id,
+            f"Datei gespeichert als `{stored.name}`.",
+            event,
+        )
+        await self._enqueue_prompt(
+            agent,
+            room,
+            event.event_id,
+            event.server_timestamp,
+            f"Datei von {event.sender} via Matrix empfangen.\n\n"
+            f"Lokale Datei: {stored}\n"
+            f"Originaldateiname: {json.dumps(filename, ensure_ascii=False)}\n"
+            f"Medientyp: {mime_type}\n"
+            f"Größe: {len(attachment)} Bytes",
+            "attachment",
+            relates_to=message_relation(event),
+        )
+
     async def _start_request(
         self,
         agent: AgentConfig,
@@ -1699,41 +3010,100 @@ class MatrixBridge:
                 agent.session,
             )
             if ref.busy:
+                if request.get("prompt_phase") == "pending":
+                    request["started_at"] = None
+                    self.state.save()
                 return
             request["session_id"] = ref.session_id
             request["transcript_path"] = str(ref.transcript_path)
             request["offset"] = ref.transcript_path.stat().st_size
             request["started_at"] = time.time()
-            await self._claim_inbound_qitem(agent, request)
+            activity_state = str(
+                getattr(ref, "activity_state", "unknown") or "unknown"
+            )
+            needs_input_count = int(
+                getattr(ref, "needs_input_count", 0) or 0
+            )
+            request["activity_state"] = activity_state
+            request["needs_input_count"] = needs_input_count
+            request["activity_label"] = activity_card_label(
+                activity_state,
+                needs_input_count,
+            )
+            if not await self._claim_inbound_qitem(agent, request):
+                if request.get("qitem_phase") in {
+                    "done",
+                    "failed",
+                    "canceled",
+                    "denied",
+                }:
+                    await self._abandon_terminal_qitem(agent, request, room_id)
+                    return
+                raise QitemLifecycleError(
+                    f"could not claim Matrix qitem {request.get('qitem_id')}"
+                )
+            request["prompt_phase"] = "sending"
+            self.state.save()
             await self.gateway.send_prompt(ref, request["text"])
+            self._crash_after_effect("prompt_send")
+            request["prompt_phase"] = "sent"
+            self.state.save()
             if not request.get("suppress_reply"):
                 await self._set_typing(room_id, True)
                 await self._update_agent_status(agent, "busy", "arbeitet")
+        except QitemLifecycleError:
+            request["started_at"] = None
+            self.state.save()
+            if not request.get("qitem_error_notified"):
+                response = await self._send(
+                    room_id,
+                    "Das OpenRig Queue-Item konnte nicht beansprucht werden. "
+                    "Die Anfrage bleibt vorgemerkt und wird erneut versucht.",
+                    self._reply_target(request),
+                    tx_id=f"qitem-error-{request.get('id') or request['event_id']}",
+                    **self._delivery_kwargs(request),
+                )
+                if isinstance(response, RoomSendResponse):
+                    request["qitem_error_notified"] = response.event_id
+                    self.state.save()
+            return
         except (AgentSessionNotFound, GatewayError, OSError) as exc:
             LOGGER.exception("prompt failed for %s", agent.session)
-            await self._fail_inbound_qitem(
-                agent,
-                request,
-                f"Prompt failed: {exc}",
-            )
+            resolution = f"Prompt failed: {exc}"
+            request["terminal_error"] = resolution
             await self._set_typing(room_id, False)
             await self._update_agent_status(agent, "error", "Prompt fehlgeschlagen")
-            await self._send(
+            response = await self._send(
                 room_id,
-                f"Prompt fehlgeschlagen: {exc}",
+                f"Prompt fehlgeschlagen: {resolution}",
                 self._reply_target(request),
+                tx_id=f"failure-{request.get('id') or request['event_id']}",
                 **self._delivery_kwargs(request),
             )
-            pending = self.state.data["pending"][agent.key]
-            pending.pop(0)
-            self.state.save()
-            await self._update_queue_notice(
+            if isinstance(response, RoomSendResponse):
+                request["failure_notice_event_id"] = response.event_id
+            if getattr(
+                self.config,
+                "mirror_commentary",
+                False,
+            ) and not request.get("suppress_reply"):
+                acknowledged = await self._finalize_activity_card(
+                    agent,
+                    request,
+                    room_id,
+                    "Fehlgeschlagen",
+                    disposition="prompt_failed",
+                    status_detail="Prompt fehlgeschlagen",
+                )
+                if not acknowledged:
+                    return
+            await self._advance_terminal_request(
                 agent,
+                request,
                 room_id,
-                max(0, len(pending) - 1),
+                disposition="prompt_failed",
+                status_detail="Prompt fehlgeschlagen",
             )
-            if pending:
-                await self._start_request(agent, pending[0], room_id)
             return
         self.state.save()
 
@@ -1773,6 +3143,36 @@ class MatrixBridge:
                 return
 
             request = pending[0]
+            terminal_intent = request.get("activity_terminal_intent")
+            if isinstance(terminal_intent, dict):
+                acknowledged = await self._finalize_activity_card(
+                    agent,
+                    request,
+                    self._room_for_agent(agent.key),
+                    str(terminal_intent.get("label") or "Fehlgeschlagen"),
+                    disposition=str(
+                        terminal_intent.get("disposition") or "delivery_failed"
+                    ),
+                    status_detail=str(
+                        terminal_intent.get("status_detail") or ""
+                    ),
+                )
+                if acknowledged:
+                    await self._advance_terminal_request(
+                        agent,
+                        request,
+                        self._room_for_agent(agent.key),
+                        disposition=str(
+                            terminal_intent.get("disposition")
+                            or "delivery_failed"
+                        ),
+                        status_detail=str(
+                            terminal_intent.get("status_detail") or ""
+                        ),
+                    )
+                return
+            if request.get("ambiguous_prompt_legacy"):
+                return
             if request.get("started_at") is None:
                 try:
                     ref = self.resolver.resolve(agent.session)
@@ -1789,25 +3189,31 @@ class MatrixBridge:
                 return
             if request.get("answer_text") is None:
                 if request.get("started_at") and time.time() - request["started_at"] > self.config.response_timeout_minutes * 60:
-                    await self._fail_inbound_qitem(
+                    request["terminal_error"] = (
+                        "Timed out waiting for a Matrix answer"
+                    )
+                    request["answer_phase"] = "failed"
+                    if (
+                        getattr(self.config, "mirror_commentary", False)
+                        and request.get("commentary_event_id")
+                        and not request.get("suppress_reply")
+                    ):
+                        acknowledged = await self._finalize_activity_card(
+                            agent,
+                            request,
+                            self._room_for_agent(agent.key),
+                            "Zeitüberschreitung",
+                            disposition="timeout",
+                            status_detail="Zeitüberschreitung",
+                        )
+                        if not acknowledged:
+                            return
+                    await self._advance_terminal_request(
                         agent,
                         request,
-                        "Timed out waiting for a Matrix answer",
-                    )
-                    await self._send(
                         self._room_for_agent(agent.key),
-                        "Der Agent hat für diese Anfrage nicht rechtzeitig geantwortet.",
-                        self._reply_target(request),
-                        **self._delivery_kwargs(request),
-                    )
-                    await self._set_typing(self._room_for_agent(agent.key), False)
-                    await self._update_agent_status(agent, "error", "Zeitüberschreitung")
-                    pending.pop(0)
-                    self.state.save()
-                    await self._update_queue_notice(
-                        agent,
-                        self._room_for_agent(agent.key),
-                        max(0, len(pending) - 1),
+                        disposition="timeout",
+                        status_detail="Zeitüberschreitung",
                     )
                     return
                 path = Path(request["transcript_path"])
@@ -1818,68 +3224,48 @@ class MatrixBridge:
                 sent_commentary = request.setdefault("sent_commentary", [])
                 sent_ids = set(sent_commentary)
                 if (
-                    self.config.mirror_commentary
+                    getattr(self.config, "mirror_commentary", False)
                     and not request.get("suppress_reply")
                     and not request.get("commentary_skipped")
                 ):
+                    room_id = self._room_for_agent(agent.key)
                     pending_commentary = [
                         message
                         for message in commentary_messages(records)
                         if message[0] not in sent_ids
                     ]
                     if pending_commentary:
-                        room_id = self._room_for_agent(agent.key)
-                        commentary_event_id = request.get("commentary_event_id")
-                        if commentary_event_id:
-                            try:
-                                response = await self._edit_message(
-                                    room_id,
-                                    str(commentary_event_id),
-                                    pending_commentary[-1][1],
-                                )
-                            except Exception:
-                                response = None
-                                LOGGER.warning(
-                                    "commentary edit raised for %s",
-                                    agent.key,
-                                    exc_info=True,
-                                )
-                        else:
-                            response = await self._deliver_to_request(
-                                room_id,
-                                pending_commentary[-1][1],
-                                request,
-                            )
-                        if not isinstance(response, RoomSendResponse):
-                            attempts = request.get("commentary_failure_count", 0) + 1
-                            request["commentary_failure_count"] = attempts
-                            LOGGER.error(
-                                "commentary delivery failed for %s (attempt %s/%s): %s",
-                                agent.key,
-                                attempts,
-                                MAX_DELIVERY_ATTEMPTS,
-                                response,
-                            )
-                            if attempts < MAX_DELIVERY_ATTEMPTS:
-                                self.state.save()
-                                return
-                            request["commentary_skipped"] = True
-                            LOGGER.error(
-                                "skipping commentary for %s after %s attempts",
-                                agent.key,
-                                attempts,
-                            )
-                            self.state.save()
-                        if not commentary_event_id and isinstance(
+                        request["commentary_summary"] = sanitize_activity_summary(
+                            pending_commentary[-1][1]
+                        )
+                    response = await self._deliver_activity_card(room_id, request)
+                    if response is not True and not isinstance(
+                        response,
+                        RoomSendResponse,
+                    ):
+                        attempts = request.get("commentary_failure_count", 0) + 1
+                        request["commentary_failure_count"] = attempts
+                        LOGGER.error(
+                            "commentary delivery failed for %s (attempt %s/%s): %s",
+                            agent.key,
+                            attempts,
+                            MAX_DELIVERY_ATTEMPTS,
                             response,
-                            RoomSendResponse,
-                        ):
-                            request["commentary_event_id"] = response.event_id
-                        if isinstance(response, RoomSendResponse):
-                            request["commentary_failure_count"] = 0
-                            sent_commentary.extend(
-                                message_id for message_id, _text in pending_commentary
-                            )
+                        )
+                        if attempts < MAX_DELIVERY_ATTEMPTS:
+                            self.state.save()
+                            return
+                        request["commentary_skipped"] = True
+                        LOGGER.error(
+                            "skipping commentary for %s after %s attempts",
+                            agent.key,
+                            attempts,
+                        )
+                        self.state.save()
+                    if response is True or isinstance(response, RoomSendResponse):
+                        sent_commentary.extend(
+                            message_id for message_id, _text in pending_commentary
+                        )
                         self.state.save()
                 request["offset"] = offset
                 answers = [text for record in records if (text := final_answer(record))]
@@ -1891,8 +3277,14 @@ class MatrixBridge:
                 return
 
             room_id = self._room_for_agent(agent.key)
+            if request.get("answer_phase") == "failed":
+                await self._complete_failed_answer(agent, request, pending)
+                return
             if request.get("suppress_reply"):
-                await self._finish_inbound_qitem(agent, request)
+                request["answer_phase"] = "suppressed"
+                self.state.save()
+                if await self._finish_inbound_qitem(agent, request) is False:
+                    return
                 pending.pop(0)
                 self.state.save()
                 await self._update_queue_notice(
@@ -1903,11 +3295,23 @@ class MatrixBridge:
                 if pending:
                     await self._start_request(agent, pending[0], room_id)
                 return
-            response = await self._deliver_to_request(
-                room_id,
-                request["answer_text"],
-                request,
-            )
+            if request.get("answer_phase") != "sent":
+                request["answer_phase"] = "sending"
+                request["answer_tx_id"] = (
+                    f"answer-{request.get('id') or request['event_id']}"
+                )
+                self.state.save()
+                response = await self._deliver_to_request(
+                    room_id,
+                    request["answer_text"],
+                    request,
+                    tx_id=request["answer_tx_id"],
+                )
+            else:
+                response = RoomSendResponse(
+                    str(request.get("answer_event_id") or "$already-sent"),
+                    room_id,
+                )
             if not isinstance(response, RoomSendResponse):
                 attempts = request.get("delivery_failure_count", 0) + 1
                 request["delivery_failure_count"] = attempts
@@ -1921,35 +3325,59 @@ class MatrixBridge:
                 )
                 if attempts < MAX_DELIVERY_ATTEMPTS:
                     return
-                await self._fail_inbound_qitem(
+                request["answer_phase"] = "failed"
+                request["terminal_error"] = (
+                    f"Matrix answer delivery failed after {attempts} attempts"
+                )
+                if (
+                    getattr(self.config, "mirror_commentary", False)
+                    and request.get("commentary_event_id")
+                    and not request.get("suppress_reply")
+                ):
+                    acknowledged = await self._finalize_activity_card(
+                        agent,
+                        request,
+                        room_id,
+                        "Fehlgeschlagen",
+                        disposition="delivery_failed",
+                        status_detail="Zustellung fehlgeschlagen",
+                    )
+                    if not acknowledged:
+                        return
+                await self._advance_terminal_request(
                     agent,
                     request,
-                    f"Matrix answer delivery failed after {attempts} attempts",
-                )
-                await self._set_typing(room_id, False)
-                await self._update_agent_status(agent, "error", "Zustellung fehlgeschlagen")
-                pending.pop(0)
-                self.state.save()
-                await self._update_queue_notice(
-                    agent,
                     room_id,
-                    max(0, len(pending) - 1),
+                    disposition="delivery_failed",
+                    status_detail="Zustellung fehlgeschlagen",
                 )
-                if pending:
-                    await self._start_request(agent, pending[0], room_id)
                 return
-            await self._finish_inbound_qitem(agent, request)
-            await self._set_typing(room_id, False)
-            await self._update_agent_status(agent, "ready", "bereit")
-            pending.pop(0)
+            self._crash_after_effect("answer_send")
+            request["answer_phase"] = "sent"
+            request["answer_event_id"] = response.event_id
             self.state.save()
-            await self._update_queue_notice(
+            if (
+                getattr(getattr(self, "config", None), "mirror_commentary", False)
+                and request.get("commentary_event_id")
+                and not request.get("suppress_reply")
+            ):
+                acknowledged = await self._finalize_activity_card(
+                    agent,
+                    request,
+                    room_id,
+                    "Abgeschlossen",
+                    disposition="completed",
+                    status_detail="bereit",
+                )
+                if not acknowledged:
+                    return
+            await self._advance_terminal_request(
                 agent,
+                request,
                 room_id,
-                max(0, len(pending) - 1),
+                disposition="completed",
+                status_detail="bereit",
             )
-            if pending:
-                await self._start_request(agent, pending[0], room_id)
 
     def _room_for_agent(self, agent_key: str) -> str:
         return str(self.state.data["rooms"][agent_key]["room_id"])
@@ -1969,17 +3397,183 @@ class MatrixBridge:
         room_id: str,
         text: str,
         request: dict[str, Any],
+        *,
+        tx_id: str | None = None,
     ):
         try:
+            kwargs = self._delivery_kwargs(request)
+            if tx_id is not None:
+                kwargs["tx_id"] = tx_id
             return await self._send(
                 room_id,
                 text,
                 self._reply_target(request),
-                **self._delivery_kwargs(request),
+                **kwargs,
             )
         except Exception:
             LOGGER.warning("Matrix delivery raised for %s", request["event_id"], exc_info=True)
             return None
+
+    async def _deliver_activity_card(
+        self,
+        room_id: str,
+        request: dict[str, Any],
+        *,
+        tx_id: str | None = None,
+    ):
+        text = activity_card_text(request)
+        if text == request.get("activity_card_text"):
+            return True
+        commentary_event_id = request.get("commentary_event_id")
+        if commentary_event_id:
+            try:
+                edit_kwargs = {"tx_id": tx_id} if tx_id else {}
+                response = await self._edit_message(
+                    room_id,
+                    str(commentary_event_id),
+                    text,
+                    **edit_kwargs,
+                )
+            except Exception:
+                response = None
+                LOGGER.warning(
+                    "activity card edit raised for %s",
+                    request["event_id"],
+                    exc_info=True,
+                )
+        else:
+            response = await self._deliver_to_request(room_id, text, request)
+        if isinstance(response, RoomSendResponse):
+            if not commentary_event_id:
+                request["commentary_event_id"] = response.event_id
+            request["activity_card_text"] = text
+            request["commentary_failure_count"] = 0
+            self.state.save()
+        return response
+
+    async def _finalize_activity_card(
+        self,
+        agent: AgentConfig,
+        request: dict[str, Any],
+        room_id: str,
+        label: str,
+        *,
+        disposition: str,
+        status_detail: str,
+    ) -> bool:
+        request["activity_terminal_intent"] = {
+            "disposition": disposition,
+            "label": label,
+            "status_detail": status_detail,
+        }
+        request["activity_label"] = label
+        self.state.save()
+        tx_id = (
+            "activity-terminal-"
+            + str(request.get("id") or request["event_id"])
+        )
+        for attempt in range(MAX_DELIVERY_ATTEMPTS):
+            response = await self._deliver_activity_card(
+                room_id,
+                request,
+                tx_id=tx_id,
+            )
+            if response is True or isinstance(response, RoomSendResponse):
+                return True
+            LOGGER.warning(
+                "terminal activity-card update failed for %s (%s/%s): %s",
+                agent.key,
+                attempt + 1,
+                MAX_DELIVERY_ATTEMPTS,
+                response,
+            )
+
+        text = activity_card_text(request)
+        try:
+            response = await self._send(
+                room_id,
+                text,
+                self._reply_target(request),
+                **self._delivery_kwargs(request),
+                tx_id=tx_id,
+            )
+        except Exception:
+            LOGGER.warning(
+                "terminal activity-card fallback failed for %s",
+                agent.key,
+                exc_info=True,
+            )
+            return False
+        if not isinstance(response, RoomSendResponse):
+            LOGGER.warning(
+                "terminal activity-card fallback failed for %s: %s",
+                agent.key,
+                response,
+            )
+            return False
+        return True
+
+    async def _advance_terminal_request(
+        self,
+        agent: AgentConfig,
+        request: dict[str, Any],
+        room_id: str,
+        *,
+        disposition: str,
+        status_detail: str,
+    ) -> bool:
+        pending = self.state.data["pending"][agent.key]
+        if disposition == "completed":
+            if await self._finish_inbound_qitem(agent, request) is False:
+                self.state.save()
+                return False
+            await self._set_typing(room_id, False)
+            await self._update_agent_status(agent, "ready", "bereit")
+            if pending and pending[0].get("id") == request.get("id"):
+                pending.pop(0)
+            self.state.save()
+        else:
+            resolutions = {
+                "timeout": "Timed out waiting for a Matrix answer",
+                "delivery_failed": (
+                    "Matrix answer delivery failed after "
+                    f"{request.get('delivery_failure_count', 0)} attempts"
+                ),
+                "prompt_failed": "Prompt failed",
+            }
+            resolution = resolutions.get(
+                disposition,
+                status_detail or "Matrix request failed",
+            )
+            if disposition == "timeout":
+                if not await self._complete_failed_answer(
+                    agent,
+                    request,
+                    pending,
+                ):
+                    return False
+            else:
+                if await self._fail_inbound_qitem(
+                    agent,
+                    request,
+                    resolution,
+                ) is False:
+                    self.state.save()
+                    return False
+            await self._set_typing(room_id, False)
+            await self._update_agent_status(agent, "error", status_detail)
+            if pending and pending[0].get("id") == request.get("id"):
+                pending.pop(0)
+            self.state.save()
+
+        await self._update_queue_notice(
+            agent,
+            room_id,
+            max(0, len(pending) - 1),
+        )
+        if pending:
+            await self._start_request(agent, pending[0], room_id)
+        return True
 
     async def _poll_agent_statuses(self) -> None:
         while True:
@@ -2000,17 +3594,53 @@ class MatrixBridge:
         except AgentSessionNotFound:
             resolved = {}
         for agent in self.config.agents.values():
-            if not force and agent.key not in self.agent_statuses:
-                continue
-            if self.state.data["pending"].get(agent.key):
-                status, detail = "busy", "arbeitet"
-            else:
+            async with self.locks[agent.key]:
+                pending = self.state.data["pending"].get(agent.key, [])
                 ref = resolved.get(agent.session)
-                if ref is None:
-                    status, detail = "offline", "offline"
+                if (
+                    pending
+                    and ref is not None
+                    and pending[0].get("started_at") is not None
+                    and getattr(self.config, "mirror_commentary", False)
+                    and not pending[0].get("suppress_reply")
+                    and not pending[0].get("activity_terminal_intent")
+                    and pending[0].get("commentary_event_id")
+                ):
+                    request = pending[0]
+                    request["activity_state"] = ref.activity_state
+                    request["needs_input_count"] = ref.needs_input_count
+                    request["activity_label"] = activity_card_label(
+                        ref.activity_state,
+                        ref.needs_input_count,
+                    )
+                    self.state.save()
+                    response = await self._deliver_activity_card(
+                        self._room_for_agent(agent.key),
+                        request,
+                    )
+                    if response is not True and not isinstance(
+                        response,
+                        RoomSendResponse,
+                    ):
+                        LOGGER.warning(
+                            "failed to refresh activity card for %s: %s",
+                            agent.key,
+                            response,
+                        )
+                if not force and agent.key not in self.agent_statuses:
+                    continue
+                if pending:
+                    status, detail = "busy", "arbeitet"
                 else:
-                    status, detail = ("busy", "arbeitet") if ref.busy else ("ready", "bereit")
-            await self._update_agent_status(agent, status, detail)
+                    if ref is None:
+                        status, detail = "offline", "offline"
+                    else:
+                        status, detail = (
+                            ("busy", "arbeitet")
+                            if ref.busy
+                            else ("ready", "bereit")
+                        )
+                await self._update_agent_status(agent, status, detail)
 
     async def _update_agent_status(
         self,
@@ -2018,6 +3648,8 @@ class MatrixBridge:
         status: str,
         detail: str,
     ) -> None:
+        if not hasattr(self, "agent_statuses"):
+            self.agent_statuses = {}
         if self.agent_statuses.get(agent.key) == status:
             return
         room = self.state.data["rooms"].get(agent.key)
@@ -2047,6 +3679,8 @@ class MatrixBridge:
         self.agent_statuses[agent.key] = status
 
     async def _set_typing(self, room_id: str, typing: bool) -> None:
+        if not hasattr(self, "typing_tasks"):
+            self.typing_tasks = {}
         existing = self.typing_tasks.pop(room_id, None)
         if existing:
             existing.cancel()
@@ -2074,7 +3708,14 @@ class MatrixBridge:
                 LOGGER.debug("Matrix typing update failed", exc_info=True)
             await asyncio.sleep(20)
 
-    async def _edit_message(self, room_id: str, event_id: str, text: str):
+    async def _edit_message(
+        self,
+        room_id: str,
+        event_id: str,
+        text: str,
+        *,
+        tx_id: str | None = None,
+    ):
         new_content = formatted_message_content(text)
         content = {
             **new_content,
@@ -2087,20 +3728,26 @@ class MatrixBridge:
         }
         if "formatted_body" in new_content:
             content["formatted_body"] = f"* {new_content['formatted_body']}"
-        return await self.client.room_send(
-            room_id,
-            "m.room.message",
-            content,
-            ignore_unverified_devices=True,
-        )
+        kwargs = {"ignore_unverified_devices": True}
+        if tx_id:
+            kwargs["tx_id"] = tx_id
+        return await self.client.room_send(room_id, "m.room.message", content, **kwargs)
 
-    async def _send_to_event(self, room_id: str, text: str, event: Any):
+    async def _send_to_event(
+        self,
+        room_id: str,
+        text: str,
+        event: Any,
+        *,
+        tx_id: str | None = None,
+    ):
         target = resolve_response_target(event.event_id, message_relation(event))
         return await self._send(
             room_id,
             text,
             target.reply_to_event_id,
             thread_root=target.thread_root_event_id,
+            tx_id=tx_id,
         )
 
     async def _send(
@@ -2110,6 +3757,7 @@ class MatrixBridge:
         reply_to: str | None = None,
         *,
         thread_root: str | None | object = _DEFAULT_THREAD_ROOT,
+        tx_id: str | None = None,
     ):
         content = formatted_message_content(text)
         effective_root = reply_to if thread_root is _DEFAULT_THREAD_ROOT else thread_root
@@ -2122,10 +3770,8 @@ class MatrixBridge:
             }
         elif reply_to:
             content["m.relates_to"] = {"m.in_reply_to": {"event_id": reply_to}}
-        return await self.client.room_send(
-            room_id,
-            "m.room.message",
-            content,
-            ignore_unverified_devices=True,
-        )
+        kwargs = {"ignore_unverified_devices": True}
+        if tx_id:
+            kwargs["tx_id"] = tx_id
+        return await self.client.room_send(room_id, "m.room.message", content, **kwargs)
 

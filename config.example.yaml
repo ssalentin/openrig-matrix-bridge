@@ -33,6 +33,7 @@ media:
   enabled: true
   inbox_dir: /var/lib/openrig-matrix-bridge/media-inbox
   max_image_bytes: 26214400
+  max_file_bytes: 26214400
 
 avatars:
   enabled: true

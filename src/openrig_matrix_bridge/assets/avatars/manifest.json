@@ -158,11 +158,5 @@
     "id": "openrig-32",
     "style": "bishop fold",
     "color": "violet"
-  },
-  {
-    "id": "openrig-profile",
-    "style": "profile ghost",
-    "color": "violet",
-    "profile_only": true
   }
 ]

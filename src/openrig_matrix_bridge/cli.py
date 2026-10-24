@@ -2,11 +2,15 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import errno
+import hashlib
 import json
 import logging
+import mimetypes
 import os
 import re
 import shutil
+import stat
 import subprocess
 import tempfile
 import time
@@ -19,9 +23,9 @@ import yaml
 
 from . import __version__
 from .bridge import MatrixBridge
-from .config import load_config
+from .config import ConfigError, load_config, validate_homeserver
 from .decisions import normalize_questions
-from .media import detect_image_type
+from .media import detect_image_type, normalize_mime_type
 from .openrig import AgentSessionNotFound, OpenRigSessionResolver
 from .transcription import MODEL_NAME, ensure_model, model_ready
 
@@ -35,9 +39,14 @@ def _default_config() -> Path:
     )
 
 
-def _agent_key(session: str) -> str:
+def _agent_key(session: str, max_length: int = 64) -> str:
     base = session.split("@", 1)[0]
-    return re.sub(r"[^a-z0-9]+", "-", base.lower()).strip("-") or "agent"
+    key = re.sub(r"[^a-z0-9]+", "-", base.lower()).strip("-") or "agent"
+    if len(key) > max_length:
+        digest = hashlib.sha256(session.encode()).hexdigest()[:8]
+        prefix = key[: max_length - len(digest) - 1].rstrip("-")
+        key = f"{prefix}-{digest}"
+    return key
 
 
 def _display_name(logical_id: str) -> str:
@@ -169,6 +178,85 @@ def _write_private_json(path: Path, data: dict) -> None:
             pass
 
 
+def _snapshot_regular_file(
+    source: Path,
+    destination: Path,
+    max_bytes: int,
+) -> tuple[int, str]:
+    try:
+        source_info = source.lstat()
+    except FileNotFoundError as exc:
+        raise SystemExit(f"file not found: {source}") from exc
+    if not stat.S_ISREG(source_info.st_mode) or stat.S_ISLNK(source_info.st_mode):
+        raise SystemExit(f"file must be a regular file (symlinks are not followed): {source}")
+
+    descriptor = -1
+    temp_name: str | None = None
+    try:
+        try:
+            descriptor = os.open(
+                source,
+                os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0),
+            )
+        except OSError as exc:
+            if exc.errno == errno.ELOOP:
+                raise SystemExit(
+                    f"file must be a regular file (symlinks are not followed): {source}"
+                ) from exc
+            raise SystemExit(f"file could not be opened: {exc}") from exc
+        opened = os.fstat(descriptor)
+        if not stat.S_ISREG(opened.st_mode):
+            raise SystemExit(f"file must be a regular file: {source}")
+        if opened.st_size <= 0 or opened.st_size > max_bytes:
+            raise SystemExit(
+                "file size must be between 1 and "
+                f"{max_bytes} bytes"
+            )
+
+        destination.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        temp_fd, temp_name = tempfile.mkstemp(
+            prefix=".snapshot-",
+            dir=destination.parent,
+        )
+        digest = hashlib.sha256()
+        size = 0
+        with (
+            os.fdopen(descriptor, "rb", closefd=True) as input_handle,
+            os.fdopen(temp_fd, "wb", closefd=True) as output_handle,
+        ):
+            descriptor = -1
+            while chunk := input_handle.read(1024 * 1024):
+                size += len(chunk)
+                if size > max_bytes:
+                    raise SystemExit(
+                        "file size must be between 1 and "
+                        f"{max_bytes} bytes"
+                    )
+                digest.update(chunk)
+                output_handle.write(chunk)
+            finished = os.fstat(input_handle.fileno())
+            if (
+                size != opened.st_size
+                or finished.st_size != opened.st_size
+                or finished.st_mtime_ns != opened.st_mtime_ns
+            ):
+                raise SystemExit(f"file changed while it was being snapshotted: {source}")
+            output_handle.flush()
+            os.fsync(output_handle.fileno())
+        os.chmod(temp_name, 0o600)
+        os.replace(temp_name, destination)
+        temp_name = None
+        return size, digest.hexdigest()
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+        if temp_name is not None:
+            try:
+                os.unlink(temp_name)
+            except FileNotFoundError:
+                pass
+
+
 async def _set_matrix_display_name(
     homeserver: str,
     user_id: str,
@@ -208,7 +296,12 @@ async def _set_matrix_device_name(
 
 
 def run_setup(args: argparse.Namespace) -> None:
-    homeserver = (args.homeserver or input("Matrix homeserver URL: ")).strip().rstrip("/")
+    try:
+        homeserver = validate_homeserver(
+            (args.homeserver or input("Matrix homeserver URL: ")).strip()
+        )
+    except ConfigError as exc:
+        raise SystemExit(str(exc)) from exc
     user_id = (args.user_id or input("Bot Matrix user ID: ")).strip()
     device_id = (args.device_id or input("Bot Matrix device ID: ")).strip()
     allowed_user = (args.allowed_user or input("Owner Matrix user ID: ")).strip()
@@ -265,6 +358,7 @@ def run_setup(args: argparse.Namespace) -> None:
             "enabled": True,
             "inbox_dir": str(state_dir / "media-inbox"),
             "max_image_bytes": 25 * 1024 * 1024,
+            "max_file_bytes": 25 * 1024 * 1024,
         },
         "avatars": {
             "enabled": not args.no_avatars,
@@ -407,6 +501,76 @@ def run_send_image(args: argparse.Namespace, config) -> int:
         if media:
             print(f"{request_id} sent as {media['event_id']}")
             return 0
+        failure = state.get("media_failures", {}).get(request_id)
+        if failure:
+            print(f"{request_id} failed: {failure['error']}")
+            return 1
+        time.sleep(0.2)
+
+    print(
+        f"queued {request_id}; the bridge did not confirm delivery within "
+        f"{args.wait_seconds}s"
+    )
+    return 1
+
+
+def run_send_file(args: argparse.Namespace, config) -> int:
+    if not args.agent:
+        raise SystemExit("send-file requires --agent")
+    if args.agent not in config.agents:
+        raise SystemExit(f"unknown agent: {args.agent}")
+    if not args.path:
+        raise SystemExit("send-file requires --path")
+    file_path = Path(os.path.abspath(args.path.expanduser()))
+    inferred_mime = mimetypes.guess_type(file_path.name)[0]
+    mime_type = normalize_mime_type(args.mime_type or inferred_mime)
+
+    request_id = f"file-{uuid.uuid4().hex}"
+    snapshot_dir = config.state_dir / "media-outbox" / "files"
+    snapshot_path = snapshot_dir / request_id
+    size, sha256 = _snapshot_regular_file(
+        file_path,
+        snapshot_path,
+        config.media.max_file_bytes,
+    )
+    request = {
+        "id": request_id,
+        "kind": "file",
+        "agent": args.agent,
+        "path": str(file_path),
+        "snapshot_path": str(snapshot_path),
+        "size": size,
+        "sha256": sha256,
+        "filename": file_path.name,
+        "mime_type": mime_type,
+        "caption": (args.caption or "").strip(),
+    }
+    outbox = config.state_dir / "media-outbox"
+    try:
+        _write_private_json(outbox / f"{request_id}.json", request)
+    except Exception:
+        try:
+            snapshot_path.unlink()
+        except FileNotFoundError:
+            pass
+        raise
+
+    deadline = time.monotonic() + max(0, args.wait_seconds)
+    state_path = config.state_dir / "state.json"
+    while time.monotonic() < deadline:
+        try:
+            state = json.loads(state_path.read_text(encoding="utf-8"))
+        except (FileNotFoundError, json.JSONDecodeError):
+            time.sleep(0.2)
+            continue
+        media = state.get("media", {}).get(request_id)
+        if media:
+            print(f"{request_id} sent as {media['event_id']}")
+            return 0
+        failure = state.get("media_failures", {}).get(request_id)
+        if failure:
+            print(f"{request_id} failed: {failure['error']}")
+            return 1
         time.sleep(0.2)
 
     print(
@@ -528,6 +692,7 @@ def build_parser() -> argparse.ArgumentParser:
             "download-model",
             "decision",
             "send-image",
+            "send-file",
             "send-message",
         ),
     )
@@ -570,6 +735,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--body-file", type=Path)
     parser.add_argument("--option", action="append")
     parser.add_argument("--path", type=Path)
+    parser.add_argument("--mime-type")
     parser.add_argument("--caption")
     parser.add_argument("--wait-seconds", type=int, default=10)
     return parser
@@ -590,6 +756,8 @@ def main() -> None:
         raise SystemExit(run_decision(args, config))
     if args.command == "send-image":
         raise SystemExit(run_send_image(args, config))
+    if args.command == "send-file":
+        raise SystemExit(run_send_file(args, config))
     if args.command == "send-message":
         raise SystemExit(run_send_message(args, config))
     if args.command == "doctor":

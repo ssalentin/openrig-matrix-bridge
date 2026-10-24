@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from openrig_matrix_bridge.config import ConfigError, load_config
+from openrig_matrix_bridge.config import ConfigError, load_config, safe_agent_directory
 
 
 def write_config(path: Path, extra: str = "") -> Path:
@@ -52,6 +52,7 @@ def test_loads_minimal_config(tmp_path: Path):
     assert config.avatars.set_profile is True
     assert config.media.enabled is True
     assert config.media.max_image_bytes == 25 * 1024 * 1024
+    assert config.media.max_file_bytes == 25 * 1024 * 1024
 
 
 def test_rejects_duplicate_sessions(tmp_path: Path):
@@ -76,4 +77,82 @@ def test_rejects_invalid_inbound_message_priority(tmp_path: Path):
 
     with pytest.raises(ConfigError, match="inbound_message_priority"):
         load_config(path)
+
+
+@pytest.mark.parametrize(
+    "homeserver",
+    [
+        "http://matrix.example.org",
+        "http://localhost.example.org",
+        "http://192.0.2.1",
+        "ftp://matrix.example.org",
+    ],
+)
+def test_rejects_insecure_or_invalid_homeserver(tmp_path: Path, homeserver: str):
+    path = write_config(tmp_path / "config.yaml")
+    path.write_text(
+        path.read_text(encoding="utf-8").replace(
+            "https://matrix.example.org",
+            homeserver,
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ConfigError, match="homeserver"):
+        load_config(path)
+
+
+@pytest.mark.parametrize(
+    "homeserver",
+    [
+        "http://localhost:8008",
+        "http://127.0.0.1:8008",
+        "http://[::1]:8008",
+        "https://matrix.example.org",
+    ],
+)
+def test_allows_secure_or_loopback_homeserver(tmp_path: Path, homeserver: str):
+    path = write_config(tmp_path / "config.yaml")
+    path.write_text(
+        path.read_text(encoding="utf-8").replace(
+            "https://matrix.example.org",
+            homeserver,
+        ),
+        encoding="utf-8",
+    )
+
+    assert load_config(path).homeserver == homeserver
+
+
+@pytest.mark.parametrize(
+    "agent_key",
+    ["../escape", "nested/agent", "..", ".hidden", "bad key", ""],
+)
+def test_rejects_unsafe_agent_keys(tmp_path: Path, agent_key: str):
+    path = write_config(tmp_path / "config.yaml")
+    path.write_text(
+        path.read_text(encoding="utf-8").replace(
+            "  advisor:",
+            f"  {agent_key!r}:",
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ConfigError, match="agent keys"):
+        load_config(path)
+
+
+def test_safe_agent_directory_rejects_symlink_escape(tmp_path: Path):
+    root = tmp_path / "inbox"
+    outside = tmp_path / "outside"
+    root.mkdir()
+    outside.mkdir()
+    (root / "advisor").symlink_to(outside, target_is_directory=True)
+
+    with pytest.raises(ConfigError, match="agent key"):
+        safe_agent_directory(root, "advisor")
+
+
+def test_safe_agent_directory_returns_key_below_root(tmp_path: Path):
+    assert safe_agent_directory(tmp_path, "advisor") == (tmp_path / "advisor").resolve()
 

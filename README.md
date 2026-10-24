@@ -2,38 +2,170 @@
 
 [![test](https://github.com/ssalentin/openrig-matrix-bridge/actions/workflows/test.yml/badge.svg)](https://github.com/ssalentin/openrig-matrix-bridge/actions/workflows/test.yml)
 
-Give every live OpenRig Codex seat a private, encrypted Matrix room so you can
-continue the same agent conversation from Element without starting a second
-agent.
+Talk to your OpenRig agents from a normal chat app without starting another
+agent. Each live Codex seat gets its own private, encrypted Matrix room, so you
+can use Element on desktop or mobile while the agent keeps its existing
+terminal session, tools, and working context.
 
-The bridge resolves the seat through the OpenRig CLI, injects prompts into its
-existing terminal, and reads the seat's native Codex transcript for progress
-and the final answer. Matrix is the user interface; OpenRig remains the agent
-runtime.
+The result is simple: your familiar Matrix client becomes the interface, and
+OpenRig remains the runtime.
 
-This README is the first-time setup path. For the evidence behind individual
-product claims, see [Verification and evidence](docs/VERIFICATION.md) and
-[Product positioning](docs/POSITIONING.md).
+<!-- markdownlint-disable MD033 -->
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="src/openrig_matrix_bridge/assets/branding/export/relay-secondary-dark-256.png">
+  <img src="src/openrig_matrix_bridge/assets/branding/export/relay-secondary-light-256.png" alt="Relay" width="96" height="96">
+</picture>
+<!-- markdownlint-enable MD033 -->
 
-## What works
+Relay is the selected symbol for the 0.11.0 OpenRig Matrix Bridge identity. The
+product name remains OpenRig Matrix Bridge. See the
+[Relay brand and usage guide](docs/branding/README.md).
 
-- One private Matrix room per configured Codex seat, with no second agent.
-- Per-room status in the room topic and `dev.openrig.agent_status` state.
-- A refreshed Matrix typing indicator while an answer is in progress.
-- FIFO prompts per agent, with a single editable pinned queue card.
-- Encrypted text, images, voice notes, decisions, and polls in encrypted rooms.
-- Canonical thread delivery for top-level prompts and prompts that are already
-  thread replies, with bounded commentary/final-delivery failure handling.
-- Local NVIDIA Parakeet transcription; audio is not sent to a transcription
-  service.
-- Silent agent feedback when the owner reacts to a bridge-authored message.
-- Durable OpenRig queue items for Matrix prompts, with configurable priority.
-- Markdown rendering, including tables, in Matrix-capable clients.
+## What this gives you
 
-The supported integration is Codex-only. See [Known limits](#known-limits)
-before treating a mocked unit test as proof of live Matrix behavior.
+Each configured agent appears as one private room:
 
-## Prerequisites
+```text
+Your Matrix account
+├── Advisor       live OpenRig Codex seat, private encrypted room
+├── Engineer      live OpenRig Codex seat, private encrypted room
+└── Operator      live OpenRig Codex seat, private encrypted room
+```
+
+Inside a room, you can:
+
+- see whether the agent is ready or working;
+- send threaded follow-ups and watch a safe runtime activity label with the
+  latest visible progress;
+- receive the final answer in Matrix;
+- send encrypted images, generic files, and voice notes;
+- answer pinned decisions and polls; and
+- react to a bridge message as silent feedback.
+
+There is no second agent process. The bridge resolves the existing OpenRig seat,
+injects your message into that seat's terminal, and reads the seat's own Codex
+transcript. Matrix prompts also create durable OpenRig queue items. Voice
+transcription runs locally with NVIDIA Parakeet; audio is not sent to a
+transcription service. Rooms and message content use Matrix end-to-end
+encryption.
+
+## Contents
+
+- [What you need](#what-you-need)
+- [Copy-ready OpenRig setup brief](#copy-ready-openrig-setup-brief)
+- [What this does not do yet](#what-this-does-not-do-yet)
+- [Detailed prerequisites](#detailed-prerequisites)
+- [Install 0.11.0 or this checkout](#install-0110-or-this-checkout)
+- [OpenRig setup](#openrig-setup)
+- [Configure and start](#configure-and-start)
+- [Verify the product manually](#verify-the-product-manually)
+- [Matrix device verification](#matrix-device-verification)
+- [OpenRig behavior](#openrig-behavior)
+- [Security and E2EE](#security-and-e2ee)
+- [systemd](#systemd)
+- [Test setup](#test-setup)
+- [Troubleshooting](#troubleshooting)
+- [Known limits](#known-limits)
+
+## What you need
+
+- A Linux or equivalent host with Python 3.11+.
+- OpenRig installed, with one or more running Codex seats.
+- The `rig` command available to the bridge, plus the Codex home used by those
+  seats.
+- A dedicated Matrix bot account, its homeserver URL, its user ID, its device
+  ID, and a token for that one bot device.
+- The full Matrix user ID of the person who should own the rooms.
+- HTTPS access to the Matrix homeserver.
+- `ffmpeg` and about 465 MB of model storage if local voice transcription is
+  enabled.
+
+The bot access token belongs in an environment variable or secret manager.
+Never put it in this repository, a public issue, or a chat message.
+
+If you already have OpenRig and a Matrix account, you do not need to edit the
+configuration by hand. Install the 0.11.0 wheel, expose the bot token as
+`MATRIX_ACCESS_TOKEN`, and run the single `setup` command in
+[Configure and start](#configure-and-start). Setup discovers the live Codex
+seats, writes the private configuration, installs the Relay profile, and
+registers the owner binding.
+
+## Copy-ready OpenRig setup brief
+
+Copy the block below into OpenRig after replacing every angle-bracket
+placeholder. It tells OpenRig to inspect the existing installation, configure
+the bridge, run health checks, and verify the real Matrix rooms without asking
+for the token in chat.
+
+```text
+Set up the OpenRig Matrix bridge in <ABSOLUTE_REPOSITORY_PATH>.
+
+Goal: give every currently running Codex seat one private encrypted Matrix room
+without starting a second agent.
+
+Before changing anything:
+- run `rig whoami --json`;
+- run `rig ps --nodes -A --json`;
+- list the running Codex seats you intend to expose;
+- confirm the bridge's `rig` command and Codex home;
+- stop and ask me if any of those values are ambiguous.
+
+Use these non-secret Matrix values:
+- homeserver: <MATRIX_HOMESERVER_URL>
+- bot user ID: <BOT_MATRIX_USER_ID>
+- bot device ID: <BOT_MATRIX_DEVICE_ID>
+- owner Matrix user ID: <OWNER_MATRIX_USER_ID>
+
+The bot access token is already available to your process through
+MATRIX_ACCESS_TOKEN in the environment or secret manager. Do not ask me to paste
+the token into chat, write it into a repository file or YAML, print it, or add it
+to an issue. If the variable is absent, stop and tell me how to expose it to the
+process safely.
+
+Then:
+1. Create or reuse a virtual environment and install the 0.11.0 wheel from the
+   GitHub Release, or install the package from the checkout when evaluating
+   the repository.
+2. Verify the Matrix token with the homeserver `whoami` endpoint without
+   printing it.
+3. Run `openrig-matrix-bridge setup` with the homeserver, bot user ID, bot
+   device ID, owner user ID, live `rig` command, Codex home, explicit config
+   path, and state directory. Use `--no-human-registration` only if the
+   installed OpenRig human registry is unavailable. Use `--skip-model` if you
+   want to defer the large voice model download.
+4. Inspect the generated YAML without printing credentials. It must not contain
+   an access token or private encryption state.
+5. Run `openrig-matrix-bridge doctor --config <CONFIG_PATH>` and stop on a hard
+   failure.
+6. Start the bridge in the foreground with
+   `openrig-matrix-bridge run --config <CONFIG_PATH>`, or install the adapted
+   systemd unit from this README, and wait for one private room per configured
+   agent.
+7. Verify that the owner was invited, each encrypted room exists once, the room
+   topic becomes ready, and the configured agent mapping is stable.
+8. Report the config path, exact commands, health result, seat-to-room mapping,
+   invite status, and any remaining Matrix device-verification steps.
+
+Do not claim success until room creation and owner invitations are observed.
+Do not describe device SAS verification or cross-signing as complete until a
+real trusted client confirms it.
+```
+
+## What this does not do yet
+
+- It supports Codex seats only, not every OpenRig runtime.
+- Matrix may still show an unverified-device warning. Verification is per
+  device; the bridge does not provide complete cross-signing for every owner
+  device.
+- Real Parakeet recognition quality and live Element rendering remain manual
+  evidence, not automated guarantees.
+- A stopped seat can remain configured, but it cannot accept prompts until it
+  is running again.
+
+See [Known limits](#known-limits) and
+[Verification and evidence](docs/VERIFICATION.md) for the precise boundaries.
+
+## Detailed prerequisites
 
 Before installing, arrange:
 
@@ -66,8 +198,16 @@ Create a dedicated bot session with your Matrix client or administrative
 tooling and retain its device ID. Put the access token in a process environment
 or secret manager; do not put it in YAML or commit it.
 
-For a foreground evaluation, prove that the token and homeserver match before
-creating the bridge configuration:
+To find the bot user ID and device ID from a normal Matrix client:
+
+1. Sign in to the dedicated bot account.
+2. Open the account/profile screen and copy the full user ID, such as
+   `@openrig-bot:matrix.example.org`.
+3. Open the session or device list and copy the bot device ID.
+4. Sign back in as your personal owner account and copy its full user ID.
+
+For a foreground evaluation, prove that the token, homeserver and bot identity
+match before creating the bridge configuration:
 
 ```bash
 read -rsp 'Matrix bot access token: ' MATRIX_ACCESS_TOKEN
@@ -87,10 +227,22 @@ token from your shell when the evaluation is finished:
 unset MATRIX_ACCESS_TOKEN MATRIX_HOMESERVER
 ```
 
-## Install from this checkout
+## Install 0.11.0 or this checkout
 
-No release is published as part of this documentation change. Until a packaged
-release is available, install from the repository:
+Download the wheel and source distribution attached to the GitHub 0.11.0
+release, verify their published SHA-256 digests, and install the wheel in a
+virtual environment:
+
+```bash
+python3 -m venv .venv
+. .venv/bin/activate
+python -m pip install --upgrade pip
+python -m pip install /path/to/openrig_matrix_bridge-0.11.0-py3-none-any.whl
+openrig-matrix-bridge --version
+```
+
+For repository development or an installation before the release assets are
+attached, install from a checkout:
 
 ```bash
 git clone https://github.com/ssalentin/openrig-matrix-bridge.git
@@ -102,9 +254,11 @@ python -m pip install -e '.[dev]'
 openrig-matrix-bridge --version
 ```
 
-The console entry point and bundled avatars are part of the installed package.
+The console entry point, selected Relay identity, and bundled agent avatars are
+part of the installed package.
 The automated build/install smoke checks are documented in
-[Verification and evidence](docs/VERIFICATION.md).
+[Verification and evidence](docs/VERIFICATION.md). For an upgrade on an
+existing host, follow the [0.11.0 runbook](docs/RUNBOOK_0.11.0.md).
 
 ## OpenRig setup
 
@@ -139,6 +293,12 @@ management instructions.
 Set the token in the environment. Gather the bot user ID, bot device ID, and
 owner user ID from your Matrix account configuration.
 
+The homeserver must use HTTPS. Plain `http://` is accepted only for loopback
+test servers such as `http://127.0.0.1:8008`; the bridge rejects credentials,
+queries and fragments in the homeserver URL. Configuration agent keys must start
+with an alphanumeric character and contain only letters, digits, underscores or
+hyphens (maximum 64 characters), so they remain safe per-agent directory names.
+
 ```bash
 export MATRIX_ACCESS_TOKEN='...'
 
@@ -157,9 +317,14 @@ This command:
 3. Registers the owner as an OpenRig human recipient with a reusable connector
    binding. The binding is a routing marker; the bridge performs Matrix
    delivery itself.
-4. Renames the bot profile and device to `OpenRig`.
+4. Renames the bot profile and device to `OpenRig`, and installs the Relay
+   profile image.
 5. Downloads and checksum-verifies the Parakeet model unless `--skip-model` is
    present.
+
+The command above is the complete non-interactive setup path when OpenRig and
+Matrix are already working. If an argument is omitted, `setup` prompts for the
+missing value and prints where to find the corresponding Matrix ID.
 
 Use `--no-human-registration` if you do not want the setup command to modify the
 OpenRig human registry. Use `--without-voice` for a text-only bridge. Use
@@ -202,6 +367,10 @@ room, is treated as a rejection: the bridge leaves that room and does not
 recreate it automatically. Remove the `rejected_rooms` entry from
 `state.json` before restarting if you want to opt the agent back in.
 
+For production upgrades, use [`docs/RUNBOOK_0.11.0.md`](docs/RUNBOOK_0.11.0.md)
+to verify the exact artifact, stop the old process, back up state, run live
+plain/multi-line/attachment/thread smoke tests, and roll back safely.
+
 ## Verify the product manually
 
 Use the same owner account that appears in `matrix.allowed_users`.
@@ -216,11 +385,20 @@ status literals; the words mean “ready” and “working.”
    the pinned queue card should count it.
 4. Attach a PNG, JPEG, GIF, or WebP image. The agent receives a local file path
    under the configured media inbox.
-5. Send a short voice note when transcription is enabled. The transcript is
-   posted before the agent prompt is forwarded.
-6. React to a bridge-authored message. The reaction is forwarded as silent
+5. Attach a PDF, archive, office document, audio file, or other generic file.
+   The agent receives a generated local path plus the original filename, MIME
+   type, and byte count. The original name is metadata, not part of the path.
+6. Send a short voice note when transcription is enabled. The bridge creates
+   one status reply in the voice-note thread, edits it to the local transcript,
+   and forwards the prompt. A rejected edit produces a clearly labeled
+   transcript fallback. A restart during processing replaces the stale status
+   with an explicit terminal message instead of duplicating the transcript.
+   Only `m.audio` events carrying
+   `org.matrix.msc2516.voice` or `org.matrix.msc3245.voice` are voice notes;
+   markerless audio follows the generic-file path.
+7. React to a bridge-authored message. The reaction is forwarded as silent
    feedback and is not mirrored as a visible answer.
-7. Publish a decision (see below) and select an option. The choice is returned
+8. Publish a decision (see below) and select an option. The choice is returned
    to the responsible agent.
 
 The automated integration harness and its observed limits are documented in
@@ -230,7 +408,9 @@ live Matrix delivery.
 ## Matrix device verification
 
 The first connection from a new client may show an unverified bot device. The
-bridge currently supports device-to-device emoji SAS verification:
+bridge can handle an incoming device-to-device emoji SAS request and persists
+the transaction phase so a restart cannot turn `ja` or `nein` into an agent
+prompt:
 
 1. In Element, open the bot device details and start **Verify by emoji**.
 2. The bridge posts seven emojis in the `Advisor` room, or another configured
@@ -238,12 +418,24 @@ bridge currently supports device-to-device emoji SAS verification:
 3. Compare them with Element and click **They match**.
 4. Type `ja` in that Matrix room to confirm the bridge side.
 
-Verification applies to the specific Element device. `matrix-nio` does not
-currently provide complete cross-signing setup, so verification does not
-automatically trust every device on the owner account.
+After an interrupted verification, plain `ja` and `nein` remain reserved in
+that room so they cannot accidentally become agent prompts. To intentionally
+send ordinary confirmation text to the agent, use an explicit `agent:` prefix,
+for example `agent: ja`.
 
-Live Element SAS verification is not covered by the automated test suite. The
-verification flow and cross-signing limitation remain tracked in
+Verification applies to the specific Element device. `matrix-nio` does not
+currently provide complete cross-signing setup, so the bridge does not create a
+cross-signed identity that Element automatically trusts across devices. In the
+2026-10-24 Element Web investigation, Element showed `(User verification
+unavailable)` for the bridge account even with a synthetic client and
+disposable homeserver. Treat direct SAS as unverified until a real-client run
+records success; do not infer it from unit tests.
+
+Live Element SAS verification is not covered by the automated test suite.
+Restart interruption, timeout, cancellation and confirmation state are
+unit-tested. Interruption and timeout notifications persist an outbox intent
+and use a stable Matrix transaction ID so startup reconciliation retries them
+exactly once. The real-client flow and cross-signing limitation remain tracked in
 [Issue #1](https://github.com/ssalentin/openrig-matrix-bridge/issues/1); do not
 describe them as fully verified until a real client check is recorded.
 
@@ -264,6 +456,22 @@ With `openrig.queue_inbound_messages: true`:
 - Additional Matrix requests remain FIFO behind the active request.
 - A single pinned queue-status message is edited as the count changes and
   unpinned when the queue drains.
+
+Prompt and final-answer delivery persist an operation phase before remote
+effects. If a bridge exits after starting a prompt but before recording an
+acknowledgement, restart fails that request explicitly rather than risking a
+duplicate prompt. Final answers retry with a stable Matrix transaction ID, so a
+restart can replay the send without creating a second visible event. Qitem
+claim, finish, and fail operations reconcile through `rig queue show` after
+restart before retrying. Attachment outbox requests use the same stable
+transaction rule and are not republished after a recorded delivery.
+
+Qitem lifecycle failures are fail-closed. If qitem creation fails, the bridge
+posts an error and does not send the prompt. If claim fails, the request remains
+pending with `qitem_phase: claiming` and retries without falsely appearing
+active. If finish or fail-close fails, the request remains locally pending and
+startup reconciles the qitem with `rig queue show` before retrying or removing
+the request.
 
 The bridge identity is `matrix-bridge@kernel` by default. Change
 `openrig.sender_session` only if that identity is intentional in your OpenRig
@@ -290,7 +498,7 @@ The command reads the queue item's summary, body, and optional
 four choices are published as Matrix polls; the brief and polls are removed
 from the pinned set after all structured questions are answered.
 
-## Images and explicit messages
+## Images, files, and explicit messages
 
 Send an encrypted image into an agent's room:
 
@@ -301,6 +509,21 @@ openrig-matrix-bridge send-image \
   --caption 'Screenshot of the current view'
 ```
 
+Send any other file as an encrypted downloadable attachment:
+
+```bash
+openrig-matrix-bridge send-file \
+  --agent advisor \
+  --path '/tmp/Quarterly report.pdf' \
+  --caption 'Reviewed quarterly report'
+```
+
+The bridge preserves the source basename and inferred MIME type. Use
+`--mime-type application/x-custom` only when the file extension is ambiguous.
+Unknown extensions use `application/octet-stream`. Non-image files use Matrix
+`m.file`, so clients show them as downloads rather than pretending they are
+images.
+
 Send an explicit, formatted message into the room:
 
 ```bash
@@ -310,7 +533,41 @@ openrig-matrix-bridge send-message \
 ```
 
 These commands use the running bridge's encrypted Matrix state. Plain terminal
-conversation is not mirrored automatically.
+conversation is not mirrored automatically. A command that queues work while
+the bridge is stopped exits non-zero with the durable request ID; the running
+bridge retries it after restart.
+
+### Attachment limits, storage, and recovery
+
+- `media.max_image_bytes` and `media.max_file_bytes` independently cap inbound
+  and outbound image and generic-file content. Both default to 26,214,400 bytes
+  (25 MiB), and rejection messages include the effective limit.
+- Inbound bytes are written atomically under
+  `<media.inbox_dir>/<agent-key>/<generated-id>.<safe-suffix>`. The
+  original filename is preserved as prompt metadata but is never used as a
+  filesystem path. Zero-byte, oversized, corrupt, interrupted, and
+  metadata-inconsistent transfers are rejected without publishing a successful
+  file.
+- Generic files are stored as `0600` files in `0700` directories. The bridge
+  does not automatically delete inbox files or outbound snapshots; apply your
+  own retention policy.
+  At `send-file` admission, the bridge rejects symlinks and non-regular source
+  paths, opens the selected file without following a final symlink, and copies
+  its bytes to a `0600` snapshot under `<state_dir>/media-outbox/files`.
+  The request records the source path, snapshot path, byte count, and SHA-256.
+  `state.json` never contains file bytes, but the snapshot directory does.
+  Protect and redact the complete state directory accordingly.
+- The bridge account must be trusted to read each explicitly requested source
+  path. The bridge does not drop privileges while taking the snapshot. After
+  admission, the original source may change or disappear; retries upload only
+  the immutable snapshot and verify its recorded size and digest.
+- Outbound requests in `<state_dir>/media-outbox` survive restart. A stable
+  Matrix transaction ID prevents a retried request from creating a second
+  event. Success is recorded only after a Matrix event ID is returned; terminal
+  failures move to `media-outbox/failed` and are recorded in
+  `media-failures` state.
+- Files are not malware-scanned and PDFs or office documents are not rendered
+  in preview. Only configured allow-listed owners can send into the room.
 
 ## Security and E2EE
 
@@ -318,8 +575,8 @@ conversation is not mirrored automatically.
 - Only one owner is invited when rooms are created. Messages from senders who
   are not listed in `matrix.allowed_users` are ignored.
 - The access token is read from `MATRIX_ACCESS_TOKEN`; it is not stored in YAML.
-- Encrypted image uploads are encrypted before upload. Remote Markdown images
-  are shown as references and are not embedded or fetched.
+- Encrypted image and generic-file uploads are encrypted before upload. Remote
+  Markdown images are shown as references and are not embedded or fetched.
 - Voice audio is processed locally after the model is downloaded. The model
   archive is verified against a pinned SHA-256 checksum.
 - State, the Matrix encryption store, and media inbox contain sensitive data.
@@ -395,8 +652,10 @@ ruff check .
 
 The current automated suite covers configuration validation, OpenRig
 resolution and queue commands, transcript parsing, room/status construction,
-queue notices, Markdown rendering, decisions, encrypted image content,
-transcription model state, avatars, and failure handling at the unit boundary.
+queue notices, Markdown rendering, decisions, encrypted image and generic-file
+content, safe attachment storage, outbox recovery, voice status editing and
+fallback, transcription model state, avatars, and failure handling at the unit
+boundary.
 With `uv` installed, the equivalent lint command is `uv tool run ruff check .`.
 
 The reproducible Matrix integration harness requires Docker:
@@ -473,8 +732,14 @@ verification](#matrix-device-verification) and Issue #1.
 ## Known limits
 
 - Only Codex seats are supported. Other OpenRig runtimes are out of scope.
+- Element X threaded replies were manually observed by the owner on 2026-10-24,
+  but the repository does not have a redacted screenshot or versioned client
+  record. The real Matrix harness verifies canonical roots, including a prompt
+  already inside a thread; it does not prove every Element X nested-reply UI
+  state.
 - Live Element SAS and the broader cross-signing strategy are not fully verified
-  by the repository; see Issue #1.
+  by the repository; Element Web currently reports verification unavailable
+  for the bridge account. See Issue #1.
 - A mocked Matrix client is not a substitute for the committed integration run.
 - Voice transcription quality and every audio format are not covered by a
   deterministic end-to-end test; model readiness and checksum configuration
@@ -484,8 +749,10 @@ verification](#matrix-device-verification) and Issue #1.
 - Ordinary terminal chat is not mirrored to Matrix.
 - The bridge supports one invited owner by default. Additional accounts must
   be intentionally added to the room and allowlist.
-- Image support is limited to PNG, JPEG, GIF, and WebP and the configured byte
-  limit.
+- Inline image support is limited to PNG, JPEG, GIF, and WebP. Other file types
+  use downloadable `m.file` attachments subject to `media.max_file_bytes`.
+- Arbitrary files are not malware-scanned, previewed, or fetched from remote
+  URLs. Inbox retention and redaction of local paths remain operator duties.
 - The default user-facing status and help strings are German.
 
 ## Upgrade and help
@@ -501,6 +768,8 @@ Do not delete the Matrix crypto store during an upgrade.
 - [Issues](https://github.com/ssalentin/openrig-matrix-bridge/issues)
 - [Evidence matrix](docs/VERIFICATION.md)
 - [Positioning and demo copy](docs/POSITIONING.md)
+- [0.11.0 release notes](docs/RELEASE_NOTES_0.11.0.md)
+- [0.11.0 install and rollback runbook](docs/RUNBOOK_0.11.0.md)
 - [Artifact manifest](docs/artifacts/README.md)
 - [Environment support issue #1](https://github.com/ssalentin/openrig-matrix-bridge/issues/1)
 - [Release-readiness issue #2](https://github.com/ssalentin/openrig-matrix-bridge/issues/2)
