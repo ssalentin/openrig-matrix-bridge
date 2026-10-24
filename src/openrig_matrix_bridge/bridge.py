@@ -7,6 +7,7 @@ import os
 import tempfile
 import time
 import uuid
+from dataclasses import dataclass
 from io import BytesIO
 from pathlib import Path
 from typing import Any
@@ -76,6 +77,8 @@ from .transcription import Transcriber
 
 LOGGER = logging.getLogger("openrig-matrix-bridge")
 AGENT_STATUS_EVENT = "dev.openrig.agent_status"
+_DEFAULT_THREAD_ROOT = object()
+MAX_DELIVERY_ATTEMPTS = 3
 STATUS_LABELS = {
     "ready": "🟢",
     "busy": "🟡",
@@ -86,6 +89,26 @@ STATUS_LABELS = {
 
 def room_name(agent: AgentConfig) -> str:
     return agent.display_name
+
+
+@dataclass(frozen=True)
+class ResponseTarget:
+    thread_root_event_id: str | None
+    reply_to_event_id: str
+
+
+def resolve_response_target(
+    event_id: str,
+    relates_to: dict[str, Any] | None,
+) -> ResponseTarget:
+    if isinstance(relates_to, dict):
+        thread_root = relates_to.get("event_id")
+        if relates_to.get("rel_type") == "m.thread" and isinstance(thread_root, str):
+            thread_root = thread_root.strip()
+            if thread_root:
+                return ResponseTarget(thread_root, thread_root)
+        return ResponseTarget(None, event_id)
+    return ResponseTarget(event_id, event_id)
 
 
 def formatted_message_content(text: str) -> dict[str, Any]:
@@ -1191,7 +1214,15 @@ class MatrixBridge:
             return
         if await self._handle_verification_reply(room, event, text):
             return
-        await self._enqueue_prompt(agent, room, event.event_id, event.server_timestamp, text)
+        relates_to = event.source.get("content", {}).get("m.relates_to")
+        await self._enqueue_prompt(
+            agent,
+            room,
+            event.event_id,
+            event.server_timestamp,
+            text,
+            relates_to=relates_to if isinstance(relates_to, dict) else None,
+        )
 
     async def _handle_verification_reply(
         self,
@@ -1305,6 +1336,7 @@ class MatrixBridge:
         source_label: str | None = None,
         reply_to_event_id: str | None = None,
         *,
+        relates_to: dict[str, Any] | None = None,
         suppress_reply: bool = False,
         queue_tracked: bool = True,
     ) -> None:
@@ -1312,6 +1344,11 @@ class MatrixBridge:
             pending = self.state.data["pending"].setdefault(agent.key, [])
             self.processed_events.add(event_id)
             self.state.data["processed_events"] = list(self.processed_events)[-2000:]
+            target = (
+                ResponseTarget(reply_to_event_id, reply_to_event_id)
+                if reply_to_event_id
+                else resolve_response_target(event_id, relates_to)
+            )
             qitem_id = None
             if queue_tracked:
                 qitem_id = await self._create_inbound_qitem(
@@ -1323,7 +1360,10 @@ class MatrixBridge:
             request = {
                 "id": uuid.uuid4().hex,
                 "event_id": event_id,
-                "reply_to_event_id": reply_to_event_id or event_id,
+                "reply_to_event_id": target.reply_to_event_id,
+                "thread_root_event_id": target.thread_root_event_id,
+                "source_event_ids": [event_id],
+                "source_relation": dict(relates_to) if relates_to else None,
                 "source_label": source_label or "message",
                 "qitem_id": qitem_id,
                 "queue_tracked": queue_tracked,
@@ -1665,6 +1705,7 @@ class MatrixBridge:
                 room_id,
                 f"Prompt fehlgeschlagen: {exc}",
                 self._reply_target(request),
+                **self._delivery_kwargs(request),
             )
             pending = self.state.data["pending"][agent.key]
             pending.pop(0)
@@ -1740,6 +1781,7 @@ class MatrixBridge:
                         self._room_for_agent(agent.key),
                         "Der Agent hat für diese Anfrage nicht rechtzeitig geantwortet.",
                         self._reply_target(request),
+                        **self._delivery_kwargs(request),
                     )
                     await self._set_typing(self._room_for_agent(agent.key), False)
                     await self._update_agent_status(agent, "error", "Zeitüberschreitung")
@@ -1758,7 +1800,11 @@ class MatrixBridge:
                     return
                 sent_commentary = request.setdefault("sent_commentary", [])
                 sent_ids = set(sent_commentary)
-                if self.config.mirror_commentary and not request.get("suppress_reply"):
+                if (
+                    self.config.mirror_commentary
+                    and not request.get("suppress_reply")
+                    and not request.get("commentary_skipped")
+                ):
                     pending_commentary = [
                         message
                         for message in commentary_messages(records)
@@ -1774,23 +1820,40 @@ class MatrixBridge:
                                 pending_commentary[-1][1],
                             )
                         else:
-                            response = await self._send(
+                            response = await self._deliver_to_request(
                                 room_id,
                                 pending_commentary[-1][1],
-                                self._reply_target(request),
+                                request,
                             )
                         if not isinstance(response, RoomSendResponse):
+                            attempts = request.get("commentary_failure_count", 0) + 1
+                            request["commentary_failure_count"] = attempts
                             LOGGER.error(
-                                "commentary delivery failed for %s: %s",
+                                "commentary delivery failed for %s (attempt %s/%s): %s",
                                 agent.key,
+                                attempts,
+                                MAX_DELIVERY_ATTEMPTS,
                                 response,
                             )
-                            return
-                        if not commentary_event_id:
+                            if attempts < MAX_DELIVERY_ATTEMPTS:
+                                self.state.save()
+                                return
+                            request["commentary_skipped"] = True
+                            LOGGER.error(
+                                "skipping commentary for %s after %s attempts",
+                                agent.key,
+                                attempts,
+                            )
+                            self.state.save()
+                        if not commentary_event_id and isinstance(
+                            response,
+                            RoomSendResponse,
+                        ):
                             request["commentary_event_id"] = response.event_id
-                        sent_commentary.extend(
-                            message_id for message_id, _text in pending_commentary
-                        )
+                        if isinstance(response, RoomSendResponse):
+                            sent_commentary.extend(
+                                message_id for message_id, _text in pending_commentary
+                            )
                         self.state.save()
                 request["offset"] = offset
                 answers = [text for record in records if (text := final_answer(record))]
@@ -1814,13 +1877,40 @@ class MatrixBridge:
                 if pending:
                     await self._start_request(agent, pending[0], room_id)
                 return
-            response = await self._send(
+            response = await self._deliver_to_request(
                 room_id,
                 request["answer_text"],
-                self._reply_target(request),
+                request,
             )
             if not isinstance(response, RoomSendResponse):
-                LOGGER.error("answer delivery failed for %s: %s", agent.key, response)
+                attempts = request.get("delivery_failure_count", 0) + 1
+                request["delivery_failure_count"] = attempts
+                self.state.save()
+                LOGGER.error(
+                    "answer delivery failed for %s (attempt %s/%s): %s",
+                    agent.key,
+                    attempts,
+                    MAX_DELIVERY_ATTEMPTS,
+                    response,
+                )
+                if attempts < MAX_DELIVERY_ATTEMPTS:
+                    return
+                await self._fail_inbound_qitem(
+                    agent,
+                    request,
+                    f"Matrix answer delivery failed after {attempts} attempts",
+                )
+                await self._set_typing(room_id, False)
+                await self._update_agent_status(agent, "error", "Zustellung fehlgeschlagen")
+                pending.pop(0)
+                self.state.save()
+                await self._update_queue_notice(
+                    agent,
+                    room_id,
+                    max(0, len(pending) - 1),
+                )
+                if pending:
+                    await self._start_request(agent, pending[0], room_id)
                 return
             await self._finish_inbound_qitem(agent, request)
             await self._set_typing(room_id, False)
@@ -1841,6 +1931,29 @@ class MatrixBridge:
     @staticmethod
     def _reply_target(request: dict[str, Any]) -> str:
         return str(request.get("reply_to_event_id") or request["event_id"])
+
+    @staticmethod
+    def _delivery_kwargs(request: dict[str, Any]) -> dict[str, Any]:
+        if "thread_root_event_id" in request:
+            return {"thread_root": request["thread_root_event_id"]}
+        return {}
+
+    async def _deliver_to_request(
+        self,
+        room_id: str,
+        text: str,
+        request: dict[str, Any],
+    ):
+        try:
+            return await self._send(
+                room_id,
+                text,
+                self._reply_target(request),
+                **self._delivery_kwargs(request),
+            )
+        except Exception:
+            LOGGER.warning("Matrix delivery raised for %s", request["event_id"], exc_info=True)
+            return None
 
     async def _poll_agent_statuses(self) -> None:
         while True:
@@ -1955,15 +2068,25 @@ class MatrixBridge:
             ignore_unverified_devices=True,
         )
 
-    async def _send(self, room_id: str, text: str, reply_to: str | None = None):
+    async def _send(
+        self,
+        room_id: str,
+        text: str,
+        reply_to: str | None = None,
+        *,
+        thread_root: str | None | object = _DEFAULT_THREAD_ROOT,
+    ):
         content = formatted_message_content(text)
-        if reply_to:
+        effective_root = reply_to if thread_root is _DEFAULT_THREAD_ROOT else thread_root
+        if effective_root:
             content["m.relates_to"] = {
                 "rel_type": "m.thread",
-                "event_id": reply_to,
+                "event_id": effective_root,
                 "is_falling_back": True,
-                "m.in_reply_to": {"event_id": reply_to},
+                "m.in_reply_to": {"event_id": effective_root},
             }
+        elif reply_to:
+            content["m.relates_to"] = {"m.in_reply_to": {"event_id": reply_to}}
         return await self.client.room_send(
             room_id,
             "m.room.message",
