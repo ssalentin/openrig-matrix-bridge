@@ -276,6 +276,44 @@ def test_legacy_ambiguous_answer_is_not_replayed_when_fail_close_errors(tmp_path
     assert "nicht eindeutig" in bridge.sent[0][1]
 
 
+def test_legacy_ambiguity_notice_retries_after_qitem_close_succeeded(tmp_path):
+    item = request(
+        prompt_phase=None,
+        qitem_phase="failing",
+        started_at=123.0,
+    )
+    bridge, _agent = operation_bridge(tmp_path, item)
+    attempts = []
+    fail_notice = {"value": True}
+
+    class Gateway:
+        async def queue_show(self, qitem_id):
+            return {"state": "in-progress"}
+
+        async def queue_fail(self, qitem_id, session, resolution):
+            return None
+
+    async def send(room_id, text, reply_to=None, **kwargs):
+        attempts.append(kwargs["tx_id"])
+        if fail_notice["value"]:
+            return SimpleNamespace(error="M_UNKNOWN")
+        return RoomSendResponse("$notice", room_id)
+
+    bridge.gateway = Gateway()
+    bridge._send = send
+
+    asyncio.run(bridge._reconcile_pending_operations())
+    assert bridge.state.data["pending"]["advisor"] == [item]
+    assert item.get("failure_notice_event_id") is None
+
+    fail_notice["value"] = False
+    asyncio.run(bridge._reconcile_pending_operations())
+
+    assert attempts == ["failure-request-one", "failure-request-one"]
+    assert item["failure_notice_event_id"] == "$notice"
+    assert bridge.state.data["pending"]["advisor"] == []
+
+
 def test_finish_reconciliation_accepts_already_done_qitem(tmp_path):
     item = request(
         answer_phase="sent",

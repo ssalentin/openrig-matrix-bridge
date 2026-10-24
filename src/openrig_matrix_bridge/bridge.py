@@ -1878,6 +1878,9 @@ class MatrixBridge:
             if isinstance(response, RoomSendResponse):
                 request["failure_notice_event_id"] = response.event_id
                 self.state.save()
+            else:
+                self.state.save()
+                return
         request["terminal_error"] = resolution
         if not closed:
             self.state.save()
