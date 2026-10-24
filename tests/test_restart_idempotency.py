@@ -103,6 +103,50 @@ def test_claim_reconciliation_accepts_already_claimed_qitem(
     assert calls == []
 
 
+def test_recovered_claim_resumes_prompt_that_never_started_sending(tmp_path):
+    item = request(
+        prompt_phase="pending",
+        qitem_phase="claiming",
+        started_at=time.time(),
+    )
+    bridge, agent = operation_bridge(tmp_path, item)
+    transcript = tmp_path / "transcript.jsonl"
+    transcript.write_text("", encoding="utf-8")
+    prompts = []
+
+    class Resolver:
+        def resolve(self, session):
+            return SimpleNamespace(
+                session_id="session-one",
+                transcript_path=transcript,
+                busy=False,
+            )
+
+    class Gateway:
+        async def queue_show(self, qitem_id):
+            return {
+                "state": "in-progress",
+                "waiting": {"owner": agent.session},
+            }
+
+        async def queue_claim(self, qitem_id, session):
+            raise AssertionError("already-claimed qitem was claimed again")
+
+        async def send_prompt(self, ref, text):
+            assert item["prompt_phase"] == "sending"
+            prompts.append(text)
+
+    bridge.resolver = Resolver()
+    bridge.gateway = Gateway()
+    del bridge._start_request
+
+    asyncio.run(bridge._reconcile_pending_operations())
+
+    assert prompts == ["do the work"]
+    assert item["qitem_phase"] == "claimed"
+    assert item["prompt_phase"] == "sent"
+
+
 def test_finish_reconciliation_accepts_already_done_qitem(tmp_path):
     item = request(
         answer_phase="sent",
