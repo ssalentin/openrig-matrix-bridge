@@ -3034,6 +3034,27 @@ class MatrixBridge:
                         status_detail="bereit",
                     )
 
+    @staticmethod
+    def _request_matches_identity(
+        candidate: dict[str, Any],
+        request: dict[str, Any],
+    ) -> bool:
+        if candidate is request:
+            return True
+        request_id = request.get("id")
+        return request_id is not None and candidate.get("id") == request_id
+
+    @classmethod
+    def _is_pending_request_head(
+        cls,
+        pending: list[dict[str, Any]],
+        request: dict[str, Any],
+    ) -> bool:
+        return bool(
+            pending
+            and cls._request_matches_identity(pending[0], request)
+        )
+
     async def _fail_ambiguous_prompt(
         self,
         agent: AgentConfig,
@@ -3051,7 +3072,7 @@ class MatrixBridge:
                 request["qitem_phase"] = "done"
                 request["terminal_error"] = "Legacy request already completed"
                 pending = self.state.data["pending"][agent.key]
-                if pending and pending[0] is request:
+                if self._is_pending_request_head(pending, request):
                     pending.pop(0)
                 self.state.save()
                 return
@@ -3076,7 +3097,7 @@ class MatrixBridge:
             self.state.save()
             return
         pending = self.state.data["pending"][agent.key]
-        if pending and pending[0] is request:
+        if self._is_pending_request_head(pending, request):
             pending.pop(0)
         self.state.save()
 
@@ -3107,7 +3128,7 @@ class MatrixBridge:
             if not isinstance(response, RoomSendResponse):
                 return False
             request["failure_notice_event_id"] = response.event_id
-        if pending and pending[0] is request:
+        if self._is_pending_request_head(pending, request):
             pending.pop(0)
         self.state.save()
         return True
@@ -3157,9 +3178,19 @@ class MatrixBridge:
             self.state.save()
             return
         pending = self.state.data["pending"][agent.key]
-        was_head = bool(pending and pending[0] is request)
-        if any(item is request for item in pending):
-            pending[:] = [item for item in pending if item is not request]
+        was_head = bool(
+            pending
+            and self._request_matches_identity(pending[0], request)
+        )
+        if any(
+            self._request_matches_identity(item, request)
+            for item in pending
+        ):
+            pending[:] = [
+                item
+                for item in pending
+                if not self._request_matches_identity(item, request)
+            ]
             self.state.save()
             await self._update_queue_notice(
                 agent,
@@ -5062,7 +5093,7 @@ class MatrixBridge:
                 self.state.save()
                 return False
             self._defer_unconfirmed_steering_group(pending, request)
-            if pending and pending[0] is request:
+            if self._is_pending_request_head(pending, request):
                 pending.pop(0)
             self.state.save()
             if not pending:
@@ -5082,7 +5113,7 @@ class MatrixBridge:
                 disposition,
                 status_detail or "Matrix request failed",
             )
-            if disposition == "timeout":
+            if disposition in {"timeout", "delivery_failed"}:
                 if not await self._complete_failed_answer(
                     agent,
                     request,
@@ -5102,7 +5133,7 @@ class MatrixBridge:
                     )
                     self.state.save()
                     return False
-            if pending and pending[0] is request:
+            if self._is_pending_request_head(pending, request):
                 pending.pop(0)
             self.state.save()
             if not pending:

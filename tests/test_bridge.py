@@ -1318,6 +1318,11 @@ def test_persistent_final_delivery_failure_fails_qitem_and_advances(tmp_path):
     started = []
 
     async def send(*args, **kwargs):
+        if (
+            len(args) >= 2
+            and "Matrix-Antwort konnte nicht zugestellt werden" in args[1]
+        ):
+            return RoomSendResponse("$failure", args[0])
         return SimpleNamespace(status_code="M_UNKNOWN")
 
     async def fail_qitem(agent_arg, request_arg, reason):
@@ -2080,10 +2085,8 @@ def test_failed_answer_recovery_updates_card_and_starts_next():
     )
     cards = []
     started = []
-
-    async def complete_failed(agent_arg, request, pending):
-        pending.pop(0)
-        return True
+    sent = []
+    failed_qitems = []
 
     async def update_notice(agent_arg, room_id, waiting_count):
         cards.append(
@@ -2094,13 +2097,22 @@ def test_failed_answer_recovery_updates_card_and_starts_next():
         started.append(request["id"])
         request["started_at"] = time.time()
 
+    async def send(room_id, text, reply_to=None, **kwargs):
+        sent.append((text, reply_to, kwargs))
+        return RoomSendResponse("$failure", room_id)
+
+    async def fail_qitem(agent_arg, request, resolution):
+        failed_qitems.append((request["id"], resolution))
+        return True
+
     async def typing(*args, **kwargs):
         return None
 
     async def status(*args, **kwargs):
         return None
 
-    bridge._complete_failed_answer = complete_failed
+    bridge._send = send
+    bridge._fail_inbound_qitem = fail_qitem
     bridge._update_queue_notice = update_notice
     bridge._start_request = start_request
     bridge._set_typing = typing
@@ -2111,6 +2123,22 @@ def test_failed_answer_recovery_updates_card_and_starts_next():
     assert started == [waiting["id"]]
     assert len(cards) == 1
     assert '**Aktiv:** Text · "Waiting after failure"' in cards[-1]
+    assert sent == [
+        (
+            (
+                "Die Matrix-Antwort konnte nicht zugestellt werden: "
+                "Matrix answer delivery failed"
+            ),
+            "$failed",
+            {
+                "thread_root": "$failed",
+                "tx_id": "failure-request-$failed",
+            },
+        )
+    ]
+    assert failed_qitems == [
+        ("request-$failed", "Matrix answer delivery failed")
+    ]
 
 
 def test_matrix_message_creates_priority_qitem():

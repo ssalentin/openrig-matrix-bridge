@@ -421,6 +421,8 @@ def test_final_delivery_failure_retries_terminal_card_before_advancing(tmp_path)
 
     async def send(room_id, text, reply_to=None, **kwargs):
         sent.append((text, reply_to, kwargs))
+        if "Matrix-Antwort konnte nicht zugestellt werden" in text:
+            return RoomSendResponse("$failure", room_id)
         return SimpleNamespace(status_code="M_UNKNOWN")
 
     async def reject_edit(room_id, event_id, text, **kwargs):
@@ -462,6 +464,13 @@ def test_final_delivery_failure_retries_terminal_card_before_advancing(tmp_path)
         )
     ]
     assert sum(text == "Fertig." for text, _reply_to, _kwargs in sent) == 3
+    assert (
+        sum(
+            "Matrix-Antwort konnte nicht zugestellt werden" in text
+            for text, _reply_to, _kwargs in sent
+        )
+        == 1
+    )
 
 
 def test_activity_refresh_edits_the_same_card_for_needs_input(tmp_path):
