@@ -356,20 +356,128 @@ async def _set_matrix_device_name(
             )
 
 
+async def _validate_matrix_token(homeserver: str, token: str) -> dict:
+    """Validate Matrix access token by calling whoami endpoint.
+
+    Returns the whoami response dict with user_id and device_id.
+    Raises RuntimeError with actionable guidance if validation fails.
+    """
+    if not token:
+        raise RuntimeError(
+            "MATRIX_ACCESS_TOKEN environment variable is not set. "
+            "Set it before running setup: export MATRIX_ACCESS_TOKEN='your-token'. "
+            "Never pass the token as a command-line argument."
+        )
+
+    timeout = aiohttp.ClientTimeout(total=15)
+    try:
+        async with (
+            aiohttp.ClientSession(timeout=timeout) as session,
+            session.get(
+                f"{homeserver}/_matrix/client/v3/account/whoami",
+                headers={"Authorization": f"Bearer {token}"},
+            ) as response,
+        ):
+            if response.status == 401:
+                raise RuntimeError(
+                    "Matrix access token is invalid or expired. "
+                    "Generate a new bot device token from your Matrix client and "
+                    "set MATRIX_ACCESS_TOKEN to the new value."
+                )
+            if response.status == 403:
+                raise RuntimeError(
+                    "Matrix access token is forbidden for this homeserver. "
+                    "Verify the token belongs to the bot account on this homeserver."
+                )
+            if response.status != 200:
+                body = (await response.text())[:300]
+                raise RuntimeError(
+                    f"Matrix token validation failed with HTTP {response.status}: {body}. "
+                    "Verify the homeserver URL is correct and accessible."
+                )
+            return await response.json()
+    except aiohttp.ClientError as exc:
+        raise RuntimeError(
+            f"Cannot reach Matrix homeserver {homeserver}: {exc}. "
+            "Check the homeserver URL and network connectivity."
+        ) from exc
+
+
 def run_setup(args: argparse.Namespace) -> None:
+    """Run interactive setup for the OpenRig Matrix bridge.
+
+    Creates or updates the bridge configuration with discovered Codex seats.
+    Validates the Matrix token before writing any config files.
+    """
+    config_path = args.config
+
+    # Check for existing config
+    if config_path.exists():
+        print(f"warning: config file already exists: {config_path}")
+        response = input("Overwrite existing config? (yes/no): ").strip().lower()
+        if response not in ("yes", "y"):
+            raise SystemExit("setup aborted by user")
+
+    # Check for already-running bridge
+    state_dir = Path(args.state_dir or Path.home() / ".local" / "state" / "openrig-matrix-bridge")
+    if instance_is_running(state_dir):
+        raise SystemExit(
+            f"the Matrix bridge is already running for state directory {state_dir}. "
+            "Stop the existing bridge before running setup again."
+        )
+
+    # Gather Matrix credentials with helpful prompts
     try:
         homeserver = validate_homeserver(
-            (args.homeserver or input("Matrix homeserver URL: ")).strip()
+            (args.homeserver or input("Matrix homeserver URL (e.g., https://matrix.org): ")).strip()
         )
     except ConfigError as exc:
         raise SystemExit(str(exc)) from exc
+
+    if not args.user_id:
+        print("\nTo find your bot's Matrix user ID:")
+        print("  1. Open your Matrix client (Element, etc.)")
+        print("  2. Click on the bot account's profile")
+        print("  3. Copy the full user ID (e.g., @openrig-bot:matrix.org)")
     user_id = (args.user_id or input("Bot Matrix user ID: ")).strip()
+
+    if not args.device_id:
+        print("\nTo find your bot's device ID:")
+        print("  1. In Element: Settings → All Settings → Sessions")
+        print("  2. Find the current session and copy the device ID")
     device_id = (args.device_id or input("Bot Matrix device ID: ")).strip()
+
+    if not args.allowed_user:
+        print("\nTo find your owner Matrix user ID:")
+        print("  1. Open your Matrix client with your personal account")
+        print("  2. Click on your profile")
+        print("  3. Copy the full user ID (e.g., @you:matrix.org)")
     allowed_user = (args.allowed_user or input("Owner Matrix user ID: ")).strip()
+
+    # Validate Matrix token BEFORE discovering agents or writing config
+    token = os.environ.get("MATRIX_ACCESS_TOKEN", "")
+    if token:
+        print("validating Matrix access token...")
+        try:
+            whoami = asyncio.run(_validate_matrix_token(homeserver, token))
+            print(f"✓ Matrix token valid for {whoami.get('user_id')}")
+            if whoami.get("user_id") != user_id:
+                print(
+                    f"warning: token is for {whoami.get('user_id')} "
+                    f"but --user-id specified {user_id}"
+                )
+        except RuntimeError as exc:
+            raise SystemExit(f"Matrix token validation failed: {exc}") from exc
+    else:
+        print(
+            "warning: MATRIX_ACCESS_TOKEN not set. "
+            "Set it before starting the bridge: export MATRIX_ACCESS_TOKEN='your-token'"
+        )
+
+    # Discover running Codex seats
+    print(f"discovering Codex seats via {args.rig_command}...")
     agents = discover_openrig_agents(args.rig_command)
-    state_dir = Path(
-        args.state_dir or Path.home() / ".local" / "state" / "openrig-matrix-bridge"
-    )
+    print(f"found {len(agents)} running Codex seat(s): {', '.join(agents.keys())}")
     download_root = Path(
         args.download_root
         or Path.home() / ".cache" / "openrig-matrix-bridge" / "parakeet"
@@ -691,23 +799,34 @@ def run_send_message(args: argparse.Namespace, config) -> int:
 
 
 async def _doctor(config_path: Path) -> int:
+    """Run health checks on the bridge configuration.
+
+    Validates Matrix token, directory permissions, Codex seats, and model readiness.
+    Returns 0 on success, 1 if any errors were found.
+    """
     config = load_config(config_path)
     token = os.environ.get("MATRIX_ACCESS_TOKEN", "")
     errors: list[str] = []
     warnings: list[str] = []
+
     if not token:
-        errors.append("MATRIX_ACCESS_TOKEN is not set")
+        errors.append(
+            "MATRIX_ACCESS_TOKEN is not set. "
+            "Set it: export MATRIX_ACCESS_TOKEN='your-token'"
+        )
     else:
-        timeout = aiohttp.ClientTimeout(total=15)
-        async with (
-            aiohttp.ClientSession(timeout=timeout) as session,
-            session.get(
-                f"{config.homeserver}/_matrix/client/v3/account/whoami",
-                headers={"Authorization": f"Bearer {token}"},
-            ) as response,
-        ):
-            if response.status != 200:
-                errors.append(f"Matrix whoami failed with HTTP {response.status}")
+        try:
+            whoami = await _validate_matrix_token(config.homeserver, token)
+            if whoami.get("user_id") != config.user_id:
+                warnings.append(
+                    f"token is for {whoami.get('user_id')} but config expects {config.user_id}"
+                )
+            if whoami.get("device_id") != config.device_id:
+                warnings.append(
+                    f"token is for device {whoami.get('device_id')} but config expects {config.device_id}"
+                )
+        except RuntimeError as exc:
+            errors.append(f"Matrix token validation: {exc}")
     config.state_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
     probe = config.state_dir / ".write-test"
     try:
@@ -837,4 +956,14 @@ def main() -> None:
         print(ensure_model(config.transcription.download_root))
         return
     token = os.environ.get("MATRIX_ACCESS_TOKEN", "")
-    asyncio.run(MatrixBridge(config, token).run())
+
+    # Acquire instance lock before running the bridge
+    try:
+        lock_handle = acquire_instance_lock(config.state_dir)
+    except InstanceAlreadyRunning as exc:
+        raise SystemExit(str(exc)) from exc
+
+    try:
+        asyncio.run(MatrixBridge(config, token).run())
+    finally:
+        lock_handle.close()

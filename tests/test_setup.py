@@ -20,6 +20,12 @@ def _setup_args(tmp_path: Path, *extra: str):
             str(tmp_path / "state"),
             "--download-root",
             str(tmp_path / "models"),
+            "--homeserver",
+            "https://matrix.example.org",
+            "--user-id",
+            "@bot:matrix.example.org",
+            "--device-id",
+            "TESTDEVICE",
             "--allowed-user",
             "@owner:matrix.example.org",
             "--rig-command",
@@ -27,6 +33,7 @@ def _setup_args(tmp_path: Path, *extra: str):
             "--codex-home",
             str(tmp_path / "codex"),
             "--no-human-registration",
+            "--skip-model",
             *extra,
         ]
     )
@@ -51,6 +58,13 @@ def _mock_existing_install(monkeypatch):
             "device_id": "RELAY_BRIDGE",
         }
 
+    async def validate_token(homeserver, token):
+        calls.append(("validate-token", homeserver, token))
+        return {
+            "user_id": "@bot:matrix.example.org",
+            "device_id": "TESTDEVICE",
+        }
+
     async def display_name(homeserver, user_id, token, name):
         calls.append(("display-name", homeserver, user_id, token, name))
 
@@ -58,6 +72,7 @@ def _mock_existing_install(monkeypatch):
         calls.append(("device-name", homeserver, device_id, token, name))
 
     monkeypatch.setattr(cli, "discover_openrig_agents", discover)
+    monkeypatch.setattr(cli, "_validate_matrix_token", validate_token)
     monkeypatch.setattr(cli, "_matrix_whoami", whoami, raising=False)
     monkeypatch.setattr(cli, "_set_matrix_display_name", display_name)
     monkeypatch.setattr(cli, "_set_matrix_device_name", device_name)
@@ -111,7 +126,7 @@ def test_setup_reports_no_running_codex_seat_with_next_step(monkeypatch):
 
     monkeypatch.setattr(subprocess, "run", run)
 
-    with pytest.raises(RuntimeError, match="Start at least one running Codex seat"):
+    with pytest.raises(RuntimeError, match="Start at least one Codex seat"):
         cli.discover_openrig_agents("/opt/rig")
 
 
@@ -133,7 +148,7 @@ def test_setup_reports_duplicate_codex_seat(monkeypatch):
 
     monkeypatch.setattr(subprocess, "run", run)
 
-    with pytest.raises(RuntimeError, match="duplicate running Codex seat"):
+    with pytest.raises(RuntimeError, match="duplicate Codex seat"):
         cli.discover_openrig_agents("/opt/rig")
 
 
