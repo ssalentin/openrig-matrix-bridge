@@ -15,7 +15,8 @@ uv pip install --python .venv/bin/python -e '.[dev]'
 .venv/bin/python -m pytest -q
 .venv/bin/ruff check .
 python3 tools/check_markdown_links.py
-npx --yes markdownlint-cli2
+npm ci
+npx --no-install markdownlint-cli2
 ```
 
 Build both distributable artifacts, then inspect them and install each into
@@ -34,7 +35,8 @@ artifact-manifest documents. It runs from temporary working directories so the
 source checkout cannot satisfy imports accidentally.
 
 CI runs the unit, lint, documentation, artifact, and Matrix integration jobs on
-every push and pull request.
+every push and pull request. The Markdown linter is installed from the pinned
+`package-lock.json`, so the job does not resolve a moving latest release.
 
 ## Executable Matrix integration
 

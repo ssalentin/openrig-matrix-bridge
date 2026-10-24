@@ -18,6 +18,8 @@ ROOT = Path(__file__).resolve().parents[1]
 SDIST_SUPPORT_FILES = {
     "CHANGELOG.md",
     "LICENSE",
+    "package-lock.json",
+    "package.json",
     "README.md",
     "THIRD_PARTY_NOTICES.md",
     "config.example.yaml",

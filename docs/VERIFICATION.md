@@ -61,7 +61,7 @@ Observed results from the clean combined source:
 |---|---|---|---|
 | Unit tests | `.venv/bin/python -m pytest -q` | `88dccb3c92329918c62b68f871022d0972377cd8` | 74 passed in 0.38s |
 | Python lint | `.venv/bin/ruff check .` | `88dccb3c92329918c62b68f871022d0972377cd8` | All checks passed |
-| Markdown structure | `npx --yes markdownlint-cli2` | `88dccb3c92329918c62b68f871022d0972377cd8` | 5 files, 0 issues |
+| Markdown structure | `npm ci && npx --no-install markdownlint-cli2` | `88dccb3c92329918c62b68f871022d0972377cd8` | 5 files, 0 issues |
 | Relative links | Documentation link-check command below | `88dccb3c92329918c62b68f871022d0972377cd8` | checked=5, missing=0 |
 | Release artifacts | `.venv/bin/python -m build` then `.venv/bin/python tools/verify_release.py --dist <dir>` | `88dccb3c92329918c62b68f871022d0972377cd8` | Wheel and sdist clean installs passed; 32 avatars present |
 | Matrix integration | `.venv/bin/python tools/matrix_integration.py --timeout 60 --source-commit 88dccb3c92329918c62b68f871022d0972377cd8` | `88dccb3c92329918c62b68f871022d0972377cd8` | `evidence_valid: true`, 13 checks passed in 24.2s |
@@ -80,7 +80,8 @@ python3 tools/check_markdown_links.py
 Check Markdown structure with the repository's narrow lint policy:
 
 ```bash
-npx --yes markdownlint-cli2
+npm ci
+npx --no-install markdownlint-cli2
 ```
 
 Run the artifact redaction check from the

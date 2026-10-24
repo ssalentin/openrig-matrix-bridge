@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import importlib.util
 import sys
+import tarfile
 from pathlib import Path
+
+import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 LINK_CHECKER = ROOT / "tools" / "check_markdown_links.py"
@@ -36,6 +39,12 @@ def test_relative_link_checker_reports_missing_local_target(tmp_path: Path):
     (tmp_path / "docs").mkdir()
     (tmp_path / "README.md").write_text(
         "[present](docs/present.md)\n"
+        '[titled](docs/present.md "Read this")\n'
+        "![missing image](docs/missing.png)\n"
+        "An `[inline example](not-a-link.md)` is code.\n"
+        "```text\n"
+        "![fenced example](also-not-a-link.png)\n"
+        "```\n"
         "[external](https://example.org/report)\n"
         "[fragment](#setup)\n",
         encoding="utf-8",
@@ -48,10 +57,43 @@ def test_relative_link_checker_reports_missing_local_target(tmp_path: Path):
 
     missing = checker.find_missing_links(tmp_path)
 
-    assert missing == ["docs/broken.md: ../not-there.md"]
+    assert missing == [
+        "README.md: docs/missing.png",
+        "docs/broken.md: ../not-there.md",
+    ]
 
 
 def test_release_verifier_requires_all_published_evidence_docs():
     verifier = load_module(RELEASE_VERIFIER, "release_artifact_verifier")
 
     assert PUBLISHED_DOCS <= set(verifier.SDIST_SUPPORT_FILES)
+
+
+def make_sdist(path: Path, verifier, names: set[str]) -> None:
+    root = f"openrig_matrix_bridge-{verifier.project_version()}"
+    with tarfile.open(path, "w:gz") as archive:
+        for name in sorted(names):
+            info = tarfile.TarInfo(f"{root}/{name}")
+            info.size = 0
+            archive.addfile(info)
+
+
+def test_release_verifier_accepts_complete_sdist(tmp_path: Path):
+    verifier = load_module(RELEASE_VERIFIER, "release_artifact_verifier_complete")
+    artifact = tmp_path / "complete.tar.gz"
+    make_sdist(artifact, verifier, verifier.SDIST_SUPPORT_FILES)
+
+    verifier.inspect_sdist(artifact)
+
+
+def test_release_verifier_rejects_sdist_missing_evidence(tmp_path: Path):
+    verifier = load_module(RELEASE_VERIFIER, "release_artifact_verifier_missing")
+    artifact = tmp_path / "missing.tar.gz"
+    make_sdist(
+        artifact,
+        verifier,
+        set(verifier.SDIST_SUPPORT_FILES) - {"docs/VERIFICATION.md"},
+    )
+
+    with pytest.raises(SystemExit, match="docs/VERIFICATION.md"):
+        verifier.inspect_sdist(artifact)
