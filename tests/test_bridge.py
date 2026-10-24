@@ -21,6 +21,7 @@ def bridge_with_room():
     bridge.client = RecordingClient()
     bridge.agent_statuses = {}
     bridge.state = SimpleNamespace(
+        save=lambda: None,
         data={
             "rooms": {
                 "advisor": {
@@ -53,7 +54,7 @@ def test_status_uses_topic_and_structured_event_instead_of_room_name():
     assert "m.room.name" not in {call[1] for call in bridge.client.calls}
 
 
-def test_restore_room_names_removes_legacy_status_emoji():
+def test_restore_room_names_removes_status_emoji_and_product_prefix():
     bridge = bridge_with_room()
     bridge.config = SimpleNamespace(
         agents={
@@ -71,9 +72,10 @@ def test_restore_room_names_removes_legacy_status_emoji():
         (
             "!advisor:matrix.example.org",
             "m.room.name",
-            {"name": "OpenRig · Advisor"},
+            {"name": "Advisor"},
         )
     ]
+    assert bridge.state.data["rooms"]["advisor"]["name"] == "Advisor"
 
 
 @pytest.mark.parametrize("text", ["ja", "Ja", "JA!", "bestätigen", "stimmt"])

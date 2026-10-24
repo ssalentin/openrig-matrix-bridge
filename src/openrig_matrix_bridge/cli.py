@@ -9,6 +9,7 @@ import re
 import subprocess
 import tempfile
 from pathlib import Path
+from urllib.parse import quote
 
 import aiohttp
 import yaml
@@ -85,6 +86,25 @@ def _write_private_yaml(path: Path, data: dict) -> None:
             pass
 
 
+async def _set_matrix_display_name(
+    homeserver: str,
+    user_id: str,
+    token: str,
+    display_name: str,
+) -> None:
+    timeout = aiohttp.ClientTimeout(total=15)
+    async with aiohttp.ClientSession(timeout=timeout) as session, session.put(
+        f"{homeserver}/_matrix/client/v3/profile/{quote(user_id, safe='')}/displayname",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"displayname": display_name},
+    ) as response:
+        if response.status != 200:
+            body = (await response.text())[:500]
+            raise RuntimeError(
+                f"Matrix display-name update failed with HTTP {response.status}: {body}"
+            )
+
+
 def run_setup(args: argparse.Namespace) -> None:
     homeserver = (args.homeserver or input("Matrix homeserver URL: ")).strip().rstrip("/")
     user_id = (args.user_id or input("Bot Matrix user ID: ")).strip()
@@ -123,6 +143,12 @@ def run_setup(args: argparse.Namespace) -> None:
     }
     _write_private_yaml(args.config, config)
     print(f"wrote {args.config} with {len(agents)} agent room(s)")
+    token = os.environ.get("MATRIX_ACCESS_TOKEN", "")
+    if token:
+        asyncio.run(_set_matrix_display_name(homeserver, user_id, token, "OpenRig"))
+        print("set Matrix bridge display name to OpenRig")
+    else:
+        print("warning: MATRIX_ACCESS_TOKEN is not set; Matrix display name unchanged")
     if config["transcription"]["enabled"] and not args.skip_model:
         model = ensure_model(download_root)
         print(f"Parakeet ready: {model}")

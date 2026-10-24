@@ -81,7 +81,7 @@ and invites the allow-listed owner.
 
 The first Matrix device may show an "unverified device" warning. Open the bot's
 device details in Element, start **Verify by emoji**, compare the seven emojis,
-then type `ja` in the `OpenRig · Advisor` room. Confirm the matching SAS in
+then type `ja` in the `Advisor` room. Confirm the matching SAS in
 Element. This verifies the specific Element device; repeat it for other devices
 that should trust the bot.
 

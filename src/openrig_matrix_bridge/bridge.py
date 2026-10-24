@@ -52,6 +52,10 @@ STATUS_LABELS = {
 }
 
 
+def room_name(agent: AgentConfig) -> str:
+    return agent.display_name
+
+
 def verification_decision(text: str) -> bool | None:
     normalized = text.strip().lower().rstrip(".!")
     if normalized in {"ja", "ja bitte", "bestätigen", "bestaetigen", "stimmt"}:
@@ -177,15 +181,18 @@ class MatrixBridge:
             room = self.state.data["rooms"].get(agent.key)
             if not room:
                 continue
-            base_name = str(room.get("name") or f"OpenRig · {agent.display_name}")
+            stable_name = room_name(agent)
             try:
                 await self.client.room_put_state(
                     str(room["room_id"]),
                     "m.room.name",
-                    {"name": base_name},
+                    {"name": stable_name},
                 )
             except Exception:
                 LOGGER.warning("failed to restore room name for %s", agent.session, exc_info=True)
+                continue
+            room["name"] = stable_name
+        self.state.save()
 
     async def _create_rooms(self) -> None:
         owner = self.config.allowed_users[0]
@@ -199,7 +206,7 @@ class MatrixBridge:
             },
         }
         for key, agent in self.config.agents.items():
-            name = f"OpenRig · {agent.display_name}"
+            name = room_name(agent)
             LOGGER.info("creating Matrix room %s for %s", name, agent.session)
             response = await self.client.room_create(
                 visibility=RoomVisibility.private,
