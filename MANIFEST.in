@@ -1,1 +1,6 @@
-include tools/generate_fal_avatars.py
+include CHANGELOG.md
+include THIRD_PARTY_NOTICES.md
+include config.example.yaml
+recursive-include deploy *
+recursive-include docs *.md
+recursive-include tools *.py

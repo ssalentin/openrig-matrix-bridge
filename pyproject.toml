@@ -26,7 +26,11 @@ Repository = "https://github.com/ssalentin/openrig-matrix-bridge"
 Issues = "https://github.com/ssalentin/openrig-matrix-bridge/issues"
 
 [project.optional-dependencies]
-dev = ["pytest>=8,<9"]
+dev = [
+  "build>=1.2,<2",
+  "pytest>=8,<9",
+  "ruff>=0.9,<1",
+]
 
 [tool.setuptools.packages.find]
 where = ["src"]
