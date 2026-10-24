@@ -10,6 +10,7 @@
 - Mirror visible Codex commentary into one editable Matrix status message per request.
 - Reduce active transcript and outbox polling latency to 200 ms.
 - Poll OpenRig human-queue handoffs every two seconds by default.
+- Show pending Matrix prompts in one editable pinned queue card.
 
 ## 0.4.0
 

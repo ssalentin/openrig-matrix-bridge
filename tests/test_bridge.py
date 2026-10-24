@@ -549,6 +549,54 @@ def test_explicit_message_is_published_and_recorded():
     assert bridge.state.data["messages"]["message-1"]["event_id"] == "$message"
 
 
+def test_queue_notice_is_one_updated_and_pinned_message():
+    bridge = object.__new__(MatrixBridge)
+    agent = AgentConfig(
+        key="advisor",
+        display_name="Advisor",
+        session="advisor-lead@kernel",
+    )
+    bridge.state = SimpleNamespace(
+        save=lambda: None,
+        data={"queue_notices": {}},
+    )
+    sent = []
+    edited = []
+    pinned = []
+    unpinned = []
+
+    async def send(room_id, text):
+        sent.append(text)
+        return RoomSendResponse("$queue", room_id)
+
+    async def edit(room_id, event_id, text):
+        edited.append((event_id, text))
+        return RoomSendResponse("$edit", room_id)
+
+    async def add_pinned(room_id, event_ids):
+        pinned.append(event_ids)
+
+    async def remove_pinned(room_id, event_ids):
+        unpinned.append(event_ids)
+
+    bridge._send = send
+    bridge._edit_message = edit
+    bridge._add_pinned = add_pinned
+    bridge._remove_pinned = remove_pinned
+
+    asyncio.run(bridge._update_queue_notice(agent, "!advisor", 2))
+    asyncio.run(bridge._update_queue_notice(agent, "!advisor", 3))
+    asyncio.run(bridge._update_queue_notice(agent, "!advisor", 0))
+
+    assert len(sent) == 1
+    assert "2 Nachrichten warten" in sent[0]
+    assert edited[0][0] == "$queue"
+    assert "3 Nachrichten warten" in edited[0][1]
+    assert pinned == [["$queue"], ["$queue"]]
+    assert unpinned == [["$queue"]]
+    assert bridge.state.data["queue_notices"]["advisor"]["pinned"] is False
+
+
 def test_human_queue_items_are_mirrored_to_the_source_agent_room():
     bridge = object.__new__(MatrixBridge)
     agent = AgentConfig(

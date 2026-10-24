@@ -109,6 +109,7 @@ class StateStore:
             "decisions": {},
             "media": {},
             "messages": {},
+            "queue_notices": {},
             "queue_mirror": {"initialized": False, "seen": {}},
         }
         if path.exists():
@@ -607,6 +608,43 @@ class MatrixBridge:
                     {"pinned": merged},
                 )
 
+    async def _update_queue_notice(
+        self,
+        agent: AgentConfig,
+        room_id: str,
+        waiting: int,
+    ) -> None:
+        notices = self.state.data.setdefault("queue_notices", {})
+        notice = notices.setdefault(agent.key, {})
+        event_id = notice.get("event_id")
+        if waiting <= 0:
+            if event_id and notice.get("pinned", True):
+                await self._remove_pinned(room_id, [str(event_id)])
+                notice["pinned"] = False
+                self.state.save()
+            return
+
+        noun = "Nachricht wartet" if waiting == 1 else "Nachrichten warten"
+        text = (
+            f"⏳ **Warteschlange:** {waiting} {noun}.\n\n"
+            "Diese Hinweiskarte wird aktualisiert und nach dem Abarbeiten entpinnt."
+        )
+        target_event_id = str(event_id) if event_id else None
+        response = None
+        if target_event_id:
+            response = await self._edit_message(room_id, target_event_id, text)
+        if not isinstance(response, RoomSendResponse):
+            response = await self._send(room_id, text)
+            target_event_id = None
+        if not isinstance(response, RoomSendResponse):
+            LOGGER.warning("queue notice delivery failed for %s: %s", agent.session, response)
+            return
+        if target_event_id is None:
+            notice["event_id"] = response.event_id
+        notice["pinned"] = True
+        self.state.save()
+        await self._add_pinned(room_id, [str(notice["event_id"])])
+
     async def _remove_pinned(self, room_id: str, event_ids: list[str]) -> None:
         lock = self.pin_locks.setdefault(room_id, asyncio.Lock())
         async with lock:
@@ -985,10 +1023,10 @@ class MatrixBridge:
             if len(pending) == 1:
                 await self._start_request(agent, pending[0], room.room_id)
             else:
-                await self._send(
+                await self._update_queue_notice(
+                    agent,
                     room.room_id,
-                    f"Warteschlange: {len(pending) - 1} weitere Nachricht(en) vor dir.",
-                    reply_to_event_id or event_id,
+                    len(pending) - 1,
                 )
 
     async def _handle_audio(
@@ -1190,6 +1228,11 @@ class MatrixBridge:
             pending = self.state.data["pending"][agent.key]
             pending.pop(0)
             self.state.save()
+            await self._update_queue_notice(
+                agent,
+                room_id,
+                max(0, len(pending) - 1),
+            )
             if pending:
                 await self._start_request(agent, pending[0], room_id)
             return
@@ -1210,6 +1253,13 @@ class MatrixBridge:
         async with self.locks[agent.key]:
             pending = self.state.data["pending"].get(agent.key, [])
             if not pending:
+                notice = self.state.data.get("queue_notices", {}).get(agent.key, {})
+                if notice.get("pinned"):
+                    await self._update_queue_notice(
+                        agent,
+                        self._room_for_agent(agent.key),
+                        0,
+                    )
                 try:
                     ref = await asyncio.to_thread(
                         self.resolver.resolve,
@@ -1249,6 +1299,11 @@ class MatrixBridge:
                     await self._update_agent_status(agent, "error", "Zeitüberschreitung")
                     pending.pop(0)
                     self.state.save()
+                    await self._update_queue_notice(
+                        agent,
+                        self._room_for_agent(agent.key),
+                        max(0, len(pending) - 1),
+                    )
                     return
                 path = Path(request["transcript_path"])
                 try:
@@ -1313,6 +1368,11 @@ class MatrixBridge:
             await self._update_agent_status(agent, "ready", "bereit")
             pending.pop(0)
             self.state.save()
+            await self._update_queue_notice(
+                agent,
+                room_id,
+                max(0, len(pending) - 1),
+            )
             if pending:
                 await self._start_request(agent, pending[0], room_id)
 

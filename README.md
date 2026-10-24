@@ -27,6 +27,10 @@ While an answer is being generated, Matrix also shows the bot typing. The same
 state is published as the `dev.openrig.agent_status` room event for clients and
 tooling that want structured data.
 
+Additional Matrix requests waiting behind the active one are shown in one
+pinned queue-status message. The bridge edits that message as the count changes
+and unpins it when the queue drains, avoiding a queue reply for every prompt.
+
 Visible Codex progress is mirrored into one Matrix status message per request.
 As new `commentary` messages arrive, the bridge edits that message in place
 instead of creating another thread reply. Hidden reasoning and raw tool output
