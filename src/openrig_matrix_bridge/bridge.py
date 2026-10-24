@@ -3588,6 +3588,7 @@ class MatrixBridge:
                 and getattr(self.config, "mirror_commentary", False)
                 and not pending[0].get("suppress_reply")
                 and not pending[0].get("activity_terminal_intent")
+                and pending[0].get("commentary_event_id")
             ):
                 request = pending[0]
                 request["activity_state"] = ref.activity_state
