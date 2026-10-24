@@ -96,10 +96,21 @@ and invites the allow-listed owner.
 ## Verify the bot
 
 The first Matrix device may show an "unverified device" warning. Open the bot's
-device details in Element, start **Verify by emoji**, compare the seven emojis,
-then type `ja` in the `Advisor` room. Confirm the matching SAS in
-Element. This verifies the specific Element device; repeat it for other devices
-that should trust the bot.
+device details in Element, select device `OpenRig` (`OPSNOTIFY01`), and start
+**Verify by emoji**. The bridge posts seven emojis in the `Advisor` room:
+
+1. Compare those emojis with the Element dialog.
+2. Click **They match** in Element.
+3. Type `ja` in the `Advisor` room.
+
+The bridge confirms the SAS and reports success. This verifies that specific
+Element device; repeat it for every other device that should trust the bot.
+Old messages may retain their historical warning, while new encrypted messages
+from the verified bot device should no longer be flagged.
+
+The current `matrix-nio` version can perform device-to-device SAS verification
+but has no complete cross-signing setup. Without bot cross-signing, verification
+does not automatically transfer trust to every device on the account.
 
 ## Decisions in Matrix
 

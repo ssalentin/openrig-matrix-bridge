@@ -188,6 +188,25 @@ async def _set_matrix_display_name(
             )
 
 
+async def _set_matrix_device_name(
+    homeserver: str,
+    device_id: str,
+    token: str,
+    display_name: str,
+) -> None:
+    timeout = aiohttp.ClientTimeout(total=15)
+    async with aiohttp.ClientSession(timeout=timeout) as session, session.put(
+        f"{homeserver}/_matrix/client/v3/devices/{quote(device_id, safe='')}",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"display_name": display_name},
+    ) as response:
+        if response.status != 200:
+            body = (await response.text())[:500]
+            raise RuntimeError(
+                f"Matrix device-name update failed with HTTP {response.status}: {body}"
+            )
+
+
 def run_setup(args: argparse.Namespace) -> None:
     homeserver = (args.homeserver or input("Matrix homeserver URL: ")).strip().rstrip("/")
     user_id = (args.user_id or input("Bot Matrix user ID: ")).strip()
@@ -258,7 +277,8 @@ def run_setup(args: argparse.Namespace) -> None:
     token = os.environ.get("MATRIX_ACCESS_TOKEN", "")
     if token:
         asyncio.run(_set_matrix_display_name(homeserver, user_id, token, "OpenRig"))
-        print("set Matrix bridge display name to OpenRig")
+        asyncio.run(_set_matrix_device_name(homeserver, device_id, token, "OpenRig"))
+        print("set Matrix bridge profile and device name to OpenRig")
     else:
         print("warning: MATRIX_ACCESS_TOKEN is not set; Matrix display name unchanged")
     if config["transcription"]["enabled"] and not args.skip_model:
