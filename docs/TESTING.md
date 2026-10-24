@@ -14,6 +14,8 @@ uv venv --python 3.11 .venv
 uv pip install --python .venv/bin/python -e '.[dev]'
 .venv/bin/python -m pytest -q
 .venv/bin/ruff check .
+python3 tools/check_markdown_links.py
+npx --yes markdownlint-cli2
 ```
 
 Build both distributable artifacts, then inspect them and install each into
@@ -26,8 +28,13 @@ separate clean virtual environments:
 
 `verify_release.py` checks the exact wheel/sdist filenames, wheel license and
 avatar data, source-distribution support files, console entry point, installed
-distribution metadata, and the 32-avatar runtime pool. It runs from temporary
-working directories so the source checkout cannot satisfy imports accidentally.
+distribution metadata, and the 32-avatar runtime pool. The source-distribution
+checks require the release plan, positioning, testing, verification, and
+artifact-manifest documents. It runs from temporary working directories so the
+source checkout cannot satisfy imports accidentally.
+
+CI runs the unit, lint, documentation, artifact, and Matrix integration jobs on
+every push and pull request.
 
 ## Executable Matrix integration
 

@@ -41,9 +41,21 @@ and no public-homeserver or federation test.
 
 ## Audit disposition
 
-The audit found one additional release-integrity gap: documentation checks were
-documented but not enforced in CI, and release-artifact verification did not
-assert all published evidence documents. It is tracked as issue #9.
+The lead audit found one additional release-integrity gap: documentation checks
+were documented but not enforced in CI, and release-artifact verification did
+not assert all published evidence documents. It is tracked as issue #9.
+
+Independent Phase 0 QA confirmed the baseline and found three release-critical
+areas outside the original feature scopes:
+
+- #11 makes prompt, answer, attachment, and qitem remote effects restart-safe;
+- #12 prevents qitem lifecycle failures from silently diverging from README
+  claims;
+- #13 rejects plaintext non-loopback Matrix transport and unsafe agent path
+  components.
+
+QA also confirmed that inbound thread roots must be preserved. That requirement
+belongs to #4 and has been added to its acceptance record.
 
 No implementation work may be folded into another issue's review boundary.
 Feature branches start from the release base, remain independently reviewable,
@@ -56,6 +68,9 @@ and are integrated into `release/0.11.0` only after their focused tests pass.
 | #5 | `issue-5-voice-status-edit` | Interface | `bridge.py` voice handler, `tests/test_bridge.py`, voice docs | base |
 | #3 | `issue-3-encrypted-attachments` | Core | `media.py`, `bridge.py` media paths, `config.py`, `cli.py`, integration harness | base |
 | #9 | `issue-9-release-validation` | Core + Interface | release verifier, CI, release tests, docs | plan |
+| #11 | TBD | Core | request state machine, outbox/state recovery, fault-injection harness | #3 and #5 integrated |
+| #12 | TBD | Core | qitem lifecycle and gateway error handling, fake transport faults | #3 and #5 integrated |
+| #13 | TBD | Interface | config URL/key validation and media path containment | base |
 | #4 | `issue-4-hybrid-steering` | Core | queue/request lifecycle in `bridge.py`, transcript attribution, config and harness | #3 and #5 integrated |
 | #1 | `issue-1-device-verification` | Interface + QA | SAS state machine and setup/doctor guidance, tests and manual evidence | real-client availability |
 | #7 | `issue-7-element-x-evidence` | Interface + QA | `docs/VERIFICATION.md`, redacted manual artifacts | owner screenshot or honest gap |
