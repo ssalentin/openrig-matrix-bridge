@@ -336,6 +336,7 @@ class MatrixOwner:
         filename: str,
         mimetype: str,
         body: str,
+        extra_content: dict[str, Any] | None = None,
     ) -> str:
         upload, encryption = await self.client.upload(
             io.BytesIO(data),
@@ -353,6 +354,8 @@ class MatrixOwner:
             "info": {"mimetype": mimetype, "size": len(data)},
             "file": {"url": upload.content_uri, **encryption},
         }
+        if extra_content:
+            content.update(extra_content)
         response = await self.client.room_send(
             room_id,
             "m.room.message",
@@ -1150,6 +1153,7 @@ class IntegrationRun:
         owner = self.owner
         pdf = b"%PDF-1.7\nQuarterly integration report\n%%EOF\n"
         unknown = b"\x00\xffopenrig unknown binary\x10"
+        ordinary_audio = b"OggS ordinary meeting recording"
         prompts_path = self.fake_state / "fake-openrig.json"
 
         await owner.send_encrypted_file(
@@ -1199,6 +1203,27 @@ class IntegrationRun:
         if len(unknown_files) != 1 or unknown_files[0].read_bytes() != unknown:
             raise CheckFailure("inbound unknown file was not stored intact")
 
+        await owner.send_encrypted_file(
+            room_id,
+            ordinary_audio,
+            msgtype="m.audio",
+            filename="meeting.ogg",
+            mimetype="audio/ogg",
+            body="meeting.ogg",
+        )
+        await owner.sync_until(
+            lambda: any(
+                "Originaldateiname: \"meeting.ogg\"" in item["prompt"]
+                and "Medientyp: audio/ogg" in item["prompt"]
+                for item in json.loads(prompts_path.read_text())["prompts"]
+            ),
+            self.args.timeout,
+            description="markerless audio generic attachment",
+        )
+        audio_files = list((self.state_dir / "media-inbox" / AGENT_KEY).glob("*.ogg"))
+        if len(audio_files) != 1 or audio_files[0].read_bytes() != ordinary_audio:
+            raise CheckFailure("markerless audio was not stored as a generic file")
+
         outbound_pdf = self.work / "outbound report.pdf"
         outbound_pdf.write_bytes(pdf)
         pdf_count = len(owner.files)
@@ -1234,6 +1259,15 @@ class IntegrationRun:
             raise CheckFailure(f"outbound PDF metadata changed: {pdf_content.get('info')}")
         if await owner.download_media(pdf_event) != pdf:
             raise CheckFailure("outbound PDF did not decrypt byte-for-byte")
+        pdf_request_id = str(outbound.stdout).split()[0]
+        pdf_record = self.bridge_state()["media"][pdf_request_id]
+        pdf_snapshot = Path(pdf_record["snapshot_path"])
+        if (
+            pdf_snapshot.parent != self.state_dir / "media-outbox" / "files"
+            or pdf_snapshot.stat().st_mode & 0o777 != 0o600
+            or pdf_snapshot.read_bytes() != pdf
+        ):
+            raise CheckFailure("outbound PDF did not use its private immutable snapshot")
         raw_pdf = await owner.raw_event(room_id, pdf_event.event_id)
         if (
             raw_pdf.get("type") != "m.room.encrypted"
@@ -1284,10 +1318,12 @@ class IntegrationRun:
             "pass",
             (
                 "Encrypted PDF and unknown binary attachments were transferred in "
-                "both directions through disposable Synapse. Inbound files were "
-                "stored under generated agent inbox paths with original metadata; "
-                "outbound m.file events preserved filename, MIME type and size, "
-                "decrypted byte-for-byte, and were Megolm-encrypted on the wire."
+                "both directions through disposable Synapse, and markerless audio "
+                "used the generic attachment path. Inbound files were stored under "
+                "generated agent inbox paths with original metadata; outbound m.file "
+                "events used private snapshots with preserved filename, MIME type "
+                "and size, decrypted byte-for-byte, and were Megolm-encrypted on "
+                "the wire."
             ),
         )
 
@@ -1314,6 +1350,10 @@ class IntegrationRun:
                 f"expected one pending attachment request, found {pending_requests}"
             )
         request_id = pending_requests[0].stem
+        pending_request = json.loads(pending_requests[0].read_text())
+        recovery_snapshot = Path(pending_request["snapshot_path"])
+        recovery_bytes = recovery_snapshot.read_bytes()
+        recovery.write_bytes(b"mutated source after admission")
         recovery_count = len(owner.files)
         self.start_bridge()
         deadline = time.monotonic() + self.args.timeout
@@ -1339,8 +1379,10 @@ class IntegrationRun:
                 "restart recovery delivered the pending attachment more than once"
             )
         recovery_event = owner.files[-1]
-        if await owner.download_media(recovery_event) != recovery.read_bytes():
-            raise CheckFailure("restart-recovered attachment bytes changed")
+        if await owner.download_media(recovery_event) != recovery_bytes:
+            raise CheckFailure(
+                "restart-recovered attachment did not use the admitted snapshot"
+            )
         state = self.bridge_state()
         delivered = state.get("media", {}).get(request_id)
         if (
@@ -1357,7 +1399,9 @@ class IntegrationRun:
             (
                 "A generic-file request was durably queued while the bridge was "
                 "stopped, then delivered exactly once after restart. The persisted "
-                "success record names the same Matrix event ID observed by the owner."
+                "success record names the same Matrix event ID observed by the owner; "
+                "the delivered bytes came from the private snapshot even after the "
+                "mutable source was replaced."
             ),
         )
 
@@ -1372,6 +1416,7 @@ class IntegrationRun:
             filename="voice.ogg",
             mimetype="audio/ogg",
             body="voice.ogg",
+            extra_content={"org.matrix.msc3245.voice": {}},
         )
         await owner.sync_until(
             lambda: any(

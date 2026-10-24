@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import json
 import time
 from types import SimpleNamespace
@@ -10,6 +11,7 @@ from nio import (
     RoomEncryptedImage,
     RoomGetEventResponse,
     RoomGetStateEventResponse,
+    RoomMessageAudio,
     RoomSendResponse,
     UploadResponse,
 )
@@ -2075,6 +2077,12 @@ def test_publishes_encrypted_generic_file_with_original_metadata(
 ):
     source = tmp_path / filename
     source.write_bytes(payload)
+    snapshot_dir = tmp_path / "media-outbox" / "files"
+    snapshot_dir.mkdir(parents=True)
+    snapshot = snapshot_dir / f"snapshot{suffix}"
+    snapshot.write_bytes(payload)
+    snapshot.chmod(0o600)
+    source.write_bytes(b"mutable source changed after admission")
     room_id = "!advisor:matrix.example.org"
     request_id = f"file-{suffix.removeprefix('.')}"
     events = []
@@ -2089,7 +2097,7 @@ def test_publishes_encrypted_generic_file_with_original_metadata(
             *,
             encrypt,
         ):
-            assert data(None, None).read_bytes() == payload
+            assert data.read() == payload
             assert content_type == mime_type
             assert filename == source.name
             assert filesize == len(payload)
@@ -2121,6 +2129,7 @@ def test_publishes_encrypted_generic_file_with_original_metadata(
 
     bridge = object.__new__(MatrixBridge)
     bridge.config = SimpleNamespace(
+        state_dir=tmp_path,
         agents={
             "advisor": AgentConfig(
                 key="advisor",
@@ -2151,6 +2160,9 @@ def test_publishes_encrypted_generic_file_with_original_metadata(
         "kind": "file",
         "agent": "advisor",
         "path": str(source),
+        "snapshot_path": str(snapshot),
+        "size": len(payload),
+        "sha256": hashlib.sha256(payload).hexdigest(),
         "filename": filename,
         "mime_type": mime_type,
         "caption": "Returned report",
@@ -2178,6 +2190,7 @@ def test_publishes_encrypted_generic_file_with_original_metadata(
         "agent": "advisor",
         "event_id": f"$event-{suffix}",
         "path": str(source),
+        "snapshot_path": str(snapshot),
         "filename": filename,
         "mime_type": mime_type,
         "size": len(payload),
@@ -2188,6 +2201,11 @@ def test_publishes_encrypted_generic_file_with_original_metadata(
 def test_rejects_incomplete_encrypted_file_upload_metadata(tmp_path):
     source = tmp_path / "payload.pdf"
     source.write_bytes(b"%PDF-1.7\nupload metadata\n")
+    snapshot_dir = tmp_path / "media-outbox" / "files"
+    snapshot_dir.mkdir(parents=True)
+    snapshot = snapshot_dir / "file-incomplete"
+    snapshot.write_bytes(source.read_bytes())
+    snapshot.chmod(0o600)
     room_id = "!advisor:matrix.example.org"
 
     class FileClient:
@@ -2207,6 +2225,7 @@ def test_rejects_incomplete_encrypted_file_upload_metadata(tmp_path):
 
     bridge = object.__new__(MatrixBridge)
     bridge.config = SimpleNamespace(
+        state_dir=tmp_path,
         agents={
             "advisor": AgentConfig(
                 key="advisor",
@@ -2230,11 +2249,63 @@ def test_rejects_incomplete_encrypted_file_upload_metadata(tmp_path):
         "kind": "file",
         "agent": "advisor",
         "path": str(source),
+        "snapshot_path": str(snapshot),
+        "size": snapshot.stat().st_size,
+        "sha256": hashlib.sha256(snapshot.read_bytes()).hexdigest(),
         "filename": source.name,
         "mime_type": "application/pdf",
     }
 
     with pytest.raises(MediaError, match="encryption metadata"):
+        asyncio.run(bridge._publish_file(request))
+
+
+def test_rejects_tampered_file_snapshot_before_upload(tmp_path):
+    payload = b"approved!"
+    snapshot = tmp_path / "media-outbox" / "files" / "file-tampered"
+    snapshot.parent.mkdir(parents=True)
+    snapshot.write_bytes(b"tampered!")
+    snapshot.chmod(0o600)
+    room_id = "!advisor:matrix.example.org"
+
+    class FileClient:
+        async def upload(self, *args, **kwargs):
+            raise AssertionError("tampered snapshot was uploaded")
+
+    bridge = object.__new__(MatrixBridge)
+    bridge.config = SimpleNamespace(
+        state_dir=tmp_path,
+        agents={
+            "advisor": AgentConfig(
+                key="advisor",
+                display_name="Advisor",
+                session="advisor-lead@kernel",
+            )
+        },
+        media=SimpleNamespace(enabled=True, max_file_bytes=1024),
+    )
+    bridge.state = SimpleNamespace(
+        save=lambda: None,
+        data={
+            "rooms": {"advisor": {"room_id": room_id}},
+            "media": {},
+            "media_failures": {},
+        },
+    )
+    bridge.client = FileClient()
+    request = {
+        "id": "file-tampered",
+        "kind": "file",
+        "agent": "advisor",
+        "path": "/untrusted/source.pdf",
+        "snapshot_path": str(snapshot),
+        "size": len(payload),
+        "sha256": hashlib.sha256(payload).hexdigest(),
+        "filename": "source.pdf",
+        "mime_type": "application/pdf",
+    }
+
+    with pytest.raises(MediaError, match="digest"):
         asyncio.run(bridge._publish_file(request))
 
 
@@ -2618,6 +2689,109 @@ def test_encrypted_file_write_failure_leaves_no_partial_file(
     assert forwarded == []
     assert list((tmp_path / "advisor").glob("*")) == []
     assert any("konnte nicht übernommen" in reply for reply in replies)
+
+
+def test_markerless_audio_is_routed_to_generic_file_handler():
+    bridge = object.__new__(MatrixBridge)
+    forwarded = []
+
+    async def handle_file(room, event):
+        forwarded.append((room, event))
+
+    bridge._handle_file = handle_file
+    room = SimpleNamespace(room_id="!advisor:matrix.example.org")
+    event = RoomMessageAudio(
+        {
+            "event_id": "$ordinary-audio",
+            "sender": "@owner:matrix.example.org",
+            "origin_server_ts": 1_700_000_000_000,
+            "type": "m.room.message",
+            "content": {
+                "msgtype": "m.audio",
+                "body": "meeting.ogg",
+                "filename": "meeting.ogg",
+                "info": {"mimetype": "audio/ogg", "size": 20},
+            },
+        },
+        "mxc://matrix.example.org/ordinary-audio",
+        "meeting.ogg",
+    )
+
+    asyncio.run(bridge._handle_audio(room, event))
+
+    assert forwarded == [(room, event)]
+
+
+def test_marked_voice_audio_is_transcribed_and_forwarded():
+    agent = AgentConfig(
+        key="advisor",
+        display_name="Advisor",
+        session="advisor-lead@kernel",
+    )
+    bridge = object.__new__(MatrixBridge)
+    bridge.config = SimpleNamespace(
+        user_id="@openrig:matrix.example.org",
+        allowed_users=("@owner:matrix.example.org",),
+        max_message_age_minutes=-1,
+        agents={"advisor": agent},
+        transcription=SimpleNamespace(enabled=True, max_audio_bytes=1024),
+    )
+    bridge.room_agents = {"!advisor:matrix.example.org": "advisor"}
+    bridge.processed_events = set()
+    bridge.state = SimpleNamespace(
+        save=lambda: None,
+        data={"processed_events": []},
+    )
+    transcribed = []
+    bridge.transcriber = SimpleNamespace(
+        transcribe=lambda audio, filename: transcribed.append((audio, filename))
+        or "recognized speech"
+    )
+    replies = []
+    forwarded = []
+
+    class AudioClient:
+        async def download(self, mxc):
+            return SimpleNamespace(body=b"OggS voice bytes")
+
+    async def send(room_id, text, reply_to=None):
+        replies.append(text)
+        return RoomSendResponse("$reply", room_id)
+
+    async def enqueue_prompt(*args):
+        forwarded.append(args)
+
+    async def handle_file(room, event):
+        raise AssertionError(f"voice note was routed as a file: {event}")
+
+    bridge.client = AudioClient()
+    bridge._send = send
+    bridge._enqueue_prompt = enqueue_prompt
+    bridge._handle_file = handle_file
+    room = SimpleNamespace(room_id="!advisor:matrix.example.org")
+    event = RoomMessageAudio(
+        {
+            "event_id": "$voice",
+            "sender": "@owner:matrix.example.org",
+            "origin_server_ts": 1_700_000_000_000,
+            "type": "m.room.message",
+            "content": {
+                "msgtype": "m.audio",
+                "body": "voice.ogg",
+                "info": {"mimetype": "audio/ogg", "size": 16},
+                "org.matrix.msc3245.voice": {},
+            },
+        },
+        "mxc://matrix.example.org/voice",
+        "voice.ogg",
+    )
+
+    asyncio.run(bridge._handle_audio(room, event))
+
+    assert transcribed == [(b"OggS voice bytes", "voice.ogg")]
+    assert "recognized speech" in replies[-1]
+    assert forwarded[0][5] == "audio"
+    assert "recognized speech" in forwarded[0][4]
 
 
 async def _completed(value):

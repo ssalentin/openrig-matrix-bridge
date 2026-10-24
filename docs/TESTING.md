@@ -69,9 +69,9 @@ is recorded in the report.
 | `fifo-queue-notice` | Per-agent FIFO ordering with second-send timestamp after first completion, plus the pinned queue notice |
 | `silent-reaction-feedback` | Reaction forwarding without a visible reply |
 | `encrypted-images` | Owner-to-agent encrypted PNG storage and agent-to-owner `send-image` byte round trip |
-| `encrypted-files` | Encrypted PDF and unknown-binary transfer in both directions; generated safe inbox paths; `m.file` metadata and byte-preserving decryption |
-| `attachment-restart-recovery` | A generic-file request queued while stopped is delivered exactly once after restart and records the observed Matrix event ID |
-| `voice-disabled-path` | Encrypted audio handling with voice deliberately disabled |
+| `encrypted-files` | Encrypted PDF and unknown-binary transfer in both directions; markerless audio fallback; generated safe inbox paths; private admitted snapshots; `m.file` metadata and byte-preserving decryption |
+| `attachment-restart-recovery` | A generic-file request queued while stopped is delivered exactly once after restart from its snapshot after the source is changed, and records the observed Matrix event ID |
+| `voice-disabled-path` | A voice-message-marked encrypted audio event reaches transcription handling while voice is deliberately disabled |
 | `decision-and-poll` | Pinned decision brief, MSC3381 poll, encrypted response, prompt forwarding, unpin |
 | `proactive-message` | Explicit encrypted `send-message` |
 | `restart-recovery` | Room/state reuse and status recovery across bridge restart |
@@ -90,6 +90,8 @@ is recorded in the report.
   devices are outside this local harness.
 - Attachment malware scanning, client-specific previews, and operator-managed
   inbox retention are not implemented.
+- The integration OpenRig transport is deterministic; crash-after-send
+  idempotency remains a separate issue #11 gate.
 
 ## Report schema
 

@@ -2,12 +2,15 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import errno
+import hashlib
 import json
 import logging
 import mimetypes
 import os
 import re
 import shutil
+import stat
 import subprocess
 import tempfile
 import time
@@ -168,6 +171,85 @@ def _write_private_json(path: Path, data: dict) -> None:
             os.unlink(temporary)
         except FileNotFoundError:
             pass
+
+
+def _snapshot_regular_file(
+    source: Path,
+    destination: Path,
+    max_bytes: int,
+) -> tuple[int, str]:
+    try:
+        source_info = source.lstat()
+    except FileNotFoundError as exc:
+        raise SystemExit(f"file not found: {source}") from exc
+    if not stat.S_ISREG(source_info.st_mode) or stat.S_ISLNK(source_info.st_mode):
+        raise SystemExit(f"file must be a regular file (symlinks are not followed): {source}")
+
+    descriptor = -1
+    temp_name: str | None = None
+    try:
+        try:
+            descriptor = os.open(
+                source,
+                os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0),
+            )
+        except OSError as exc:
+            if exc.errno == errno.ELOOP:
+                raise SystemExit(
+                    f"file must be a regular file (symlinks are not followed): {source}"
+                ) from exc
+            raise SystemExit(f"file could not be opened: {exc}") from exc
+        opened = os.fstat(descriptor)
+        if not stat.S_ISREG(opened.st_mode):
+            raise SystemExit(f"file must be a regular file: {source}")
+        if opened.st_size <= 0 or opened.st_size > max_bytes:
+            raise SystemExit(
+                "file size must be between 1 and "
+                f"{max_bytes} bytes"
+            )
+
+        destination.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        temp_fd, temp_name = tempfile.mkstemp(
+            prefix=".snapshot-",
+            dir=destination.parent,
+        )
+        digest = hashlib.sha256()
+        size = 0
+        with (
+            os.fdopen(descriptor, "rb", closefd=True) as input_handle,
+            os.fdopen(temp_fd, "wb", closefd=True) as output_handle,
+        ):
+            descriptor = -1
+            while chunk := input_handle.read(1024 * 1024):
+                size += len(chunk)
+                if size > max_bytes:
+                    raise SystemExit(
+                        "file size must be between 1 and "
+                        f"{max_bytes} bytes"
+                    )
+                digest.update(chunk)
+                output_handle.write(chunk)
+            finished = os.fstat(input_handle.fileno())
+            if (
+                size != opened.st_size
+                or finished.st_size != opened.st_size
+                or finished.st_mtime_ns != opened.st_mtime_ns
+            ):
+                raise SystemExit(f"file changed while it was being snapshotted: {source}")
+            output_handle.flush()
+            os.fsync(output_handle.fileno())
+        os.chmod(temp_name, 0o600)
+        os.replace(temp_name, destination)
+        temp_name = None
+        return size, digest.hexdigest()
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+        if temp_name is not None:
+            try:
+                os.unlink(temp_name)
+            except FileNotFoundError:
+                pass
 
 
 async def _set_matrix_display_name(
@@ -434,30 +516,39 @@ def run_send_file(args: argparse.Namespace, config) -> int:
         raise SystemExit(f"unknown agent: {args.agent}")
     if not args.path:
         raise SystemExit("send-file requires --path")
-    file_path = args.path.expanduser().resolve()
-    if not file_path.is_file():
-        raise SystemExit(f"file not found: {file_path}")
-    size = file_path.stat().st_size
-    if size <= 0 or size > config.media.max_file_bytes:
-        raise SystemExit(
-            "file size must be between 1 and "
-            f"{config.media.max_file_bytes} bytes"
-        )
+    file_path = Path(os.path.abspath(args.path.expanduser()))
     inferred_mime = mimetypes.guess_type(file_path.name)[0]
     mime_type = normalize_mime_type(args.mime_type or inferred_mime)
 
     request_id = f"file-{uuid.uuid4().hex}"
+    snapshot_dir = config.state_dir / "media-outbox" / "files"
+    snapshot_path = snapshot_dir / request_id
+    size, sha256 = _snapshot_regular_file(
+        file_path,
+        snapshot_path,
+        config.media.max_file_bytes,
+    )
     request = {
         "id": request_id,
         "kind": "file",
         "agent": args.agent,
         "path": str(file_path),
+        "snapshot_path": str(snapshot_path),
+        "size": size,
+        "sha256": sha256,
         "filename": file_path.name,
         "mime_type": mime_type,
         "caption": (args.caption or "").strip(),
     }
     outbox = config.state_dir / "media-outbox"
-    _write_private_json(outbox / f"{request_id}.json", request)
+    try:
+        _write_private_json(outbox / f"{request_id}.json", request)
+    except Exception:
+        try:
+            snapshot_path.unlink()
+        except FileNotFoundError:
+            pass
+        raise
 
     deadline = time.monotonic() + max(0, args.wait_seconds)
     state_path = config.state_dir / "state.json"

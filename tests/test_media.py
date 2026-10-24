@@ -2,6 +2,7 @@ from openrig_matrix_bridge.media import (
     detect_image_type,
     encrypted_file_content,
     encrypted_image_content,
+    is_voice_message_content,
     normalize_mime_type,
 )
 
@@ -64,3 +65,22 @@ def test_normalizes_declared_mime_types_with_generic_fallback():
     assert normalize_mime_type("application/x-openrig-custom") == "application/x-openrig-custom"
     assert normalize_mime_type("not a mime type") == "application/octet-stream"
     assert normalize_mime_type(None) == "application/octet-stream"
+
+
+def test_detects_legacy_and_current_voice_message_markers():
+    assert is_voice_message_content({"org.matrix.msc2516.voice": {}})
+    assert is_voice_message_content({"org.matrix.msc3245.voice": {}})
+    assert is_voice_message_content(
+        {
+            "org.matrix.msc2516.voice": {},
+            "org.matrix.msc3245.voice": {},
+        }
+    )
+    assert not is_voice_message_content(
+        {
+            "msgtype": "m.audio",
+            "body": "meeting.ogg",
+            "info": {"mimetype": "audio/ogg"},
+        }
+    )
+    assert not is_voice_message_content(None)
