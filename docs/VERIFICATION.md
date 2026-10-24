@@ -98,14 +98,14 @@ preservation.
 ### Issue #11 restart-idempotency evidence
 
 The issue #11 source commit
-`807c160adca22350a4cabe7182eb4ee89664cd35` passed:
+`b09f18cdb11b5a7a40285d6a98ebc7240f4602cc` passed:
 
 | Check | Exact command | Observed result |
 |---|---|---|
-| Full tests | `.venv/bin/python -m pytest -q` | 151 passed |
-| Focused restart tests | `.venv/bin/python -m pytest -q tests/test_restart_idempotency.py` | 15 passed |
+| Full tests | `.venv/bin/python -m pytest -q` | 153 passed |
+| Focused restart tests | `.venv/bin/python -m pytest -q tests/test_restart_idempotency.py` | 17 passed |
 | Python lint | `.venv/bin/ruff check .` | All checks passed |
-| Matrix integration | `.venv/bin/python tools/matrix_integration.py --timeout 60 --source-commit 807c160adca22350a4cabe7182eb4ee89664cd35` | `evidence_valid: true`, 19/19 checks in 50.5s |
+| Matrix integration | `.venv/bin/python tools/matrix_integration.py --timeout 60 --source-commit b09f18cdb11b5a7a40285d6a98ebc7240f4602cc` | `evidence_valid: true`, 19/19 checks in 55.4s |
 
 The machine-readable result is
 [`issue-11-integration-report.json`](artifacts/issue-11-integration-report.json).
@@ -116,6 +116,9 @@ one qitem. Unit fault tests also cover busy-agent recovery, ambiguous prompt
 sends, qitem claim/finish/fail reconciliation, and pre-0.11 state migration.
 Legacy requests with `started_at` but no `prompt_phase` are treated as
 ambiguous and fail closed rather than being resent.
+Tracked legacy requests are also excluded from the normal poller; an
+authoritative done qitem completes locally without answer replay, while a
+transient qitem-close error emits one stable failure and stops polling.
 
 ## Documentation checks
 
