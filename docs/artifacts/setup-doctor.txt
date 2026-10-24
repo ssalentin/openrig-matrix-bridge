@@ -1,0 +1,29 @@
+OpenRig Matrix Bridge - setup and doctor evidence
+Tested source commit: 88dccb3c92329918c62b68f871022d0972377cd8
+Generated from the clean-worktree harness report at 2026-10-24T17:22:44Z
+
+Command boundary:
+  .venv/bin/python tools/matrix_integration.py --timeout 60 \
+    --source-commit 88dccb3c92329918c62b68f871022d0972377cd8
+
+Environment:
+  Matrix: disposable Synapse on loopback
+  OpenRig: deterministic subprocess fixture (not a live Codex seat)
+  Voice: disabled; Parakeet model intentionally not downloaded
+
+Observed:
+  PASS setup-and-doctor
+    setup wrote <temporary-workdir>/config.yaml with 1 agent room
+    doctor exited 0
+
+  PASS doctor-invalid-token
+    doctor exited non-zero and reported the invalid Matrix token
+
+Source report:
+  docs/artifacts/integration-report.json
+  status: pass
+  evidence_valid: true
+  schema_version: 1
+
+This proves the setup/doctor user path against a real Matrix homeserver. It
+does not claim a production homeserver, a live owner device, or live Codex.

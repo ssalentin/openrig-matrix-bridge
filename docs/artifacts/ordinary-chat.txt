@@ -1,0 +1,33 @@
+OpenRig Matrix Bridge - ordinary chat evidence
+Tested source commit: 88dccb3c92329918c62b68f871022d0972377cd8
+Generated from the clean-worktree harness report at 2026-10-24T17:22:44Z
+
+Environment:
+  Matrix: disposable Synapse on loopback
+  OpenRig: deterministic fake CLI subprocess; this is not a live Codex turn
+
+Observed:
+  PASS encrypted-chat-queue-typing
+    Owner text was encrypted by matrix-nio.
+    The homeserver reported the raw event type m.room.encrypted with Megolm
+    ciphertext.
+    The deterministic OpenRig transport received it exactly once.
+    The recorded qitem history is pending -> in-progress -> done.
+    The owner client observed the bridge typing indicator.
+    Visible commentary was mirrored.
+    The final answer returned in-thread.
+    The raw Matrix thread relation references the owner prompt.
+
+  PASS fifo-queue-notice
+    A second message arrived during a deliberately slow first turn.
+    Matrix showed the pinned queue notice.
+    The transport recorded the second prompt only after the first prompt
+    completed.
+
+Source report:
+  docs/artifacts/integration-report.json
+  evidence_valid: true
+
+Known boundary:
+  Prompt delivery and transcript completion are represented by the fake
+  OpenRig transport. A live Codex turn remains a manual check.

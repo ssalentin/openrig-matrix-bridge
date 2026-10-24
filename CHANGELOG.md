@@ -1,5 +1,35 @@
 # Changelog
 
+## 0.10.0
+
+- Treat an owner leaving or rejecting an agent room as a durable opt-out instead
+  of recreating the room on restart.
+
+## 0.9.0
+
+- Pass Matrix reactions to the responsible agent as silent feedback without
+  creating visible replies or inbound queue items.
+
+## 0.8.1
+
+- Restore the complete unique ghost avatar pool and the dedicated OpenRig
+  profile avatar.
+
+## 0.8.0
+
+- Create priority-aware OpenRig queue items for accepted Matrix messages and
+  track their claim and completion lifecycle.
+
+## 0.7.1
+
+- Refine the generated avatar silhouettes so each pool entry is visually
+  distinct.
+
+## 0.7.0
+
+- Add automatic, persistent, collision-free avatar assignment for agent rooms
+  and the bridge profile.
+
 ## 0.6.0
 
 - Add 32 original OpenRig agent avatars with deterministic collision-free assignment.

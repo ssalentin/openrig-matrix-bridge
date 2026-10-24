@@ -1,0 +1,12 @@
+{
+  "config": {
+    // Evidence tables intentionally allow long, specific claim cells.
+    "MD013": false,
+    // Table separators are rendered consistently even when source widths vary.
+    "MD060": false
+  },
+  "globs": [
+    "README.md",
+    "docs/**/*.md"
+  ]
+}
