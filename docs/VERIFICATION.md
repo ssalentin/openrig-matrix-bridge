@@ -122,11 +122,12 @@ transient qitem-close error emits one stable failure and stops polling.
 
 ### Issue #12 qitem lifecycle evidence
 
-Issue #12 source `91eeb4d06ec4148d647d982b722d289de3f409cf` passed 158 tests
+Issue #12 source `7113ac5c30d38ef5a5faf9416faa04c8a78ace1d` passed 161 tests
 and the exact-source Matrix harness (`evidence_valid: true`, 19/19 checks in
-51.6s). The fake transport injects create, claim, finish, and fail errors.
+47.6s). The fake transport injects create, claim, finish, and fail errors.
 Bridge tests verify creation failure sends no prompt, claim failure remains
-retryable, and finish/fail failure remains pending for restart reconciliation.
+retryable, finish/fail failure remains pending, prompt/timeout failures retain
+the request when fail-close fails, and terminal qitems advance FIFO.
 The report is
 [`issue-12-integration-report.json`](artifacts/issue-12-integration-report.json).
 

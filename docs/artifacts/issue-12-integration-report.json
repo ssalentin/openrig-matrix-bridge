@@ -4,7 +4,7 @@
     "rejected_rooms": 1,
     "rooms": 0
   },
-  "duration_seconds": 51.6,
+  "duration_seconds": 47.6,
   "environment": {
     "command": "python tools/matrix_integration.py",
     "element_sas": "not exercised; requires a human client action",
@@ -14,7 +14,7 @@
     "voice_model": "not downloaded or executed"
   },
   "evidence_valid": true,
-  "generated_at": "2026-10-24T19:20:38.248546+00:00",
+  "generated_at": "2026-10-24T19:26:08.982025+00:00",
   "known_gaps": [
     "Real Codex prompt delivery and native transcript completion are represented by the fake OpenRig subprocess transport.",
     "The Parakeet model and real voice transcription were not run.",
@@ -36,7 +36,7 @@
     },
     {
       "automated": true,
-      "evidence": "`setup` wrote one agent room; `doctor` exited 0 (wrote /tmp/openrig-matrix-integration.t3r4_6nq/config.yaml with 1 agent room(s))",
+      "evidence": "`setup` wrote one agent room; `doctor` exited 0 (wrote /tmp/openrig-matrix-integration.m_1rhosm/config.yaml with 1 agent room(s))",
       "id": "setup-and-doctor",
       "status": "pass"
     },
@@ -72,7 +72,7 @@
     },
     {
       "automated": true,
-      "evidence": "A second owner message arrived during a deliberately slow first turn; Matrix showed the pinned queue notice and the fake OpenRig transport received the second prompt only after recording completion of the first (1792869612.5565283 < 1792869612.930704).",
+      "evidence": "A second owner message arrived during a deliberately slow first turn; Matrix showed the pinned queue notice and the fake OpenRig transport received the second prompt only after recording completion of the first (1792869947.1347532 < 1792869947.5578842).",
       "id": "fifo-queue-notice",
       "status": "pass"
     },
@@ -148,7 +148,7 @@
   "target": {
     "package": "openrig-matrix-bridge",
     "source": {
-      "commit": "91eeb4d06ec4148d647d982b722d289de3f409cf",
+      "commit": "7113ac5c30d38ef5a5faf9416faa04c8a78ace1d",
       "source": "git",
       "worktree_clean": true
     },
