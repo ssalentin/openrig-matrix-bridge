@@ -2,14 +2,30 @@ import subprocess
 from pathlib import Path
 
 from openrig_matrix_bridge.cli import (
+    _agent_key,
     _ensure_human_registration,
     _human_entity_id,
 )
+from openrig_matrix_bridge.config import SAFE_AGENT_KEY
 
 
 def test_human_entity_id_is_derived_from_matrix_user():
     assert _human_entity_id("@owner:matrix.example.org") == "owner"
     assert _human_entity_id("@First.Last:matrix.example.org") == "first-last"
+
+
+def test_agent_key_bounds_long_session_and_collision_expansion():
+    session = f"{'a' * 100}@rig"
+
+    primary = _agent_key(session)
+    collision_expanded = _agent_key(f"second-rig-{session}")
+
+    assert len(primary) == 64
+    assert len(collision_expanded) == 64
+    assert primary != collision_expanded
+    assert SAFE_AGENT_KEY.fullmatch(primary)
+    assert SAFE_AGENT_KEY.fullmatch(collision_expanded)
+    assert primary == _agent_key(session)
 
 
 def test_setup_registers_missing_human_with_reusable_binding(monkeypatch):
