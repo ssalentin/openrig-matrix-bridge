@@ -153,6 +153,61 @@ def test_failure_reconciliation_accepts_already_failed_qitem(tmp_path):
     assert calls == []
 
 
+def test_qitem_fail_crash_recovers_without_repeating_remote_failure(tmp_path):
+    item = request(
+        prompt_phase="sent",
+        answer_phase="failed",
+        qitem_phase="claimed",
+    )
+    bridge, agent = operation_bridge(tmp_path, item)
+    calls = []
+
+    class Gateway:
+        async def queue_fail(self, qitem_id, session, resolution):
+            calls.append((qitem_id, session, resolution))
+
+    bridge.gateway = Gateway()
+
+    def crash_after_effect(point):
+        if point == "qitem_fail":
+            raise SimulatedCrash("process died after qitem failure")
+
+    bridge._crash_after_effect = crash_after_effect
+
+    try:
+        asyncio.run(
+            bridge._fail_inbound_qitem(
+                agent,
+                item,
+                "terminal failure",
+            )
+        )
+    except SimulatedCrash:
+        pass
+
+    assert item["qitem_phase"] == "failing"
+
+    class RecoveryGateway:
+        async def queue_show(self, qitem_id):
+            return {"state": "failed"}
+
+        async def queue_fail(self, qitem_id, session, resolution):
+            raise AssertionError("failed qitem was repeated after restart")
+
+    bridge.gateway = RecoveryGateway()
+    bridge._crash_after_effect = lambda point: None
+
+    assert asyncio.run(
+        bridge._fail_inbound_qitem(
+            agent,
+            item,
+            "terminal failure",
+        )
+    ) is True
+    assert calls == [("qitem-one", agent.session, "terminal failure")]
+    assert item["qitem_phase"] == "failed"
+
+
 def test_ambiguous_prompt_send_is_failed_once_without_resend(tmp_path):
     item = request(
         prompt_phase="sending",
