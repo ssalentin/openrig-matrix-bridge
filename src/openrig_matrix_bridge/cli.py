@@ -44,6 +44,66 @@ def _display_name(logical_id: str) -> str:
     return " ".join(part.capitalize() for part in re.split(r"[._-]+", logical_id) if part)
 
 
+def _human_entity_id(matrix_user_id: str) -> str:
+    local = matrix_user_id.removeprefix("@").split(":", 1)[0]
+    return re.sub(r"[^a-z0-9]+", "-", local.lower()).strip("-") or "owner"
+
+
+def _ensure_human_registration(
+    *,
+    command: str,
+    entity_id: str,
+    display_name: str,
+    delivery_class: str,
+    state_dir: Path,
+    actor: str,
+    replace: bool,
+) -> str:
+    show = subprocess.run(
+        [command, "gateway", "human", "show", entity_id],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    if show.returncode == 0 and not replace:
+        return "retained"
+
+    binding = (
+        f"slack:openrig-matrix:file:{state_dir / 'human-delivery.env'}:primary"
+    )
+    args = [
+        command,
+        "gateway",
+        "human",
+        "add",
+        entity_id,
+        "--display-name",
+        display_name,
+        "--binding",
+        binding,
+        "--delivery-class",
+        delivery_class,
+        "--reason",
+        "Register OpenRig Matrix bridge human delivery",
+        "--actor",
+        actor,
+    ]
+    if replace:
+        args.append("--replace")
+    added = subprocess.run(
+        args,
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    if added.returncode != 0:
+        detail = added.stderr.strip() or added.stdout.strip()
+        raise RuntimeError(f"human registration failed: {detail}")
+    return "replaced" if replace else "added"
+
+
 def discover_openrig_agents(command: str = "rig") -> dict[str, dict[str, str]]:
     result = subprocess.run(
         [command, "ps", "--nodes", "-A", "--json"],
@@ -138,6 +198,24 @@ def run_setup(args: argparse.Namespace) -> None:
     download_root = Path(
         args.download_root or Path.home() / ".cache" / "openrig-matrix-bridge" / "parakeet"
     )
+    human_entity_id = args.human_id or _human_entity_id(allowed_user)
+    human_destination = (
+        args.human_destination[0]
+        if args.human_destination
+        else f"{human_entity_id}@external"
+    )
+    human_display_name = args.human_display_name or human_entity_id.title()
+    human_result = None
+    if not args.no_human_registration:
+        human_result = _ensure_human_registration(
+            command=args.rig_command,
+            entity_id=human_entity_id,
+            display_name=human_display_name,
+            delivery_class=args.human_delivery_class,
+            state_dir=state_dir,
+            actor=args.sender_session,
+            replace=args.replace_human,
+        )
     config = {
         "matrix": {
             "homeserver": homeserver,
@@ -150,7 +228,7 @@ def run_setup(args: argparse.Namespace) -> None:
             "command": args.rig_command,
             "codex_home": str(args.codex_home),
             "sender_session": args.sender_session,
-            "human_destinations": args.human_destination or [],
+            "human_destinations": [human_destination],
             "poll_interval_seconds": 1.0,
             "max_message_age_minutes": 60,
             "response_timeout_minutes": 360,
@@ -171,6 +249,11 @@ def run_setup(args: argparse.Namespace) -> None:
     }
     _write_private_yaml(args.config, config)
     print(f"wrote {args.config} with {len(agents)} agent room(s)")
+    if human_result:
+        print(
+            f"OpenRig human {human_entity_id}@external: {human_result} "
+            f"(Matrix delivery via this bridge)"
+        )
     token = os.environ.get("MATRIX_ACCESS_TOKEN", "")
     if token:
         asyncio.run(_set_matrix_display_name(homeserver, user_id, token, "OpenRig"))
@@ -437,6 +520,15 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--sender-session", default="matrix-bridge@kernel")
     parser.add_argument("--human-destination", action="append")
+    parser.add_argument("--human-id")
+    parser.add_argument("--human-display-name")
+    parser.add_argument(
+        "--human-delivery-class",
+        choices=("A", "B", "C", "D"),
+        default="B",
+    )
+    parser.add_argument("--replace-human", action="store_true")
+    parser.add_argument("--no-human-registration", action="store_true")
     parser.add_argument("--parakeet-threads", type=int, default=4)
     parser.add_argument("--skip-model", action="store_true")
     parser.add_argument("--without-voice", action="store_true")

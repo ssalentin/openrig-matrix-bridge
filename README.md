@@ -66,7 +66,13 @@ MATRIX_ACCESS_TOKEN='...' openrig-matrix-bridge setup \
 ```
 
 `setup` discovers the live seats, creates one agent mapping per seat, and
-downloads the Parakeet model. Diagnose the installation at any time:
+downloads the Parakeet model. It also registers the Matrix owner as OpenRig's
+human recipient. Current OpenRig releases require a Slack-typed connector
+binding for that registry entry. The bridge uses it as a routing marker while
+performing Matrix delivery itself, so this connector does not need a Slack
+token. Use
+`--no-human-registration` to skip this step, or `--replace-human` to refresh an
+existing registration. Diagnose the installation at any time:
 
 ```bash
 MATRIX_ACCESS_TOKEN='...' openrig-matrix-bridge doctor
