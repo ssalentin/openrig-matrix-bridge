@@ -1639,6 +1639,7 @@ class MatrixBridge:
             if record.get("state") in {
                 "starting",
                 "sending-status",
+                "status-send-failed",
                 "processing",
                 "recovering",
                 "committing",
@@ -1654,6 +1655,7 @@ class MatrixBridge:
         if record.get("state") not in {
             "starting",
             "sending-status",
+            "status-send-failed",
             "processing",
             "recovering",
             "committing",
@@ -1675,7 +1677,7 @@ class MatrixBridge:
 
         state = str(record.get("state") or "")
         if (
-            state in {"starting", "sending-status"}
+            state in {"starting", "sending-status", "status-send-failed"}
             and not record.get("status_event_id")
             and not await self._send_voice_status(voice_event_id)
         ):

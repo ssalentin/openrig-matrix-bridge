@@ -2197,7 +2197,10 @@ def test_recover_committing_voice_status_preserves_terminal_transcript():
     assert "terminal_intent" not in status
 
 
-def test_recover_unsaved_voice_status_retries_same_status_transaction():
+@pytest.mark.parametrize("interrupted_state", ["sending-status", "status-send-failed"])
+def test_recover_unsaved_voice_status_retries_same_status_transaction(
+    interrupted_state,
+):
     bridge, room, _event = _voice_bridge()
     bridge.state.data["voice_statuses"] = {
         "$voice": {
@@ -2206,7 +2209,7 @@ def test_recover_unsaved_voice_status_retries_same_status_transaction():
             "status_tx_id": "voice-status-transaction",
             "thread_root_event_id": "$root",
             "reply_to_event_id": "$root",
-            "state": "sending-status",
+            "state": interrupted_state,
         }
     }
     sent = []
@@ -2233,6 +2236,43 @@ def test_recover_unsaved_voice_status_retries_same_status_transaction():
     assert edited[0][0] == "$voice-status"
     assert "Neustart" in edited[0][1]
     assert bridge.state.data["voice_statuses"]["$voice"]["state"] == "interrupted"
+
+
+def test_recover_failed_status_send_retries_then_posts_one_terminal_fallback():
+    bridge, room, _event = _voice_bridge()
+    bridge.state.data["voice_statuses"] = {
+        "$voice": {
+            "room_id": room.room_id,
+            "status_event_id": None,
+            "status_tx_id": "voice-status-transaction",
+            "thread_root_event_id": "$root",
+            "reply_to_event_id": "$root",
+            "state": "status-send-failed",
+        }
+    }
+    sent = []
+
+    async def send(room_id, text, reply_to=None, **kwargs):
+        sent.append((text, reply_to, kwargs))
+        if len(sent) == 1:
+            return SimpleNamespace(status_code="M_UNKNOWN")
+        return RoomSendResponse("$fallback", room_id)
+
+    bridge._send = send
+
+    asyncio.run(bridge._recover_voice_statuses())
+
+    assert [text for text, _reply_to, _kwargs in sent] == [
+        "Sprachnachricht empfangen, transkribiere …",
+        (
+            "Die Sprachnachricht wurde durch einen Bridge-Neustart unterbrochen "
+            "und konnte nicht abgeschlossen werden. Bitte erneut senden.\n\n"
+            "(Statusmeldung konnte nicht bearbeitet werden.)"
+        ),
+    ]
+    assert sent[0][2]["tx_id"] == "voice-status-transaction"
+    assert "tx_id" in sent[1][2]
+    assert bridge.state.data["voice_statuses"]["$voice"]["state"] == "fallback"
 
 
 def test_recover_fallback_intent_does_not_retry_rejected_edit():
