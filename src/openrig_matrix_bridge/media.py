@@ -11,6 +11,10 @@ class MediaError(ValueError):
 
 
 GENERIC_MIME_TYPE = "application/octet-stream"
+VOICE_MESSAGE_MARKERS = (
+    "org.matrix.msc2516.voice",
+    "org.matrix.msc3245.voice",
+)
 _MIME_TYPE = re.compile(
     r"[!#$%&'*+\-.^_`|~0-9A-Za-z]+/[!#$%&'*+\-.^_`|~0-9A-Za-z]+"
 )
@@ -41,6 +45,12 @@ def normalize_mime_type(value: object) -> str:
     if len(candidate) > 255 or _MIME_TYPE.fullmatch(candidate) is None:
         return GENERIC_MIME_TYPE
     return candidate
+
+
+def is_voice_message_content(content: object) -> bool:
+    if not isinstance(content, dict):
+        return False
+    return any(marker in content for marker in VOICE_MESSAGE_MARKERS)
 
 
 def detect_image_file(path: Path) -> ImageType | None:

@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import os
 import re
+import stat
 import tempfile
 import time
 import uuid
@@ -68,6 +70,7 @@ from .media import (
     detect_image_type,
     encrypted_file_content,
     encrypted_image_content,
+    is_voice_message_content,
     normalize_mime_type,
 )
 from .openrig import (
@@ -112,6 +115,49 @@ def _has_complete_encryption_metadata(encryption: object) -> bool:
         and isinstance(encryption.get("iv"), str)
         and bool(encryption["iv"])
     )
+
+
+def _open_verified_snapshot(
+    path: Path,
+    *,
+    expected_size: int,
+    expected_sha256: str,
+    max_file_bytes: int,
+) -> Any:
+    descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    try:
+        metadata = os.fstat(descriptor)
+        if not stat.S_ISREG(metadata.st_mode):
+            raise MediaError("file snapshot is not a regular file")
+        if metadata.st_size != expected_size:
+            raise MediaError(
+                "file snapshot size changed: "
+                f"{metadata.st_size} instead of {expected_size} bytes"
+            )
+        if metadata.st_size <= 0 or metadata.st_size > max_file_bytes:
+            raise MediaError(
+                "file size must be between 1 and "
+                f"{max_file_bytes} bytes"
+            )
+        handle = os.fdopen(descriptor, "rb")
+        descriptor = -1
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+
+    try:
+        digest = hashlib.sha256()
+        size = 0
+        while chunk := handle.read(1024 * 1024):
+            size += len(chunk)
+            digest.update(chunk)
+        if size != expected_size or digest.hexdigest() != expected_sha256:
+            raise MediaError("file snapshot digest does not match admission metadata")
+        handle.seek(0)
+        return handle
+    except Exception:
+        handle.close()
+        raise
 
 
 def room_name(agent: AgentConfig) -> str:
@@ -742,25 +788,46 @@ class MatrixBridge:
             raise MediaError(f"no Matrix room configured for: {agent.key}")
 
         file_path = Path(str(request.get("path") or ""))
-        if not file_path.is_absolute() or not file_path.is_file():
-            raise MediaError(f"file not found: {file_path}")
-        size = file_path.stat().st_size
-        if size <= 0 or size > self.config.media.max_file_bytes:
-            raise MediaError(
-                "file size must be between 1 and "
-                f"{self.config.media.max_file_bytes} bytes"
-            )
+        snapshot_value = str(request.get("snapshot_path") or "")
+        expected_size = request.get("size")
+        expected_sha256 = request.get("sha256")
+        if (
+            not snapshot_value
+            or isinstance(expected_size, bool)
+            or not isinstance(expected_size, int)
+            or not isinstance(expected_sha256, str)
+            or len(expected_sha256) != 64
+        ):
+            raise MediaError("file request lacks snapshot size or digest metadata")
+        snapshot_path = Path(snapshot_value)
+        snapshot_root = self.config.state_dir / "media-outbox" / "files"
+        if not snapshot_path.is_absolute() or snapshot_path.parent != snapshot_root:
+            raise MediaError("file snapshot is outside the private outbox")
         filename = str(request.get("filename") or file_path.name)
         mime_type = normalize_mime_type(
             request.get("mime_type") or "application/octet-stream"
         )
-        upload, encryption = await self.client.upload(
-            lambda _retries, _timeouts: file_path,
-            content_type=mime_type,
-            filename=filename,
-            encrypt=True,
-            filesize=size,
-        )
+        try:
+            snapshot_handle = await asyncio.to_thread(
+                _open_verified_snapshot,
+                snapshot_path,
+                expected_size=expected_size,
+                expected_sha256=expected_sha256,
+                max_file_bytes=self.config.media.max_file_bytes,
+            )
+        except OSError as exc:
+            raise MediaError(f"file snapshot could not be opened: {exc}") from exc
+        size = expected_size
+        try:
+            upload, encryption = await self.client.upload(
+                snapshot_handle,
+                content_type=mime_type,
+                filename=filename,
+                encrypt=True,
+                filesize=size,
+            )
+        finally:
+            snapshot_handle.close()
         if not isinstance(upload, UploadResponse) or not _has_complete_encryption_metadata(
             encryption
         ):
@@ -790,6 +857,7 @@ class MatrixBridge:
             "agent": agent.key,
             "event_id": response.event_id,
             "path": str(file_path),
+            "snapshot_path": str(snapshot_path),
             "filename": filename,
             "mime_type": mime_type,
             "size": size,
@@ -1674,6 +1742,9 @@ class MatrixBridge:
         room: MatrixRoom,
         event: RoomMessageAudio | RoomEncryptedAudio,
     ) -> None:
+        if not is_voice_message_content(event.source.get("content", {})):
+            await self._handle_file(room, event)
+            return
         if event.sender == self.config.user_id:
             return
         agent = self._agent_for_room(room.room_id)
@@ -2116,7 +2187,12 @@ class MatrixBridge:
     async def _handle_file(
         self,
         room: MatrixRoom,
-        event: RoomMessageFile | RoomEncryptedFile,
+        event: (
+            RoomMessageFile
+            | RoomEncryptedFile
+            | RoomMessageAudio
+            | RoomEncryptedAudio
+        ),
     ) -> None:
         if not self.config.media.enabled:
             return
@@ -2177,7 +2253,7 @@ class MatrixBridge:
                     f"{self.config.media.max_file_bytes} Bytes"
                 )
             attachment = body
-            if isinstance(event, RoomEncryptedFile):
+            if isinstance(event, (RoomEncryptedAudio, RoomEncryptedFile)):
                 attachment = decrypt_attachment(
                     body,
                     event.key["k"],

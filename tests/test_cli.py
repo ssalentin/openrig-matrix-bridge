@@ -1,4 +1,6 @@
+import hashlib
 import json
+import os
 import subprocess
 from pathlib import Path
 from types import SimpleNamespace
@@ -157,6 +159,15 @@ def test_send_file_queues_original_metadata(
     assert request["filename"] == filename
     assert request["mime_type"] == expected_mime
     assert request["caption"] == "Returned artifact"
+    assert request["size"] == len(b"attachment payload")
+    assert request["sha256"] == hashlib.sha256(b"attachment payload").hexdigest()
+    snapshot = Path(request["snapshot_path"])
+    assert snapshot.parent == state_dir / "media-outbox" / "files"
+    assert snapshot.read_bytes() == b"attachment payload"
+    assert snapshot.stat().st_mode & 0o777 == 0o600
+
+    source.write_bytes(b"changed after admission")
+    assert snapshot.read_bytes() == b"attachment payload"
 
 
 def test_send_file_rejects_oversized_file_with_effective_limit(tmp_path):
@@ -177,3 +188,83 @@ def test_send_file_rejects_oversized_file_with_effective_limit(tmp_path):
 
     with pytest.raises(SystemExit, match="10 bytes"):
         run_send_file(args, config)
+
+
+def test_send_file_rejects_symlink_source(tmp_path):
+    target = tmp_path / "target.pdf"
+    target.write_bytes(b"%PDF-1.7\nsymlink target\n")
+    source = tmp_path / "linked.pdf"
+    source.symlink_to(target)
+    config = SimpleNamespace(
+        agents={"advisor": object()},
+        state_dir=tmp_path / "state",
+        media=SimpleNamespace(max_file_bytes=1024),
+    )
+    args = SimpleNamespace(
+        agent="advisor",
+        path=source,
+        caption=None,
+        mime_type=None,
+        wait_seconds=0,
+    )
+
+    with pytest.raises(SystemExit, match="regular file"):
+        run_send_file(args, config)
+
+    assert not (tmp_path / "state" / "media-outbox").exists()
+
+
+def test_send_file_rejects_non_regular_source(tmp_path):
+    source = tmp_path / "directory.pdf"
+    source.mkdir()
+    config = SimpleNamespace(
+        agents={"advisor": object()},
+        state_dir=tmp_path / "state",
+        media=SimpleNamespace(max_file_bytes=1024),
+    )
+    args = SimpleNamespace(
+        agent="advisor",
+        path=source,
+        caption=None,
+        mime_type=None,
+        wait_seconds=0,
+    )
+
+    with pytest.raises(SystemExit, match="regular file"):
+        run_send_file(args, config)
+
+
+def test_send_file_rejects_symlink_swapped_after_precheck(tmp_path, monkeypatch):
+    source = tmp_path / "source.pdf"
+    source.write_bytes(b"%PDF-1.7\noriginal\n")
+    target = tmp_path / "target.pdf"
+    target.write_bytes(b"%PDF-1.7\nreplacement\n")
+    config = SimpleNamespace(
+        agents={"advisor": object()},
+        state_dir=tmp_path / "state",
+        media=SimpleNamespace(max_file_bytes=1024),
+    )
+    args = SimpleNamespace(
+        agent="advisor",
+        path=source,
+        caption=None,
+        mime_type=None,
+        wait_seconds=0,
+    )
+    real_open = os.open
+    swapped = False
+
+    def swap_then_open(path, flags, *open_args, **open_kwargs):
+        nonlocal swapped
+        if not swapped and Path(path) == source:
+            swapped = True
+            source.unlink()
+            source.symlink_to(target)
+        return real_open(path, flags, *open_args, **open_kwargs)
+
+    monkeypatch.setattr(os, "open", swap_then_open)
+
+    with pytest.raises(SystemExit, match="regular file"):
+        run_send_file(args, config)
+
+    assert not (tmp_path / "state" / "media-outbox").exists()

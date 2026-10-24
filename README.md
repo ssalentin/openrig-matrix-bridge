@@ -231,6 +231,9 @@ status literals; the words mean “ready” and “working.”
    and forwards the prompt. A rejected edit produces a clearly labeled
    transcript fallback. A restart during processing replaces the stale status
    with an explicit terminal message instead of duplicating the transcript.
+   Only `m.audio` events carrying
+   `org.matrix.msc2516.voice` or `org.matrix.msc3245.voice` are voice notes;
+   markerless audio follows the generic-file path.
 7. React to a bridge-authored message. The reaction is forwarded as silent
    feedback and is not mirrored as a visible answer.
 8. Publish a decision (see below) and select an option. The choice is returned
@@ -354,18 +357,23 @@ bridge retries it after restart.
   metadata-inconsistent transfers are rejected without publishing a successful
   file.
 - Generic files are stored as `0600` files in `0700` directories. The bridge
-  does not automatically delete inbox files; apply your own retention policy.
-  Outbound request JSON and `state.json` retain local source paths, captions,
-  filenames, MIME types, sizes, and Matrix event IDs, so protect and redact the
-  state directory accordingly. File bytes are not copied into `state.json`.
+  does not automatically delete inbox files or outbound snapshots; apply your
+  own retention policy.
+  At `send-file` admission, the bridge rejects symlinks and non-regular source
+  paths, opens the selected file without following a final symlink, and copies
+  its bytes to a `0600` snapshot under `<state_dir>/media-outbox/files`.
+  The request records the source path, snapshot path, byte count, and SHA-256.
+  `state.json` never contains file bytes, but the snapshot directory does.
+  Protect and redact the complete state directory accordingly.
+- The bridge account must be trusted to read each explicitly requested source
+  path. The bridge does not drop privileges while taking the snapshot. After
+  admission, the original source may change or disappear; retries upload only
+  the immutable snapshot and verify its recorded size and digest.
 - Outbound requests in `<state_dir>/media-outbox` survive restart. A stable
   Matrix transaction ID prevents a retried request from creating a second
   event. Success is recorded only after a Matrix event ID is returned; terminal
   failures move to `media-outbox/failed` and are recorded in
   `media-failures` state.
-- Keep the source file available until delivery is confirmed. Removing or
-  resizing it before the bridge processes the request produces an explicit
-  failure.
 - Files are not malware-scanned and PDFs or office documents are not rendered
   in preview. Only configured allow-listed owners can send into the room.
 
