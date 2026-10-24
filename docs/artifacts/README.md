@@ -27,7 +27,7 @@ path, the observed result, the tested commit, and the environment boundary.
 | `ordinary-chat.txt` | Encrypted text, typing, qitem history, thread relation, commentary, answer, and FIFO completion gating | `88dccb3c92329918c62b68f871022d0972377cd8`; report `evidence_valid: true` |
 | `test-path.txt` | Unit, lint, Markdown, link, release, and Matrix integration commands with explicit boundaries | `88dccb3c92329918c62b68f871022d0972377cd8` |
 | `integration-report.json` | Machine-readable report for all 13 checks with clean source provenance | Source `88dccb3c92329918c62b68f871022d0972377cd8`; `worktree_clean: true` |
-| `issue-3-integration-report.json` | Machine-readable report for all 15 checks, including encrypted attachments and restart recovery | Source `3d7f8fb5211254bfb8f1161e9440874bb1d2ab03`; `worktree_clean: true` |
+| `issue-3-integration-report.json` | Machine-readable report for all 15 checks, including audio routing, admitted attachment snapshots, and restart recovery | Source `cb8aa4a5c513ce73a901c369137fa8fba1942f3d`; `worktree_clean: true` |
 
 Text artifacts are acceptable when they capture real command output. A
 screenshot alone is insufficient if the room context is ambiguous.
@@ -41,7 +41,7 @@ screenshot alone is insufficient if the room context is ambiguous.
 | `room-status.txt` | `2026-10-24T17:22:44Z` | `88dccb3c92329918c62b68f871022d0972377cd8` | Disposable Synapse; fake OpenRig CLI | Same harness run as `integration-report.json` | Synthetic localhost identities only |
 | `ordinary-chat.txt` | `2026-10-24T17:22:44Z` | `88dccb3c92329918c62b68f871022d0972377cd8` | Disposable Synapse; fake OpenRig CLI | Same harness run as `integration-report.json` | No IDs or tokens; boundary stated |
 | `test-path.txt` | `2026-10-24T17:22:44Z` | `88dccb3c92329918c62b68f871022d0972377cd8` | Repository docs/tests plus disposable Synapse | Commands listed inside artifact | No credentials or private infrastructure |
-| `issue-3-integration-report.json` | `2026-10-24T18:10:21Z` | `3d7f8fb5211254bfb8f1161e9440874bb1d2ab03` | Disposable Synapse on loopback; fake OpenRig CLI | `.venv/bin/python tools/matrix_integration.py --timeout 60 --source-commit 3d7f8fb5211254bfb8f1161e9440874bb1d2ab03` | Synthetic localhost fixtures; token/room/private-infrastructure scan clean |
+| `issue-3-integration-report.json` | `2026-10-24T18:21:01Z` | `cb8aa4a5c513ce73a901c369137fa8fba1942f3d` | Disposable Synapse on loopback; fake OpenRig CLI | `.venv/bin/python tools/matrix_integration.py --timeout 60 --source-commit cb8aa4a5c513ce73a901c369137fa8fba1942f3d` | Synthetic localhost fixtures; token/room/private-infrastructure scan clean |
 
 The evidence-only commit follows the tested source commit and is named in the
 QA/review handoff. This avoids the impossible self-reference of a commit

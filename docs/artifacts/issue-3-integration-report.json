@@ -1,10 +1,10 @@
 {
   "bridge_state_summary": {
-    "processed_matrix_events": 8,
+    "processed_matrix_events": 9,
     "rejected_rooms": 1,
     "rooms": 0
   },
-  "duration_seconds": 30.4,
+  "duration_seconds": 35.9,
   "environment": {
     "command": "python tools/matrix_integration.py",
     "element_sas": "not exercised; requires a human client action",
@@ -14,7 +14,7 @@
     "voice_model": "not downloaded or executed"
   },
   "evidence_valid": true,
-  "generated_at": "2026-10-24T18:10:21.702556+00:00",
+  "generated_at": "2026-10-24T18:21:01.807542+00:00",
   "known_gaps": [
     "Real Codex prompt delivery and native transcript completion are represented by the fake OpenRig subprocess transport.",
     "The Parakeet model and real voice transcription were not run.",
@@ -36,7 +36,7 @@
     },
     {
       "automated": true,
-      "evidence": "`setup` wrote one agent room; `doctor` exited 0 (wrote /tmp/openrig-matrix-integration.r9gak0vm/config.yaml with 1 agent room(s))",
+      "evidence": "`setup` wrote one agent room; `doctor` exited 0 (wrote /tmp/openrig-matrix-integration.a9wm9af2/config.yaml with 1 agent room(s))",
       "id": "setup-and-doctor",
       "status": "pass"
     },
@@ -54,7 +54,7 @@
     },
     {
       "automated": true,
-      "evidence": "A second owner message arrived during a deliberately slow first turn; Matrix showed the pinned queue notice and the fake OpenRig transport received the second prompt only after recording completion of the first (1792865405.2938268 < 1792865405.826474).",
+      "evidence": "A second owner message arrived during a deliberately slow first turn; Matrix showed the pinned queue notice and the fake OpenRig transport received the second prompt only after recording completion of the first (1792866042.3137462 < 1792866042.704506).",
       "id": "fifo-queue-notice",
       "status": "pass"
     },
@@ -72,13 +72,13 @@
     },
     {
       "automated": true,
-      "evidence": "Encrypted PDF and unknown binary attachments were transferred in both directions through disposable Synapse. Inbound files were stored under generated agent inbox paths with original metadata; outbound m.file events preserved filename, MIME type and size, decrypted byte-for-byte, and were Megolm-encrypted on the wire.",
+      "evidence": "Encrypted PDF and unknown binary attachments were transferred in both directions through disposable Synapse, and markerless audio used the generic attachment path. Inbound files were stored under generated agent inbox paths with original metadata; outbound m.file events used private snapshots with preserved filename, MIME type and size, decrypted byte-for-byte, and were Megolm-encrypted on the wire.",
       "id": "encrypted-files",
       "status": "pass"
     },
     {
       "automated": true,
-      "evidence": "A generic-file request was durably queued while the bridge was stopped, then delivered exactly once after restart. The persisted success record names the same Matrix event ID observed by the owner.",
+      "evidence": "A generic-file request was durably queued while the bridge was stopped, then delivered exactly once after restart. The persisted success record names the same Matrix event ID observed by the owner; the delivered bytes came from the private snapshot even after the mutable source was replaced.",
       "id": "attachment-restart-recovery",
       "status": "pass"
     },
@@ -124,7 +124,7 @@
   "target": {
     "package": "openrig-matrix-bridge",
     "source": {
-      "commit": "3d7f8fb5211254bfb8f1161e9440874bb1d2ab03",
+      "commit": "cb8aa4a5c513ce73a901c369137fa8fba1942f3d",
       "source": "git",
       "worktree_clean": true
     },

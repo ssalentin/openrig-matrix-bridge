@@ -57,7 +57,7 @@ binds its verdict to the source SHA recorded here and in the report.
 | Canonical threaded prompt delivery | Inbound `m.thread` roots are preserved; top-level prompts start one request thread; rich replies without a thread use `m.in_reply_to` instead of manufacturing a thread. Commentary and final delivery fail boundedly rather than blocking later requests. | Relation, storage, delivery, and bounded-failure tests in [`test_bridge.py`](../tests/test_bridge.py). | An encrypted owner prompt already inside `m.thread` survived a bridge restart while the fake seat was busy; commentary and final answer each appeared once under the original root and the qitem closed. | **Verified on disposable Synapse with fake OpenRig transport.** |
 | Local speech-to-text and voice status | `Transcriber` invokes local `ffmpeg` and `sherpa-onnx`; model readiness and checksum are implemented. Each accepted voice note creates one threaded status event, atomically tracks matrix transaction IDs and terminal intent, and edits that event to the transcript or terminal failure. | Voice lifecycle and fault-boundary tests in [`test_bridge.py`](../tests/test_bridge.py), checksum/model tests in [`test_transcription.py`](../tests/test_transcription.py). | A deterministic separate-process transcriber produced a transcript on disposable Synapse: one threaded progress event was edited by `m.replace`, no transcript-only reply appeared, the prompt was forwarded once, and its qitem closed. | **Matrix edit lifecycle verified; real Parakeet recognition and Element rendering remain gaps.** |
 | Encrypted image transfer in both directions | Incoming images are downloaded, decrypted, type-checked, size-limited, stored, and forwarded as a path. Outgoing `send-image` encrypts uploads and emits an encrypted image event. | [`test_encrypted_image_is_saved_and_forwarded_to_agent`](../tests/test_bridge.py#L1111), [`test_detects_supported_image_signatures`](../tests/test_media.py#L7), [`test_builds_encrypted_image_message`](../tests/test_media.py#L15). | Owner PNG was stored byte-for-byte and forwarded; `send-image` produced an image the owner downloaded and decrypted byte-for-byte. | **Verified on disposable Synapse.** |
-| Encrypted arbitrary-file transfer in both directions | Incoming `m.file` events are size-checked, decrypted, stored under generated paths, and forwarded with original metadata. Outgoing `send-file` encrypts uploads, emits `m.file`, and persists restart-safe delivery state. | [`test_encrypted_pdf_is_safely_stored_and_forwarded_to_agent`](../tests/test_bridge.py), [`test_publishes_encrypted_generic_file_with_original_metadata`](../tests/test_bridge.py), [`test_encrypted_file_write_failure_leaves_no_partial_file`](../tests/test_bridge.py), [`test_builds_encrypted_generic_file_message`](../tests/test_media.py). | PDF and unknown binary passed in both directions on disposable Synapse; restart recovery delivered once and recorded the owner-observed event ID. | **Verified on disposable Synapse.** |
+| Encrypted arbitrary-file transfer in both directions | Incoming `m.file` events and markerless audio are size-checked, decrypted, stored under generated paths, and forwarded with original metadata. Outgoing `send-file` snapshots regular-file bytes at admission, encrypts the snapshot, emits `m.file`, and persists restart-safe delivery state. | [`test_encrypted_pdf_is_safely_stored_and_forwarded_to_agent`](../tests/test_bridge.py), [`test_markerless_audio_is_routed_to_generic_file_handler`](../tests/test_bridge.py), [`test_publishes_encrypted_generic_file_with_original_metadata`](../tests/test_bridge.py), [`test_send_file_rejects_symlink_swapped_after_precheck`](../tests/test_cli.py), [`test_rejects_tampered_file_snapshot_before_upload`](../tests/test_bridge.py). | PDF, unknown binary, and markerless audio passed through disposable Synapse; restart recovery delivered the admitted snapshot exactly once after the source changed. | **Verified on disposable Synapse.** |
 | Pinned decisions and Element-compatible polls | Decisions are written to a durable inbox, published as a pinned brief plus MSC3381 poll events, and selected answers are returned as a queued prompt. | [`test_poll_answer_is_forwarded_and_pinned_decision_is_cleared`](../tests/test_bridge.py#L327), [`test_builds_element_compatible_poll_content`](../tests/test_decisions.py#L36), [`test_reads_unstable_poll_response`](../tests/test_decisions.py#L55). | Brief and poll were pinned; encrypted response returned to the fake transport; completed events were unpinned. | **Protocol path verified; Element rendering not verified.** |
 | Reactions as silent feedback | Owner reactions to bridge-authored events are resolved, bounded, forwarded to the agent with `suppress_reply=True`, and excluded from visible answer delivery. | [`test_reaction_to_bot_post_becomes_silent_feedback`](../tests/test_bridge.py#L468), [`test_silent_feedback_does_not_post_agent_answer`](../tests/test_bridge.py#L523). | Owner reaction reached the fake transport as feedback and created no visible bot reply on Synapse. | **Verified at fake-transport/Matrix boundary.** |
 | Durable OpenRig queue behavior | Each tracked Matrix input creates a priority qitem with `--no-nudge`, claims it when work starts, closes it after answer delivery, and leaves untracked reactions out of queue creation. | [`test_creates_matrix_qitem_with_priority_and_no_duplicate_nudge`](../tests/test_openrig.py#L159), [`test_claims_and_finishes_qitem_as_destination_agent`](../tests/test_openrig.py#L205), [`test_matrix_message_creates_priority_qitem`](../tests/test_bridge.py#L953). | A Matrix prompt created an urgent fake qitem, moved pending to in-progress to done, and was delivered once. | **Command contract verified; live OpenRig daemon recovery unverified.** |
@@ -91,22 +91,23 @@ command above.
 
 ### Issue #3 attachment evidence
 
-The issue #3 source commit `3d7f8fb5211254bfb8f1161e9440874bb1d2ab03`
+The issue #3 source commit `cb8aa4a5c513ce73a901c369137fa8fba1942f3d`
 passed:
 
 | Check | Exact command | Observed result |
 |---|---|---|
-| Unit tests | `.venv/bin/python -m pytest -q` | 110 passed |
+| Unit tests | `.venv/bin/python -m pytest -q` | 117 passed |
 | Python lint | `.venv/bin/ruff check .` | All checks passed |
-| Matrix integration | `.venv/bin/python tools/matrix_integration.py --timeout 60 --source-commit 3d7f8fb5211254bfb8f1161e9440874bb1d2ab03` | `status: pass`, `evidence_valid: true`, 15/15 checks in 30.4s |
+| Matrix integration | `.venv/bin/python tools/matrix_integration.py --timeout 60 --source-commit cb8aa4a5c513ce73a901c369137fa8fba1942f3d` | `status: pass`, `evidence_valid: true`, 15/15 checks in 35.9s |
 
 The machine-readable result is
 [`issue-3-integration-report.json`](artifacts/issue-3-integration-report.json).
 It covers encrypted PDF and unknown-binary transfer in both directions,
-generated safe inbox paths, `m.file` metadata, byte-preserving decryption,
-Megolm encryption on the wire, and a pending outbox attachment delivered
-exactly once after restart. The OpenRig transport remains the deterministic
-fixture rather than a live Codex model.
+markerless-audio generic routing, generated safe inbox paths, `m.file` metadata,
+private admission snapshots, byte-preserving decryption, Megolm encryption on
+the wire, and a pending outbox attachment delivered exactly once from its
+snapshot after restart and source mutation. The OpenRig transport remains the
+deterministic fixture rather than a live Codex model.
 
 ## Documentation checks
 
