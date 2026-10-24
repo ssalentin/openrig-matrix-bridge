@@ -35,6 +35,7 @@ represented per room. OpenRig can use one bot for any number of agents.
 - Local speech-to-text for encrypted Matrix voice messages with NVIDIA Parakeet.
 - Encrypted PNG, JPEG, GIF, and WebP transfer in both directions.
 - Native Matrix rendering for Markdown, including headings, lists, code, and tables.
+- Explicit proactive messages from an agent into its Matrix room.
 - Per-agent room status: `🟢 bereit`, `🟡 arbeitet`, `🟠 Fehler`, `⚫ offline`.
 - A refreshed Matrix typing indicator while the agent is working.
 - Pinned decision briefs and Element-compatible multiple-choice polls.
@@ -131,6 +132,18 @@ format in addition to their plain-text fallback. Tables, headings, lists,
 emphasis, code blocks, and ordinary links therefore render natively in Element.
 Raw HTML is escaped, and remote Markdown images are shown as references rather
 than loaded automatically.
+
+An agent can also send an explicitly requested, formatted Matrix message:
+
+```bash
+openrig-matrix-bridge send-message \
+  --agent advisor \
+  --body-file /tmp/report.md
+```
+
+This command sends through the running bridge so the message is encrypted with
+the correct Matrix room session. Ordinary terminal conversation is not mirrored
+automatically.
 
 ## Current scope
 

@@ -246,6 +246,47 @@ def test_send_adds_matrix_formatted_body_for_markdown_table():
     assert content["m.relates_to"]["event_id"] == "$prompt"
 
 
+def test_explicit_message_is_published_and_recorded():
+    bridge = object.__new__(MatrixBridge)
+    agent = AgentConfig(
+        key="advisor",
+        display_name="Advisor",
+        session="advisor-lead@kernel",
+    )
+    bridge.config = SimpleNamespace(agents={"advisor": agent})
+    bridge.state = SimpleNamespace(
+        save=lambda: None,
+        data={
+            "rooms": {
+                "advisor": {
+                    "room_id": "!advisor:matrix.example.org",
+                    "name": "Advisor",
+                }
+            },
+            "messages": {},
+        },
+    )
+
+    async def send(room_id, text):
+        assert room_id == "!advisor:matrix.example.org"
+        assert text == "**Hallo** aus Matrix"
+        return RoomSendResponse("$message", room_id)
+
+    bridge._send = send
+
+    asyncio.run(
+        bridge._publish_message(
+            {
+                "id": "message-1",
+                "agent": "advisor",
+                "text": "**Hallo** aus Matrix",
+            }
+        )
+    )
+
+    assert bridge.state.data["messages"]["message-1"]["event_id"] == "$message"
+
+
 def test_encrypted_image_is_saved_and_forwarded_to_agent(tmp_path):
     png = b"\x89PNG\r\n\x1a\n" + b"test image payload"
     encrypted, keys = encrypt_attachment(png)

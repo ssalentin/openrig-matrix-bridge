@@ -98,6 +98,7 @@ class StateStore:
             "welcomed": {},
             "decisions": {},
             "media": {},
+            "messages": {},
         }
         if path.exists():
             self.data.update(json.loads(path.read_text(encoding="utf-8")))
@@ -154,6 +155,12 @@ class MatrixBridge:
         self.media_sent.mkdir(parents=True, exist_ok=True, mode=0o700)
         self.media_failed.mkdir(parents=True, exist_ok=True, mode=0o700)
         config.media.inbox_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+        self.message_outbox = config.state_dir / "message-outbox"
+        self.message_sent = self.message_outbox / "sent"
+        self.message_failed = self.message_outbox / "failed"
+        self.message_outbox.mkdir(parents=True, exist_ok=True, mode=0o700)
+        self.message_sent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        self.message_failed.mkdir(parents=True, exist_ok=True, mode=0o700)
         self.client = AsyncClient(
             config.homeserver,
             config.user_id,
@@ -200,6 +207,10 @@ class MatrixBridge:
             self._poll_media_outbox(),
             name="openrig-matrix-media",
         )
+        message_poller = asyncio.create_task(
+            self._poll_message_outbox(),
+            name="openrig-matrix-messages",
+        )
         try:
             await self.client.sync_forever(
                 timeout=30000,
@@ -211,6 +222,7 @@ class MatrixBridge:
             status_poller.cancel()
             decision_poller.cancel()
             media_poller.cancel()
+            message_poller.cancel()
             for room_id in list(self.typing_tasks):
                 await self._set_typing(room_id, False)
             await self.client.close()
@@ -340,6 +352,57 @@ class MatrixBridge:
         }
         self.state.save()
         LOGGER.info("published decision %s in %s", request_id, agent.session)
+
+    async def _poll_message_outbox(self) -> None:
+        while True:
+            try:
+                await self._process_message_outbox()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                LOGGER.exception("message processing failed")
+            await asyncio.sleep(1)
+
+    async def _process_message_outbox(self) -> None:
+        for path in sorted(self.message_outbox.glob("*.json")):
+            try:
+                request = json.loads(path.read_text(encoding="utf-8"))
+                if not isinstance(request, dict):
+                    raise TypeError("message request must be an object")
+                await self._publish_message(request)
+            except (TypeError, ValueError, json.JSONDecodeError, OSError):
+                LOGGER.warning("invalid message request: %s", path, exc_info=True)
+                os.replace(path, self.message_failed / path.name)
+                continue
+            except Exception:
+                LOGGER.exception("failed to publish message request: %s", path)
+                os.replace(path, self.message_failed / path.name)
+                continue
+            os.replace(path, self.message_sent / path.name)
+
+    async def _publish_message(self, request: dict[str, Any]) -> None:
+        request_id = str(request.get("id") or "").strip()
+        agent_key = str(request.get("agent") or "").strip()
+        text = str(request.get("text") or "").strip()
+        agent = self.config.agents.get(agent_key)
+        if not request_id or not text:
+            raise ValueError("message request needs an id and text")
+        if agent is None:
+            raise ValueError(f"unknown agent: {agent_key}")
+        room = self.state.data["rooms"].get(agent.key)
+        if not room:
+            raise ValueError(f"no Matrix room configured for: {agent.key}")
+
+        response = await self._send(str(room["room_id"]), text)
+        if not isinstance(response, RoomSendResponse):
+            raise ConnectionError(f"message delivery failed: {response}")
+        self.state.data["messages"][request_id] = {
+            "agent": agent.key,
+            "event_id": response.event_id,
+            "sent_at": int(time.time() * 1000),
+        }
+        self.state.save()
+        LOGGER.info("published message %s in %s", request_id, agent.session)
 
     async def _poll_media_outbox(self) -> None:
         while True:

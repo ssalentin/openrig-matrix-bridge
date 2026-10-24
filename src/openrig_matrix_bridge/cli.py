@@ -305,6 +305,48 @@ def run_send_image(args: argparse.Namespace, config) -> int:
     return 1
 
 
+def run_send_message(args: argparse.Namespace, config) -> int:
+    if not args.agent:
+        raise SystemExit("send-message requires --agent")
+    if args.agent not in config.agents:
+        raise SystemExit(f"unknown agent: {args.agent}")
+    if args.body_file:
+        text = args.body_file.read_text(encoding="utf-8").strip()
+    else:
+        text = (args.body or "").strip()
+    if not text:
+        raise SystemExit("send-message requires --body or --body-file")
+
+    request_id = f"message-{uuid.uuid4().hex}"
+    request = {
+        "id": request_id,
+        "agent": args.agent,
+        "text": text,
+    }
+    outbox = config.state_dir / "message-outbox"
+    _write_private_json(outbox / f"{request_id}.json", request)
+
+    deadline = time.monotonic() + max(0, args.wait_seconds)
+    state_path = config.state_dir / "state.json"
+    while time.monotonic() < deadline:
+        try:
+            state = json.loads(state_path.read_text(encoding="utf-8"))
+        except (FileNotFoundError, json.JSONDecodeError):
+            time.sleep(0.2)
+            continue
+        message = state.get("messages", {}).get(request_id)
+        if message:
+            print(f"{request_id} sent as {message['event_id']}")
+            return 0
+        time.sleep(0.2)
+
+    print(
+        f"queued {request_id}; the bridge did not confirm delivery within "
+        f"{args.wait_seconds}s"
+    )
+    return 1
+
+
 async def _doctor(config_path: Path) -> int:
     config = load_config(config_path)
     token = os.environ.get("MATRIX_ACCESS_TOKEN", "")
@@ -367,7 +409,15 @@ def build_parser() -> argparse.ArgumentParser:
         "command",
         nargs="?",
         default="run",
-        choices=("run", "setup", "doctor", "download-model", "decision", "send-image"),
+        choices=(
+            "run",
+            "setup",
+            "doctor",
+            "download-model",
+            "decision",
+            "send-image",
+            "send-message",
+        ),
     )
     parser.add_argument("--config", type=Path, default=_default_config())
     parser.add_argument("--verbose", action="store_true")
@@ -408,6 +458,8 @@ def main() -> None:
         raise SystemExit(run_decision(args, config))
     if args.command == "send-image":
         raise SystemExit(run_send_image(args, config))
+    if args.command == "send-message":
+        raise SystemExit(run_send_message(args, config))
     if args.command == "doctor":
         raise SystemExit(asyncio.run(_doctor(args.config)))
     if args.command == "download-model":

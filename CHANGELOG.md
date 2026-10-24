@@ -5,6 +5,7 @@
 - Render agent Markdown as native Matrix formatted messages, including tables.
 - Receive encrypted PNG, JPEG, GIF, and WebP images into a per-agent inbox.
 - Add `send-image` for encrypted image delivery from an agent to its room.
+- Add `send-message` for explicit formatted agent messages into Matrix.
 
 ## 0.3.0
 
