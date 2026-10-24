@@ -3,9 +3,10 @@ import json
 import time
 from types import SimpleNamespace
 
+import pytest
 from nio import RoomSendResponse
 
-from openrig_matrix_bridge.bridge import MatrixBridge
+from openrig_matrix_bridge.bridge import MatrixBridge, StateStore
 from openrig_matrix_bridge.config import AgentConfig
 
 
@@ -157,6 +158,8 @@ def test_activity_card_sanitizes_tokens_paths_and_raw_output(tmp_path):
                     "Reading /srv/private/customer/credentials.txt\n"
                     "Reading /mnt/private/customer/credentials.txt\n"
                     "Reading ../customer/credentials.txt\n"
+                    "REDIS_URL=redis://default:secretpassword@host\n"
+                    "Authorization header: Basic dXNlcjpwYXNzd29yZA==\n"
                     "```\nraw private command output\n```\n"
                     "~~~\nraw tilde command output\n~~~\n"
                     + "detail " * 150
@@ -172,6 +175,8 @@ def test_activity_card_sanitizes_tokens_paths_and_raw_output(tmp_path):
     assert "super-secret-value" not in card
     assert "top-secret" not in card
     assert "ghp_1234567890abcdef" not in card
+    assert "secretpassword" not in card
+    assert "dXNlcjpwYXNzd29yZA==" not in card
     assert "/home/alice/private" not in card
     assert "/srv/private" not in card
     assert "/mnt/private" not in card
@@ -179,6 +184,31 @@ def test_activity_card_sanitizes_tokens_paths_and_raw_output(tmp_path):
     assert "raw private command output" not in card
     assert "raw tilde command output" not in card
     assert "[redacted" in card
+
+
+@pytest.mark.parametrize(
+    "commentary",
+    [
+        "REDIS_URL=redis://default:secretpassword@host",
+        "Authorization header: Basic dXNlcjpwYXNzd29yZA==",
+        "Authorization: Basic dXNlcjpwYXNzd29yZA==",
+        "Authorization: Bearer very-secret-token",
+    ],
+)
+def test_activity_card_redacts_uri_and_basic_auth_credentials(
+    tmp_path,
+    commentary,
+):
+    bridge, agent, _request, sent, _edited = activity_bridge(
+        tmp_path,
+        [message_record("comment-1", "commentary", commentary)],
+    )
+
+    asyncio.run(bridge._poll_agent(agent))
+
+    assert sent[0][0] == (
+        "**Aktivität:** Arbeitet\n\n[redacted unsafe commentary]"
+    )
 
 
 def test_activity_card_truncates_long_safe_commentary(tmp_path):
@@ -244,6 +274,189 @@ def test_terminal_activity_edit_failure_posts_explicit_terminal_fallback(tmp_pat
     assert bridge.state.data["pending"]["advisor"] == []
 
 
+def test_successful_answer_retries_terminal_card_before_advancing(tmp_path):
+    bridge, agent, request, _sent, edited = activity_bridge(
+        tmp_path,
+        [message_record("final-1", "final_answer", "Fertig.")],
+    )
+    request.update(
+        {
+            "commentary_event_id": "$status",
+            "commentary_summary": "Working on it.",
+            "activity_card_text": "**Aktivität:** Arbeitet\n\nWorking on it.",
+        }
+    )
+    sent = []
+
+    async def send(room_id, text, reply_to=None, **kwargs):
+        sent.append((text, reply_to, kwargs))
+        if text == "Fertig.":
+            return RoomSendResponse("$answer", room_id)
+        return SimpleNamespace(status_code="M_UNKNOWN")
+
+    async def reject_edit(room_id, event_id, text, **kwargs):
+        edited.append((event_id, text, kwargs))
+        return SimpleNamespace(status_code="M_UNKNOWN")
+
+    bridge._send = send
+    bridge._edit_message = reject_edit
+
+    asyncio.run(bridge._poll_agent(agent))
+
+    assert request in bridge.state.data["pending"]["advisor"]
+    assert request["answer_phase"] == "sent"
+    assert request["answer_event_id"] == "$answer"
+    assert request["activity_terminal_intent"] == {
+        "disposition": "completed",
+        "label": "Abgeschlossen",
+        "status_detail": "bereit",
+    }
+    assert sum(text == "Fertig." for text, _reply_to, _kwargs in sent) == 1
+
+    store = StateStore(tmp_path / "state.json")
+    store.data = bridge.state.data
+    store.save()
+    bridge.state = StateStore(store.path)
+
+    async def accept_edit(room_id, event_id, text, **kwargs):
+        edited.append((event_id, text, kwargs))
+        return RoomSendResponse("$edit", room_id)
+
+    bridge._edit_message = accept_edit
+    asyncio.run(bridge._poll_agent(agent))
+
+    assert bridge.state.data["pending"]["advisor"] == []
+    assert {
+        kwargs.get("tx_id")
+        for _event_id, _text, kwargs in edited
+    } == {"activity-terminal-request-1"}
+    assert sum(text == "Fertig." for text, _reply_to, _kwargs in sent) == 1
+
+
+def test_timeout_retries_terminal_card_before_advancing(tmp_path):
+    bridge, agent, request, _sent, edited = activity_bridge(tmp_path, [])
+    request.update(
+        {
+            "started_at": time.time() - 60,
+            "commentary_event_id": "$status",
+            "commentary_summary": "Working on it.",
+            "activity_card_text": "**Aktivität:** Arbeitet\n\nWorking on it.",
+            "qitem_id": "qitem-request-1",
+        }
+    )
+    bridge.config.response_timeout_minutes = 0
+    sent = []
+    failed = []
+
+    async def send(room_id, text, reply_to=None, **kwargs):
+        sent.append((text, reply_to, kwargs))
+        if "Matrix-Antwort konnte nicht zugestellt werden" in text:
+            return RoomSendResponse("$timeout", room_id)
+        return SimpleNamespace(status_code="M_UNKNOWN")
+
+    async def reject_edit(room_id, event_id, text, **kwargs):
+        edited.append((event_id, text, kwargs))
+        return SimpleNamespace(status_code="M_UNKNOWN")
+
+    async def fail_qitem(agent_arg, request_arg, reason):
+        failed.append((agent_arg.key, request_arg["qitem_id"], reason))
+
+    bridge._send = send
+    bridge._edit_message = reject_edit
+    bridge._fail_inbound_qitem = fail_qitem
+
+    asyncio.run(bridge._poll_agent(agent))
+
+    assert request in bridge.state.data["pending"]["advisor"]
+    assert request["activity_terminal_intent"] == {
+        "disposition": "timeout",
+        "label": "Zeitüberschreitung",
+        "status_detail": "Zeitüberschreitung",
+    }
+    assert failed == []
+
+    async def accept_edit(room_id, event_id, text, **kwargs):
+        edited.append((event_id, text, kwargs))
+        return RoomSendResponse("$edit", room_id)
+
+    bridge._edit_message = accept_edit
+    asyncio.run(bridge._poll_agent(agent))
+
+    assert bridge.state.data["pending"]["advisor"] == []
+    assert sum(
+        "Matrix-Antwort konnte nicht zugestellt werden" in text
+        for text, _reply_to, _kwargs in sent
+    ) == 1
+    assert failed == [
+        (
+            "advisor",
+            "qitem-request-1",
+            "Timed out waiting for a Matrix answer",
+        )
+    ]
+
+
+def test_final_delivery_failure_retries_terminal_card_before_advancing(tmp_path):
+    bridge, agent, request, _sent, edited = activity_bridge(
+        tmp_path,
+        [message_record("final-1", "final_answer", "Fertig.")],
+    )
+    request.update(
+        {
+            "commentary_event_id": "$status",
+            "commentary_summary": "Working on it.",
+            "activity_card_text": "**Aktivität:** Arbeitet\n\nWorking on it.",
+            "qitem_id": "qitem-request-1",
+        }
+    )
+    sent = []
+    failed = []
+
+    async def send(room_id, text, reply_to=None, **kwargs):
+        sent.append((text, reply_to, kwargs))
+        return SimpleNamespace(status_code="M_UNKNOWN")
+
+    async def reject_edit(room_id, event_id, text, **kwargs):
+        edited.append((event_id, text, kwargs))
+        return SimpleNamespace(status_code="M_UNKNOWN")
+
+    async def fail_qitem(agent_arg, request_arg, reason):
+        failed.append((agent_arg.key, request_arg["qitem_id"], reason))
+
+    bridge._send = send
+    bridge._edit_message = reject_edit
+    bridge._fail_inbound_qitem = fail_qitem
+
+    for _attempt in range(3):
+        asyncio.run(bridge._poll_agent(agent))
+
+    assert request in bridge.state.data["pending"]["advisor"]
+    assert request["delivery_failure_count"] == 3
+    assert request["activity_terminal_intent"] == {
+        "disposition": "delivery_failed",
+        "label": "Fehlgeschlagen",
+        "status_detail": "Zustellung fehlgeschlagen",
+    }
+    assert failed == []
+
+    async def accept_edit(room_id, event_id, text, **kwargs):
+        edited.append((event_id, text, kwargs))
+        return RoomSendResponse("$edit", room_id)
+
+    bridge._edit_message = accept_edit
+    asyncio.run(bridge._poll_agent(agent))
+
+    assert bridge.state.data["pending"]["advisor"] == []
+    assert failed == [
+        (
+            "advisor",
+            "qitem-request-1",
+            "Matrix answer delivery failed after 3 attempts",
+        )
+    ]
+    assert sum(text == "Fertig." for text, _reply_to, _kwargs in sent) == 3
+
+
 def test_activity_refresh_edits_the_same_card_for_needs_input(tmp_path):
     bridge, agent, request, _sent, edited = activity_bridge(
         tmp_path,
@@ -277,6 +490,39 @@ def test_activity_refresh_edits_the_same_card_for_needs_input(tmp_path):
             {},
         )
     ]
+
+
+def test_activity_refresh_does_not_replace_terminal_card_intent(tmp_path):
+    bridge, agent, request, _sent, edited = activity_bridge(tmp_path, [])
+    terminal_intent = {
+        "disposition": "completed",
+        "label": "Abgeschlossen",
+        "status_detail": "bereit",
+    }
+    request.update(
+        {
+            "commentary_event_id": "$status",
+            "commentary_summary": "Ich prüfe die Tests.",
+            "activity_label": "Abgeschlossen",
+            "activity_terminal_intent": terminal_intent,
+        }
+    )
+    bridge.resolver = SimpleNamespace(
+        resolve_many=lambda sessions: {
+            agent.session: SimpleNamespace(
+                transcript_path=tmp_path / "rollout.jsonl",
+                busy=True,
+                activity_state="working",
+                needs_input_count=1,
+            )
+        }
+    )
+
+    asyncio.run(bridge._refresh_agent_statuses(force=True))
+
+    assert edited == []
+    assert request["activity_label"] == "Abgeschlossen"
+    assert request["activity_terminal_intent"] == terminal_intent
 
 
 def test_activity_card_is_not_created_when_commentary_is_disabled(tmp_path):

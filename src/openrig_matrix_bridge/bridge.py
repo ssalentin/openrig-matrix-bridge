@@ -117,6 +117,13 @@ CREDENTIAL_VALUE = re.compile(
     r"(?i)\b(?:[a-z0-9_]*(?:token|key|secret|password)|authorization)\b"
     r"\s*[:=]\s*(?:\"[^\"]*\"|'[^']*'|\S+)"
 )
+URI_USERINFO = re.compile(
+    r"(?i)\b[a-z][a-z0-9+.-]*://[^\s/@:]+:[^\s/@]+@"
+)
+AUTHORIZATION_SCHEME = re.compile(
+    r"(?i)\b(?:proxy-)?authorization\b[^\r\n]{0,40}"
+    r"\b(?:basic|bearer|digest|token)\s+\S+"
+)
 BARE_TOKEN = re.compile(
     r"(?i)\b(?:"
     r"sk-[a-z0-9_-]{8,}|"
@@ -157,6 +164,8 @@ def sanitize_activity_summary(text: str) -> str:
         for pattern in (
             FENCED_OUTPUT,
             CREDENTIAL_VALUE,
+            URI_USERINFO,
+            AUTHORIZATION_SCHEME,
             BARE_TOKEN,
             LABELED_SECRET,
             LONG_SECRET,
@@ -2161,6 +2170,38 @@ class MatrixBridge:
                 if not pending:
                     continue
                 request = pending[0]
+                terminal_intent = request.get("activity_terminal_intent")
+                if isinstance(terminal_intent, dict):
+                    acknowledged = await self._finalize_activity_card(
+                        agent,
+                        request,
+                        self._room_for_agent(agent.key),
+                        str(
+                            terminal_intent.get("label")
+                            or "Fehlgeschlagen"
+                        ),
+                        disposition=str(
+                            terminal_intent.get("disposition")
+                            or "delivery_failed"
+                        ),
+                        status_detail=str(
+                            terminal_intent.get("status_detail") or ""
+                        ),
+                    )
+                    if acknowledged:
+                        await self._advance_terminal_request(
+                            agent,
+                            request,
+                            self._room_for_agent(agent.key),
+                            disposition=str(
+                                terminal_intent.get("disposition")
+                                or "delivery_failed"
+                            ),
+                            status_detail=str(
+                                terminal_intent.get("status_detail") or ""
+                            ),
+                        )
+                    continue
                 if request.get("qitem_id") and request.get("qitem_phase") in {
                     "pending",
                     "claiming",
@@ -2206,14 +2247,49 @@ class MatrixBridge:
                     await self._fail_ambiguous_prompt(agent, request)
                     continue
                 if request.get("answer_phase") == "failed":
+                    if (
+                        self.config.mirror_commentary
+                        and request.get("commentary_event_id")
+                        and not request.get("suppress_reply")
+                    ):
+                        acknowledged = await self._finalize_activity_card(
+                            agent,
+                            request,
+                            self._room_for_agent(agent.key),
+                            "Fehlgeschlagen",
+                            disposition="delivery_failed",
+                            status_detail="Zustellung fehlgeschlagen",
+                        )
+                        if not acknowledged:
+                            continue
                     await self._complete_failed_answer(agent, request, pending)
                     continue
                 if (
                     request.get("prompt_phase") == "sent"
                     and request.get("answer_phase") == "sent"
-                ) and await self._finish_inbound_qitem(agent, request):
-                    pending.pop(0)
-                    self.state.save()
+                ):
+                    if (
+                        self.config.mirror_commentary
+                        and request.get("commentary_event_id")
+                        and not request.get("suppress_reply")
+                    ):
+                        acknowledged = await self._finalize_activity_card(
+                            agent,
+                            request,
+                            self._room_for_agent(agent.key),
+                            "Abgeschlossen",
+                            disposition="completed",
+                            status_detail="bereit",
+                        )
+                        if not acknowledged:
+                            continue
+                    await self._advance_terminal_request(
+                        agent,
+                        request,
+                        self._room_for_agent(agent.key),
+                        disposition="completed",
+                        status_detail="bereit",
+                    )
 
     async def _fail_ambiguous_prompt(
         self,
@@ -2984,13 +3060,6 @@ class MatrixBridge:
             LOGGER.exception("prompt failed for %s", agent.session)
             resolution = f"Prompt failed: {exc}"
             request["terminal_error"] = resolution
-            if await self._fail_inbound_qitem(
-                agent,
-                request,
-                resolution,
-            ) is False:
-                self.state.save()
-                return
             await self._set_typing(room_id, False)
             await self._update_agent_status(agent, "error", "Prompt fehlgeschlagen")
             response = await self._send(
@@ -3003,22 +3072,23 @@ class MatrixBridge:
             if isinstance(response, RoomSendResponse):
                 request["failure_notice_event_id"] = response.event_id
             if self.config.mirror_commentary and not request.get("suppress_reply"):
-                await self._finalize_activity_card(
+                acknowledged = await self._finalize_activity_card(
                     agent,
                     request,
                     room_id,
                     "Fehlgeschlagen",
+                    disposition="prompt_failed",
+                    status_detail="Prompt fehlgeschlagen",
                 )
-            pending = self.state.data["pending"][agent.key]
-            pending.pop(0)
-            self.state.save()
-            await self._update_queue_notice(
+                if not acknowledged:
+                    return
+            await self._advance_terminal_request(
                 agent,
+                request,
                 room_id,
-                max(0, len(pending) - 1),
+                disposition="prompt_failed",
+                status_detail="Prompt fehlgeschlagen",
             )
-            if pending:
-                await self._start_request(agent, pending[0], room_id)
             return
         self.state.save()
 
@@ -3058,6 +3128,34 @@ class MatrixBridge:
                 return
 
             request = pending[0]
+            terminal_intent = request.get("activity_terminal_intent")
+            if isinstance(terminal_intent, dict):
+                acknowledged = await self._finalize_activity_card(
+                    agent,
+                    request,
+                    self._room_for_agent(agent.key),
+                    str(terminal_intent.get("label") or "Fehlgeschlagen"),
+                    disposition=str(
+                        terminal_intent.get("disposition") or "delivery_failed"
+                    ),
+                    status_detail=str(
+                        terminal_intent.get("status_detail") or ""
+                    ),
+                )
+                if acknowledged:
+                    await self._advance_terminal_request(
+                        agent,
+                        request,
+                        self._room_for_agent(agent.key),
+                        disposition=str(
+                            terminal_intent.get("disposition")
+                            or "delivery_failed"
+                        ),
+                        status_detail=str(
+                            terminal_intent.get("status_detail") or ""
+                        ),
+                    )
+                return
             if request.get("ambiguous_prompt_legacy"):
                 return
             if request.get("started_at") is None:
@@ -3080,30 +3178,27 @@ class MatrixBridge:
                         "Timed out waiting for a Matrix answer"
                     )
                     request["answer_phase"] = "failed"
-                    completed = await self._complete_failed_answer(
-                        agent,
-                        request,
-                        pending,
-                    )
                     if (
                         self.config.mirror_commentary
                         and request.get("commentary_event_id")
                         and not request.get("suppress_reply")
                     ):
-                        await self._finalize_activity_card(
+                        acknowledged = await self._finalize_activity_card(
                             agent,
                             request,
                             self._room_for_agent(agent.key),
                             "Zeitüberschreitung",
+                            disposition="timeout",
+                            status_detail="Zeitüberschreitung",
                         )
-                    await self._set_typing(self._room_for_agent(agent.key), False)
-                    await self._update_agent_status(agent, "error", "Zeitüberschreitung")
-                    if not completed:
-                        return
-                    await self._update_queue_notice(
+                        if not acknowledged:
+                            return
+                    await self._advance_terminal_request(
                         agent,
+                        request,
                         self._room_for_agent(agent.key),
-                        max(0, len(pending) - 1),
+                        disposition="timeout",
+                        status_detail="Zeitüberschreitung",
                     )
                     return
                 path = Path(request["transcript_path"])
@@ -3219,35 +3314,28 @@ class MatrixBridge:
                 request["terminal_error"] = (
                     f"Matrix answer delivery failed after {attempts} attempts"
                 )
-                if await self._fail_inbound_qitem(
-                    agent,
-                    request,
-                    request["terminal_error"],
-                ) is False:
-                    self.state.save()
-                    return
                 if (
                     self.config.mirror_commentary
                     and request.get("commentary_event_id")
                     and not request.get("suppress_reply")
                 ):
-                    await self._finalize_activity_card(
+                    acknowledged = await self._finalize_activity_card(
                         agent,
                         request,
                         room_id,
                         "Fehlgeschlagen",
+                        disposition="delivery_failed",
+                        status_detail="Zustellung fehlgeschlagen",
                     )
-                await self._set_typing(room_id, False)
-                await self._update_agent_status(agent, "error", "Zustellung fehlgeschlagen")
-                pending.pop(0)
-                self.state.save()
-                await self._update_queue_notice(
+                    if not acknowledged:
+                        return
+                await self._advance_terminal_request(
                     agent,
+                    request,
                     room_id,
-                    max(0, len(pending) - 1),
+                    disposition="delivery_failed",
+                    status_detail="Zustellung fehlgeschlagen",
                 )
-                if pending:
-                    await self._start_request(agent, pending[0], room_id)
                 return
             self._crash_after_effect("answer_send")
             request["answer_phase"] = "sent"
@@ -3258,25 +3346,23 @@ class MatrixBridge:
                 and request.get("commentary_event_id")
                 and not request.get("suppress_reply")
             ):
-                await self._finalize_activity_card(
+                acknowledged = await self._finalize_activity_card(
                     agent,
                     request,
                     room_id,
                     "Abgeschlossen",
+                    disposition="completed",
+                    status_detail="bereit",
                 )
-            if await self._finish_inbound_qitem(agent, request) is False:
-                return
-            await self._set_typing(room_id, False)
-            await self._update_agent_status(agent, "ready", "bereit")
-            pending.pop(0)
-            self.state.save()
-            await self._update_queue_notice(
+                if not acknowledged:
+                    return
+            await self._advance_terminal_request(
                 agent,
+                request,
                 room_id,
-                max(0, len(pending) - 1),
+                disposition="completed",
+                status_detail="bereit",
             )
-            if pending:
-                await self._start_request(agent, pending[0], room_id)
 
     def _room_for_agent(self, agent_key: str) -> str:
         return str(self.state.data["rooms"][agent_key]["room_id"])
@@ -3356,8 +3442,17 @@ class MatrixBridge:
         request: dict[str, Any],
         room_id: str,
         label: str,
-    ) -> None:
+        *,
+        disposition: str,
+        status_detail: str,
+    ) -> bool:
+        request["activity_terminal_intent"] = {
+            "disposition": disposition,
+            "label": label,
+            "status_detail": status_detail,
+        }
         request["activity_label"] = label
+        self.state.save()
         tx_id = (
             "activity-terminal-"
             + str(request.get("id") or request["event_id"])
@@ -3369,7 +3464,7 @@ class MatrixBridge:
                 tx_id=tx_id,
             )
             if response is True or isinstance(response, RoomSendResponse):
-                return
+                return True
             LOGGER.warning(
                 "terminal activity-card update failed for %s (%s/%s): %s",
                 agent.key,
@@ -3393,13 +3488,77 @@ class MatrixBridge:
                 agent.key,
                 exc_info=True,
             )
-            return
+            return False
         if not isinstance(response, RoomSendResponse):
             LOGGER.warning(
                 "terminal activity-card fallback failed for %s: %s",
                 agent.key,
                 response,
             )
+            return False
+        return True
+
+    async def _advance_terminal_request(
+        self,
+        agent: AgentConfig,
+        request: dict[str, Any],
+        room_id: str,
+        *,
+        disposition: str,
+        status_detail: str,
+    ) -> bool:
+        pending = self.state.data["pending"][agent.key]
+        if disposition == "completed":
+            if await self._finish_inbound_qitem(agent, request) is False:
+                self.state.save()
+                return False
+            await self._set_typing(room_id, False)
+            await self._update_agent_status(agent, "ready", "bereit")
+            if pending and pending[0].get("id") == request.get("id"):
+                pending.pop(0)
+            self.state.save()
+        else:
+            resolutions = {
+                "timeout": "Timed out waiting for a Matrix answer",
+                "delivery_failed": (
+                    "Matrix answer delivery failed after "
+                    f"{request.get('delivery_failure_count', 0)} attempts"
+                ),
+                "prompt_failed": "Prompt failed",
+            }
+            resolution = resolutions.get(
+                disposition,
+                status_detail or "Matrix request failed",
+            )
+            if disposition == "timeout":
+                if not await self._complete_failed_answer(
+                    agent,
+                    request,
+                    pending,
+                ):
+                    return False
+            else:
+                if await self._fail_inbound_qitem(
+                    agent,
+                    request,
+                    resolution,
+                ) is False:
+                    self.state.save()
+                    return False
+            await self._set_typing(room_id, False)
+            await self._update_agent_status(agent, "error", status_detail)
+            if pending and pending[0].get("id") == request.get("id"):
+                pending.pop(0)
+            self.state.save()
+
+        await self._update_queue_notice(
+            agent,
+            room_id,
+            max(0, len(pending) - 1),
+        )
+        if pending:
+            await self._start_request(agent, pending[0], room_id)
+        return True
 
     async def _poll_agent_statuses(self) -> None:
         while True:
@@ -3428,6 +3587,7 @@ class MatrixBridge:
                 and pending[0].get("started_at") is not None
                 and getattr(self.config, "mirror_commentary", False)
                 and not pending[0].get("suppress_reply")
+                and not pending[0].get("activity_terminal_intent")
             ):
                 request = pending[0]
                 request["activity_state"] = ref.activity_state
