@@ -1255,6 +1255,8 @@ class MatrixBridge:
         room: MatrixRoom,
         event: RoomMessageFile | RoomEncryptedFile,
     ) -> None:
+        if isinstance(event, (RoomMessageAudio, RoomEncryptedAudio)):
+            return
         asyncio.create_task(self._handle_file(room, event))
 
     def _on_unknown_event(self, room: MatrixRoom, event: UnknownEvent) -> None:
@@ -1742,6 +1744,8 @@ class MatrixBridge:
         room: MatrixRoom,
         event: RoomMessageAudio | RoomEncryptedAudio,
     ) -> None:
+        if event.event_id in self.processed_events:
+            return
         if not is_voice_message_content(event.source.get("content", {})):
             await self._handle_file(room, event)
             return
@@ -1752,9 +1756,6 @@ class MatrixBridge:
             return
         if event.sender not in self.config.allowed_users:
             LOGGER.warning("ignoring Matrix sender %s in %s", event.sender, room.room_id)
-            return
-        if event.event_id in self.processed_events:
-            await self._recover_voice_status(event.event_id)
             return
         if self.config.max_message_age_minutes >= 0:
             age_ms = int(time.time() * 1000) - int(event.server_timestamp)

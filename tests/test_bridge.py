@@ -2698,6 +2698,7 @@ def test_encrypted_file_write_failure_leaves_no_partial_file(
 
 def test_markerless_audio_is_routed_to_generic_file_handler():
     bridge = object.__new__(MatrixBridge)
+    bridge.processed_events = set()
     forwarded = []
 
     async def handle_file(room, event):
