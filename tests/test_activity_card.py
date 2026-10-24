@@ -511,6 +511,73 @@ def test_activity_refresh_does_not_create_a_second_card(tmp_path):
     assert edited == []
 
 
+def test_activity_refresh_cannot_overwrite_completed_card(tmp_path):
+    bridge, agent, request, _sent, edited = activity_bridge(
+        tmp_path,
+        [message_record("final-1", "final_answer", "Fertig.")],
+    )
+    request.update(
+        {
+            "commentary_event_id": "$status",
+            "commentary_summary": "Working on it.",
+            "activity_card_text": "**Aktivität:** Arbeitet\n\nWorking on it.",
+        }
+    )
+    bridge.resolver = SimpleNamespace(
+        resolve_many=lambda sessions: {
+            agent.session: SimpleNamespace(
+                transcript_path=tmp_path / "rollout.jsonl",
+                busy=True,
+                activity_state="working",
+                needs_input_count=1,
+            )
+        }
+    )
+
+    async def scenario():
+        stale_edit_started = asyncio.Event()
+        terminal_edit_started = asyncio.Event()
+        release_stale_edit = asyncio.Event()
+        waiting_edit_count = 0
+
+        async def edit(room_id, event_id, text, **kwargs):
+            nonlocal waiting_edit_count
+            edited.append((event_id, text, kwargs))
+            if text.startswith("**Aktivität:** Wartet auf Eingabe"):
+                waiting_edit_count += 1
+                if waiting_edit_count == 1:
+                    stale_edit_started.set()
+                    await release_stale_edit.wait()
+            elif text.startswith("**Aktivität:** Abgeschlossen"):
+                terminal_edit_started.set()
+            return RoomSendResponse("$edit", room_id)
+
+        bridge._edit_message = edit
+        refresh = asyncio.create_task(
+            bridge._refresh_agent_statuses(force=True)
+        )
+        await stale_edit_started.wait()
+        poll = asyncio.create_task(bridge._poll_agent(agent))
+        deadline = asyncio.get_running_loop().time() + 0.2
+        while (
+            not terminal_edit_started.is_set()
+            and asyncio.get_running_loop().time() < deadline
+        ):
+            await asyncio.sleep(0.01)
+        release_stale_edit.set()
+        await asyncio.gather(refresh, poll)
+
+    asyncio.run(scenario())
+
+    assert bridge.state.data["pending"]["advisor"] == []
+    assert edited[-1][1] == (
+        "**Aktivität:** Abgeschlossen\n\nWorking on it."
+    )
+    assert request["activity_card_text"] == (
+        "**Aktivität:** Abgeschlossen\n\nWorking on it."
+    )
+
+
 def test_activity_refresh_does_not_replace_terminal_card_intent(tmp_path):
     bridge, agent, request, _sent, edited = activity_bridge(tmp_path, [])
     terminal_intent = {
