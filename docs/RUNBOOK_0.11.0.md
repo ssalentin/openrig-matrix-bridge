@@ -259,6 +259,9 @@ STATE_DIR="/var/lib/openrig-matrix-bridge"
 mv "$STATE_DIR" "${STATE_DIR}.0.11.0-aside"
 
 # 3. Restore the verified backup created in step 3.
+#    Set BACKUP_DIR to the path printed by step 3 (it is not preserved
+#    across shell sessions).
+BACKUP_DIR="/root/openrig-matrix-bridge-backup-YYYYMMDDTHHMMSSZ"  # ← substitute actual path
 cp -a "$BACKUP_DIR/state" "$STATE_DIR"
 cp -a "$BACKUP_DIR/config.yaml" /etc/openrig-matrix-bridge/config.yaml
 
