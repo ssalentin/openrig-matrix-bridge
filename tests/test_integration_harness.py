@@ -89,6 +89,35 @@ def test_fake_transport_records_qitem_transition_history(tmp_path: Path):
     ]
 
 
+def test_fake_transport_rejects_duplicate_qitem_claim(tmp_path: Path):
+    created = fake(
+        tmp_path,
+        "queue",
+        "create",
+        "--source",
+        "owner@external",
+        "--destination",
+        "integration-agent@local",
+        "--summary",
+        "Matrix message",
+        "--body",
+        "hello",
+        "--priority",
+        "urgent",
+        "--tags",
+        "matrix,inbound",
+        "--no-nudge",
+        "--json",
+    )
+    qitem_id = json.loads(created.stdout)["qitemId"]
+
+    assert fake(tmp_path, "queue", "claim", qitem_id, "--json").returncode == 0
+    duplicate = fake(tmp_path, "queue", "claim", qitem_id, "--json")
+
+    assert duplicate.returncode != 0
+    assert "qitem_not_claimable" in duplicate.stderr
+
+
 def test_fake_transport_rejects_send_while_agent_is_busy(tmp_path: Path):
     first = fake(
         tmp_path,

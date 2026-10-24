@@ -223,6 +223,8 @@ def handle_queue(root: Path, args: list[str]) -> None:
         def mutate(state: dict[str, Any]) -> None:
             item = state["queue"][qitem_id]
             if command == "claim":
+                if item["state"] == "in-progress":
+                    raise SystemExit("qitem_not_claimable")
                 item["state"] = "in-progress"
                 item["claimed_by"] = os.environ.get("OPENRIG_SESSION_NAME")
             else:
