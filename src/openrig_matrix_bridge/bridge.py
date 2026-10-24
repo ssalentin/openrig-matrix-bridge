@@ -22,17 +22,28 @@ from nio import (
     MatrixRoom,
     RoomCreateResponse,
     RoomEncryptedAudio,
+    RoomGetStateEventResponse,
     RoomMemberEvent,
     RoomMessageAudio,
     RoomMessageText,
     RoomSendResponse,
     SyncResponse,
     ToDeviceError,
+    UnknownEvent,
 )
 from nio.api import RoomPreset, RoomVisibility
 from nio.crypto import decrypt_attachment
 
 from .config import AgentConfig, BridgeConfig
+from .decisions import (
+    POLL_RESPONSE_TYPE,
+    POLL_START_TYPE,
+    STABLE_POLL_RESPONSE_TYPE,
+    DecisionError,
+    normalize_questions,
+    poll_response,
+    poll_start_content,
+)
 from .gateway import (
     AgentSessionNotFound,
     AgentSessionResolver,
@@ -75,6 +86,7 @@ class StateStore:
             "pending": {},
             "processed_events": [],
             "welcomed": {},
+            "decisions": {},
         }
         if path.exists():
             self.data.update(json.loads(path.read_text(encoding="utf-8")))
@@ -112,7 +124,18 @@ class MatrixBridge:
         self.processed_events: set[str] = set(self.state.data.get("processed_events", []))
         self.verification_rooms: dict[str, str] = {}
         self.typing_tasks: dict[str, asyncio.Task[None]] = {}
+        self.pin_locks = {
+            str(room["room_id"]): asyncio.Lock()
+            for room in self.state.data["rooms"].values()
+            if room.get("room_id")
+        }
         self.agent_statuses: dict[str, str] = {}
+        self.decision_inbox = config.state_dir / "decision-inbox"
+        self.decision_sent = self.decision_inbox / "sent"
+        self.decision_failed = self.decision_inbox / "failed"
+        self.decision_inbox.mkdir(parents=True, exist_ok=True, mode=0o700)
+        self.decision_sent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        self.decision_failed.mkdir(parents=True, exist_ok=True, mode=0o700)
         self.client = AsyncClient(
             config.homeserver,
             config.user_id,
@@ -133,6 +156,7 @@ class MatrixBridge:
         self.client.add_event_callback(self._on_audio, (RoomMessageAudio, RoomEncryptedAudio))
         self.client.add_event_callback(self._on_invite, InviteMemberEvent)
         self.client.add_event_callback(self._on_member, RoomMemberEvent)
+        self.client.add_event_callback(self._on_unknown_event, UnknownEvent)
         self.client.add_to_device_callback(self._on_verification, (KeyVerificationEvent,))
 
     async def run(self) -> None:
@@ -148,6 +172,10 @@ class MatrixBridge:
             self._poll_agent_statuses(),
             name="openrig-matrix-status",
         )
+        decision_poller = asyncio.create_task(
+            self._poll_decisions(),
+            name="openrig-matrix-decisions",
+        )
         try:
             await self.client.sync_forever(
                 timeout=30000,
@@ -157,6 +185,7 @@ class MatrixBridge:
         finally:
             poller.cancel()
             status_poller.cancel()
+            decision_poller.cancel()
             for room_id in list(self.typing_tasks):
                 await self._set_typing(room_id, False)
             await self.client.close()
@@ -175,6 +204,127 @@ class MatrixBridge:
             room_id = value.get("room_id")
             if key in agents and room_id:
                 self.room_agents[room_id] = key
+
+    async def _poll_decisions(self) -> None:
+        while True:
+            try:
+                await self._process_decision_inbox()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                LOGGER.exception("decision processing failed")
+            await asyncio.sleep(1)
+
+    async def _process_decision_inbox(self) -> None:
+        for path in sorted(self.decision_inbox.glob("*.json")):
+            try:
+                request = json.loads(path.read_text(encoding="utf-8"))
+                if not isinstance(request, dict):
+                    raise DecisionError("decision request must be an object")
+                await self._publish_decision(request)
+            except (DecisionError, json.JSONDecodeError, OSError):
+                LOGGER.warning("invalid decision request: %s", path, exc_info=True)
+                os.replace(path, self.decision_failed / path.name)
+                continue
+            except Exception:
+                LOGGER.exception("failed to publish decision request: %s", path)
+                os.replace(path, self.decision_failed / path.name)
+                continue
+            os.replace(path, self.decision_sent / path.name)
+
+    async def _publish_decision(self, request: dict[str, Any]) -> None:
+        request_id = str(request.get("id") or "").strip()
+        agent_key = str(request.get("agent") or "").strip()
+        title = str(request.get("title") or "").strip()
+        body = str(request.get("body") or "").strip()
+        qitem_id = str(request.get("qitem_id") or "").strip() or None
+        questions = normalize_questions(request.get("questions"))
+        agent = self.config.agents.get(agent_key)
+        if not request_id or not title:
+            raise DecisionError("decision request needs an id and title")
+        if agent is None:
+            raise DecisionError(f"unknown agent: {agent_key}")
+
+        room = self.state.data["rooms"].get(agent.key)
+        if not room:
+            raise DecisionError(f"no Matrix room configured for: {agent_key}")
+        room_id = str(room["room_id"])
+
+        lines = [f"**Entscheidung: {title}**"]
+        if body:
+            lines.extend(["", body])
+        if qitem_id:
+            lines.extend(["", f"Queue-Item: `{qitem_id}`"])
+        response = await self._send(room_id, "\n".join(lines))
+        if not isinstance(response, RoomSendResponse):
+            raise ConnectionError(f"decision message failed: {response}")
+
+        event_ids = [response.event_id]
+        polls: dict[str, dict[str, Any]] = {}
+        for question in questions:
+            poll_response_event = await self.client.room_send(
+                room_id,
+                POLL_START_TYPE,
+                poll_start_content(question),
+                ignore_unverified_devices=True,
+            )
+            if not isinstance(poll_response_event, RoomSendResponse):
+                raise ConnectionError(f"decision poll failed: {poll_response_event}")
+            poll_id = poll_response_event.event_id
+            event_ids.append(poll_id)
+            polls[poll_id] = question
+
+        await self._add_pinned(room_id, event_ids)
+        self.state.data["decisions"][request_id] = {
+            "agent": agent.key,
+            "qitem_id": qitem_id,
+            "title": title,
+            "room_id": room_id,
+            "event_ids": event_ids,
+            "polls": polls,
+            "answers": {},
+            "created_at": int(time.time() * 1000),
+            "closed_at": None,
+        }
+        self.state.save()
+        LOGGER.info("published decision %s in %s", request_id, agent.session)
+
+    async def _add_pinned(self, room_id: str, event_ids: list[str]) -> None:
+        lock = self.pin_locks.setdefault(room_id, asyncio.Lock())
+        async with lock:
+            pinned = await self._pinned_event_ids(room_id)
+            merged = list(dict.fromkeys([*pinned, *event_ids]))
+            if merged != pinned:
+                await self.client.room_put_state(
+                    room_id,
+                    "m.room.pinned_events",
+                    {"pinned": merged},
+                )
+
+    async def _remove_pinned(self, room_id: str, event_ids: list[str]) -> None:
+        lock = self.pin_locks.setdefault(room_id, asyncio.Lock())
+        async with lock:
+            pinned = await self._pinned_event_ids(room_id)
+            remove = set(event_ids)
+            remaining = [event_id for event_id in pinned if event_id not in remove]
+            if remaining != pinned:
+                await self.client.room_put_state(
+                    room_id,
+                    "m.room.pinned_events",
+                    {"pinned": remaining},
+                )
+
+    async def _pinned_event_ids(self, room_id: str) -> list[str]:
+        response = await self.client.room_get_state_event(
+            room_id,
+            "m.room.pinned_events",
+        )
+        if not isinstance(response, RoomGetStateEventResponse):
+            return []
+        pinned = response.content.get("pinned")
+        if not isinstance(pinned, list):
+            return []
+        return [item for item in pinned if isinstance(item, str)]
 
     async def _restore_room_names(self) -> None:
         for agent in self.config.agents.values():
@@ -267,6 +417,92 @@ class MatrixBridge:
 
     def _on_audio(self, room: MatrixRoom, event: RoomMessageAudio) -> None:
         asyncio.create_task(self._handle_audio(room, event))
+
+    def _on_unknown_event(self, room: MatrixRoom, event: UnknownEvent) -> None:
+        if event.type in {POLL_RESPONSE_TYPE, STABLE_POLL_RESPONSE_TYPE}:
+            asyncio.create_task(self._handle_poll_response(room, event))
+
+    async def _handle_poll_response(
+        self,
+        room: MatrixRoom,
+        event: UnknownEvent,
+    ) -> None:
+        if event.sender not in self.config.allowed_users:
+            return
+        agent = self._agent_for_room(room.room_id)
+        if agent is None:
+            return
+        response = poll_response(event.source.get("content", {}))
+        if response is None:
+            return
+        poll_id, selected = response
+        if not selected:
+            return
+
+        for decision in self.state.data["decisions"].values():
+            question = decision.get("polls", {}).get(poll_id)
+            if not isinstance(question, dict):
+                continue
+            question_id = str(question["id"])
+            if question_id in decision.get("answers", {}):
+                return
+            options = {
+                str(option["id"]): str(option["label"])
+                for option in question["options"]
+            }
+            selected_labels = [
+                options.get(option_id, option_id)
+                for option_id in selected
+                if option_id in options
+            ]
+            if not selected_labels:
+                return
+            decision.setdefault("answers", {})[question_id] = {
+                "option_ids": selected,
+                "labels": selected_labels,
+                "answered_at": int(time.time() * 1000),
+            }
+
+            all_answered = all(
+                poll_question["id"] in decision["answers"]
+                for poll_question in decision.get("polls", {}).values()
+            )
+            unpin = (
+                decision.get("event_ids", [])
+                if all_answered
+                else [poll_id]
+            )
+            await self._remove_pinned(room.room_id, unpin)
+            if all_answered:
+                decision["closed_at"] = int(time.time() * 1000)
+            self.state.save()
+
+            answer_text = ", ".join(selected_labels)
+            queue_line = (
+                f"Queue-Item: {decision['qitem_id']}\n"
+                if decision.get("qitem_id")
+                else ""
+            )
+            await self._enqueue_prompt(
+                agent,
+                room,
+                event.event_id,
+                int(event.server_timestamp),
+                "Matrix-Entscheidung beantwortet.\n\n"
+                f"{queue_line}"
+                f"Entscheidung: {decision['title']}\n"
+                f"Frage: {question['question']}\n"
+                f"Auswahl: {answer_text} ({', '.join(selected)})\n\n"
+                "Behandle diese Antwort als Entscheidung und aktualisiere das "
+                "zugehörige Queue-Item.",
+                "decision",
+            )
+            await self._send(
+                room.room_id,
+                f"Antwort an **{agent.display_name}** übergeben: {answer_text}",
+                event.event_id,
+            )
+            return
 
     def _agent_for_room(self, room_id: str) -> AgentConfig | None:
         agent_key = self.room_agents.get(room_id)

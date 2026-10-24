@@ -1,10 +1,15 @@
 # Changelog
 
+## 0.3.0
+
+- Add pinned OpenRig decisions and encrypted multiple-choice polls.
+- Return Matrix poll selections to the responsible agent as queued prompts.
+- Name Matrix rooms after the agent role only; the bridge profile is `OpenRig`.
+
 ## 0.2.0
 
 - Add per-agent Matrix live status through stable room topics and structured
   room state, without changing the room name or generated avatar.
-- Name Matrix rooms after the agent role only; the bridge profile is `OpenRig`.
 - Show a persistent typing indicator while an agent is working.
 - Add NVIDIA Parakeet TDT 0.6B v3 voice transcription with automatic model
   download and checksum verification.

@@ -35,6 +35,7 @@ represented per room. OpenRig can use one bot for any number of agents.
 - Local speech-to-text for encrypted Matrix voice messages with NVIDIA Parakeet.
 - Per-agent room status: `🟢 bereit`, `🟡 arbeitet`, `🟠 Fehler`, `⚫ offline`.
 - A refreshed Matrix typing indicator while the agent is working.
+- Pinned decision briefs and Element-compatible multiple-choice polls.
 - Device verification with Matrix emoji SAS.
 - One allow-listed Matrix user; messages from everybody else are ignored.
 - Replies are posted in a Matrix thread under the original prompt.
@@ -85,6 +86,25 @@ then type `ja` in the `Advisor` room. Confirm the matching SAS in
 Element. This verifies the specific Element device; repeat it for other devices
 that should trust the bot.
 
+## Decisions in Matrix
+
+Matrix calls these **pinned messages** rather than sticky messages. Element
+shows them in the room's Pinned messages panel. The bridge can also publish a
+structured OpenRig decision as encrypted Matrix polls with two to four choices:
+
+```bash
+openrig-matrix-bridge decision \
+  --agent advisor \
+  --qitem qitem-20261024000000-example
+```
+
+The command reads the queue item's summary, body, and optional
+`humanQuestions`, then queues an encrypted decision for the running bridge.
+The bridge pins the brief and poll events. A selected answer is handed back to
+the agent as a normal queued prompt. Once all structured questions are
+answered, their pinned events are removed automatically. Queue items without
+structured choices are still pinned as a complete written decision brief.
+
 ## Current scope
 
 This first version targets Codex seats because it resolves their session and
@@ -92,9 +112,9 @@ transcript through `moshi-hook` state under
 `~/.local/state/moshi/codex-sessions/`. Other runtimes can be added by extending
 the gateway and transcript adapters.
 
-Direct messages from the owner to configured agents are supported. Proactive
-OpenRig human queue items and interactive approval buttons are a later adapter;
-they are not silently conflated with an agent chat.
+Direct messages from the owner to configured agents are supported. Structured
+OpenRig decisions can be published explicitly with the `decision` command;
+ordinary replies are not guessed to be approvals.
 
 Voice messages are transcribed locally with NVIDIA Parakeet TDT 0.6B v3 through
 `sherpa-onnx`. The model supports 25 European languages, including German, and
