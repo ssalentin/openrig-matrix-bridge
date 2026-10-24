@@ -4,7 +4,7 @@ These three original, name-independent concepts are review candidates for the
 product identity. None contains a wordmark or third-party mark. The symbol is
 the durable part; naming can follow the owner decision in issue #22.
 
-![Three symbol concepts on light and dark backgrounds](../../src/openrig_matrix_bridge/assets/branding/export/concepts-preview.png)
+![Three symbol concepts on light and dark backgrounds](artifacts/concepts-preview.png)
 
 ## Primary: Gateway
 
@@ -57,8 +57,16 @@ Source: [`thread-tertiary-light.svg`](../../src/openrig_matrix_bridge/assets/bra
 
 ## Matrix profile preview
 
-The 256px PNG exports are the intended upload size. The 32px files make the
-small-size behavior explicit rather than relying on a browser's downscaling.
+The containment avatar uses a dark rounded tile so the same file remains
+legible on both room themes. The transparent 256px marks stay as design
+masters. The 32px files make the small-size behavior explicit rather than
+relying on a browser's downscaling.
+
+| Concept | On light background | On dark background | 256 | 32 |
+|---|---|---|---|---|
+| Gateway | ![Gateway contained avatar on light](artifacts/gateway-avatar-light-bg-preview.png) | ![Gateway contained avatar on dark](artifacts/gateway-avatar-dark-bg-preview.png) | [PNG](../../src/openrig_matrix_bridge/assets/branding/export/gateway-avatar-256.png) | [PNG](../../src/openrig_matrix_bridge/assets/branding/export/gateway-avatar-32.png) |
+| Relay | ![Relay contained avatar on light](artifacts/relay-avatar-light-bg-preview.png) | ![Relay contained avatar on dark](artifacts/relay-avatar-dark-bg-preview.png) | [PNG](../../src/openrig_matrix_bridge/assets/branding/export/relay-avatar-256.png) | [PNG](../../src/openrig_matrix_bridge/assets/branding/export/relay-avatar-32.png) |
+| Thread | ![Thread contained avatar on light](artifacts/thread-avatar-light-bg-preview.png) | ![Thread contained avatar on dark](artifacts/thread-avatar-dark-bg-preview.png) | [PNG](../../src/openrig_matrix_bridge/assets/branding/export/thread-avatar-256.png) | [PNG](../../src/openrig_matrix_bridge/assets/branding/export/thread-avatar-32.png) |
 
 | Concept | Light 256 | Dark 256 | Light 32 | Dark 32 |
 |---|---|---|---|---|

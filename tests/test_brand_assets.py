@@ -15,14 +15,17 @@ def png_dimensions(path: Path) -> tuple[int, int]:
 
 
 def test_ships_all_light_and_dark_vector_concepts():
-    assert [path.name for path in SOURCE_FILES] == [
+    assert {path.name for path in SOURCE_FILES} == {
+        "gateway-avatar.svg",
         "gateway-primary-dark.svg",
         "gateway-primary-light.svg",
+        "relay-avatar.svg",
         "relay-secondary-dark.svg",
         "relay-secondary-light.svg",
+        "thread-avatar.svg",
         "thread-tertiary-dark.svg",
         "thread-tertiary-light.svg",
-    ]
+    }
 
 
 def test_vector_sources_are_text_free_and_self_contained():
@@ -47,15 +50,21 @@ def test_ships_matrix_avatar_and_small_size_exports():
         "relay-secondary-dark-32.png": (32, 32),
         "thread-tertiary-light-32.png": (32, 32),
         "thread-tertiary-dark-32.png": (32, 32),
+        "gateway-avatar-256.png": (256, 256),
+        "gateway-avatar-32.png": (32, 32),
+        "relay-avatar-256.png": (256, 256),
+        "relay-avatar-32.png": (32, 32),
+        "thread-avatar-256.png": (256, 256),
+        "thread-avatar-32.png": (32, 32),
     }
     actual = {
         path.name: png_dimensions(path)
         for path in EXPORT_FILES
-        if path.name != "concepts-preview.png"
     }
     assert actual == expected
 
 
-def test_ships_a_durable_visual_preview():
-    preview = BRANDING / "export" / "concepts-preview.png"
+def test_visual_preview_lives_outside_runtime_assets():
+    preview = ROOT / "docs" / "branding" / "artifacts" / "concepts-preview.png"
     assert png_dimensions(preview) == (1020, 680)
+    assert not (BRANDING / "export" / "concepts-preview.png").exists()
