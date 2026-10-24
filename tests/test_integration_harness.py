@@ -1,22 +1,29 @@
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
 
-from tools.matrix_integration import (
-    CheckFailure,
-    validate_answer_relation,
-    validate_fifo_records,
-    validate_qitem_history,
-    validate_source_provenance,
-)
-
 ROOT = Path(__file__).resolve().parents[1]
 FAKE = ROOT / "tools" / "fake_openrig.py"
+HARNESS = ROOT / "tools" / "matrix_integration.py"
+SPEC = importlib.util.spec_from_file_location("matrix_integration_harness", HARNESS)
+if SPEC is None or SPEC.loader is None:
+    raise RuntimeError(f"could not load integration harness from {HARNESS}")
+HARNESS_MODULE = importlib.util.module_from_spec(SPEC)
+sys.modules[SPEC.name] = HARNESS_MODULE
+SPEC.loader.exec_module(HARNESS_MODULE)
+
+CheckFailure = HARNESS_MODULE.CheckFailure
+validate_answer_relation = HARNESS_MODULE.validate_answer_relation
+validate_fifo_records = HARNESS_MODULE.validate_fifo_records
+validate_qitem_history = HARNESS_MODULE.validate_qitem_history
+validate_source_provenance = HARNESS_MODULE.validate_source_provenance
 
 
 def fake(root: Path, *args: str) -> subprocess.CompletedProcess[str]:
