@@ -73,14 +73,14 @@ command above.
 
 ### Issue #3 attachment evidence
 
-The issue #3 source commit `635a2856b137b4fda2998c5dd0439cbeddc8ff9f`
+The issue #3 source commit `fe6f1271758773dc90ac73975f03763515db7732`
 passed:
 
 | Check | Exact command | Observed result |
 |---|---|---|
-| Unit tests | `.venv/bin/python -m pytest -q` | 133 passed |
+| Unit tests | `.venv/bin/python -m pytest -q` | 135 passed |
 | Python lint | `.venv/bin/ruff check .` | All checks passed |
-| Matrix integration | `.venv/bin/python tools/matrix_integration.py --timeout 60 --source-commit 635a2856b137b4fda2998c5dd0439cbeddc8ff9f` | `status: pass`, `evidence_valid: true`, 16/16 checks in 38.8s |
+| Matrix integration | `.venv/bin/python tools/matrix_integration.py --timeout 60 --source-commit fe6f1271758773dc90ac73975f03763515db7732` | `status: pass`, `evidence_valid: true`, 17/17 checks in 43.3s |
 
 The machine-readable result is
 [`issue-3-integration-report.json`](artifacts/issue-3-integration-report.json).
@@ -91,7 +91,8 @@ the wire, and a pending outbox attachment delivered exactly once from its
 snapshot after restart and source mutation. The OpenRig transport remains the
 deterministic fixture rather than a live Codex model. The rebased run also
 preserves the merged #19 canonical-thread delivery behavior, including the
-threaded-prompt restart check.
+threaded-prompt restart check and threaded generic-file/markerless-audio root
+preservation.
 
 ## Documentation checks
 

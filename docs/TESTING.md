@@ -49,7 +49,7 @@ to bound individual wait operations.
 
 The issue #3 attachment run is preserved separately at
 `docs/artifacts/issue-3-integration-report.json`; it binds the report to source
-commit `635a2856b137b4fda2998c5dd0439cbeddc8ff9f`.
+commit `fe6f1271758773dc90ac73975f03763515db7732`.
 
 The harness uses `tools/fake_openrig.py` as a separate deterministic OpenRig CLI
 process. It exercises the bridge's real `rig ps`, `rig send`, and `rig queue`
