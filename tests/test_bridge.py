@@ -17,7 +17,11 @@ from nio import (
 )
 from nio.crypto import encrypt_attachment
 
-from openrig_matrix_bridge.bridge import MatrixBridge, verification_decision
+from openrig_matrix_bridge.bridge import (
+    MatrixBridge,
+    queue_notice_text,
+    verification_decision,
+)
 from openrig_matrix_bridge.config import AgentConfig
 from openrig_matrix_bridge.decisions import POLL_RESPONSE_KEY
 from openrig_matrix_bridge.media import MediaError
@@ -2004,6 +2008,109 @@ def test_queue_notice_reconstructs_pending_previews_after_restart():
     assert "1. Text" in edited[0][1]
     assert "Waiting survived restart" in edited[0][1]
     assert pinned == [["$queue"]]
+
+
+def test_queue_advance_refreshes_card_after_next_request_starts():
+    completed = queued_request("$one", "Completed request")
+    waiting = queued_request("$two", "Waiting request", started_at=None)
+    bridge, _sent, _edited, _pinned, _unpinned = queue_notice_bridge(
+        [completed, waiting],
+    )
+    agent = AgentConfig(
+        key="advisor",
+        display_name="Advisor",
+        session="advisor-lead@kernel",
+    )
+    cards = []
+
+    async def update_notice(agent_arg, room_id, waiting_count):
+        cards.append(
+            queue_notice_text(bridge.state.data["pending"]["advisor"])
+        )
+
+    async def start_request(agent_arg, request, room_id):
+        request["started_at"] = time.time()
+
+    async def finish_qitem(agent_arg, request):
+        return True
+
+    async def typing(*args, **kwargs):
+        return None
+
+    async def status(*args, **kwargs):
+        return None
+
+    bridge._update_queue_notice = update_notice
+    bridge._start_request = start_request
+    bridge._finish_inbound_qitem = finish_qitem
+    bridge._set_typing = typing
+    bridge._update_agent_status = status
+
+    asyncio.run(
+        bridge._advance_terminal_request(
+            agent,
+            completed,
+            "!advisor",
+            disposition="completed",
+            status_detail="bereit",
+        )
+    )
+
+    assert len(cards) == 1
+    assert '**Aktiv:** Text · "Waiting request"' in cards[-1]
+
+
+def test_failed_answer_recovery_updates_card_and_starts_next():
+    failed = queued_request("$failed", "Failed request")
+    failed["answer_phase"] = "failed"
+    failed["answer_text"] = "unused"
+    failed["terminal_error"] = "Matrix answer delivery failed"
+    waiting = queued_request("$waiting", "Waiting after failure", started_at=None)
+    bridge, _sent, _edited, _pinned, _unpinned = queue_notice_bridge(
+        [failed, waiting],
+    )
+    bridge.config.mirror_commentary = False
+    bridge.config.response_timeout_minutes = 30
+    bridge.locks = {"advisor": asyncio.Lock()}
+    bridge.state.data["rooms"] = {"advisor": {"room_id": "!advisor"}}
+    agent = AgentConfig(
+        key="advisor",
+        display_name="Advisor",
+        session="advisor-lead@kernel",
+    )
+    cards = []
+    started = []
+
+    async def complete_failed(agent_arg, request, pending):
+        pending.pop(0)
+        return True
+
+    async def update_notice(agent_arg, room_id, waiting_count):
+        cards.append(
+            queue_notice_text(bridge.state.data["pending"]["advisor"])
+        )
+
+    async def start_request(agent_arg, request, room_id):
+        started.append(request["id"])
+        request["started_at"] = time.time()
+
+    async def typing(*args, **kwargs):
+        return None
+
+    async def status(*args, **kwargs):
+        return None
+
+    bridge._complete_failed_answer = complete_failed
+    bridge._update_queue_notice = update_notice
+    bridge._start_request = start_request
+    bridge._set_typing = typing
+    bridge._update_agent_status = status
+
+    asyncio.run(bridge._poll_agent(agent))
+
+    assert started == [waiting["id"]]
+    assert len(cards) == 1
+    assert '**Aktiv:** Text · "Waiting after failure"' in cards[-1]
 
 
 def test_matrix_message_creates_priority_qitem():

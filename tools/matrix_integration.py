@@ -1952,6 +1952,28 @@ class IntegrationRun:
             },
         )
         wait_for_json_state(
+            self.state_dir / "state.json",
+            lambda value: any(
+                request.get("deferred_steering")
+                and request.get("injection_phase") == "fallback"
+                for request in value.get("pending", {}).get(AGENT_KEY, [])
+            ),
+            self.args.timeout,
+            description="steering fallback durable state",
+        )
+        await owner.sync_until(
+            lambda: any(
+                "1 Nachricht wartet" in str(message["body"])
+                and '**Aktiv:** Text · "hold first fallback mode root"'
+                in str(message["body"])
+                and "fallback follow one" in str(message["body"])
+                and "fallback follow two" in str(message["body"])
+                for message in owner.messages
+            ),
+            self.args.timeout,
+            description="fallback steering queue preview",
+        )
+        wait_for_json_state(
             fake_path,
             lambda value: any(
                 str(item.get("prompt") or "").startswith("Matrix follow-up batch")

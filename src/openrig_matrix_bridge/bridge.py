@@ -245,7 +245,17 @@ def queue_request_context(request: dict[str, Any]) -> str:
 
 
 def queue_request_entry(request: dict[str, Any]) -> str:
-    preview = queue_preview(request.get("text"))
+    steering_entries = request.get("steering_entries")
+    if isinstance(steering_entries, list) and steering_entries:
+        preview = queue_preview(
+            "; ".join(
+                str(entry.get("text") or "")
+                for entry in steering_entries
+                if isinstance(entry, dict)
+            )
+        )
+    else:
+        preview = queue_preview(request.get("text"))
     return f'{queue_request_context(request)} · "{preview}"'
 
 
@@ -273,6 +283,7 @@ def queue_notice_text(
                     for request in visible[1:]
                     if request.get("id") == group_id
                     and request.get("deferred_steering")
+                    and request.get("injection_phase") != "fallback"
                 ),
                 None,
             )
@@ -4546,7 +4557,14 @@ class MatrixBridge:
                 injection_phase = str(group.get("injection_phase") or "")
                 if injection_phase == "pending":
                     await self._attempt_steering(agent, request, group)
-                    injection_phase = str(group.get("injection_phase") or "")
+                    updated_phase = str(group.get("injection_phase") or "")
+                    if updated_phase != injection_phase:
+                        await self._update_queue_notice(
+                            agent,
+                            self._room_for_agent(agent.key),
+                            max(0, len(pending) - 1),
+                        )
+                    injection_phase = updated_phase
                     if injection_phase == "pending":
                         return
                 if injection_phase in {
@@ -4558,6 +4576,7 @@ class MatrixBridge:
                         not request.get("turn_attribution_required")
                         or expected_turn_id
                     ):
+                        phase_before_scan = injection_phase
                         await self._scan_steering_admission(
                             group,
                             Path(str(request["transcript_path"])),
@@ -4567,6 +4586,12 @@ class MatrixBridge:
                                 else None
                             ),
                         )
+                        if group.get("injection_phase") != phase_before_scan:
+                            await self._update_queue_notice(
+                                agent,
+                                self._room_for_agent(agent.key),
+                                max(0, len(pending) - 1),
+                            )
             if request.get("started_at") is None:
                 try:
                     ref = self.resolver.resolve(agent.session)
@@ -4708,7 +4733,20 @@ class MatrixBridge:
 
             room_id = self._room_for_agent(agent.key)
             if request.get("answer_phase") == "failed":
-                await self._complete_failed_answer(agent, request, pending)
+                timeout = request.get("terminal_error") == (
+                    "Timed out waiting for a Matrix answer"
+                )
+                await self._advance_terminal_request(
+                    agent,
+                    request,
+                    room_id,
+                    disposition="timeout" if timeout else "delivery_failed",
+                    status_detail=(
+                        "Zeitüberschreitung"
+                        if timeout
+                        else "Zustellung fehlgeschlagen"
+                    ),
+                )
                 return
             if request.get("suppress_reply"):
                 request["answer_phase"] = "suppressed"
@@ -5071,15 +5109,15 @@ class MatrixBridge:
                 await self._sync_typing(agent)
             await self._update_agent_status(agent, "error", status_detail)
 
+        if pending:
+            # Typing continues into the next turn; the start or the next poll
+            # cycle's _sync_typing settles it, so it never blinks off between.
+            await self._start_request(agent, pending[0], room_id)
         await self._update_queue_notice(
             agent,
             room_id,
             max(0, len(pending) - 1),
         )
-        if pending:
-            # Typing continues into the next turn; the start or the next poll
-            # cycle's _sync_typing settles it, so it never blinks off between.
-            await self._start_request(agent, pending[0], room_id)
         return True
 
     async def _restore_activity_feedback(self) -> None:
