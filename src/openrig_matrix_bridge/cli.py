@@ -229,6 +229,7 @@ def run_setup(args: argparse.Namespace) -> None:
             "codex_home": str(args.codex_home),
             "sender_session": args.sender_session,
             "human_destinations": [human_destination],
+            "mirror_commentary": not args.no_commentary,
             "poll_interval_seconds": 1.0,
             "max_message_age_minutes": 60,
             "response_timeout_minutes": 360,
@@ -529,6 +530,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--replace-human", action="store_true")
     parser.add_argument("--no-human-registration", action="store_true")
+    parser.add_argument("--no-commentary", action="store_true")
     parser.add_argument("--parakeet-threads", type=int, default=4)
     parser.add_argument("--skip-model", action="store_true")
     parser.add_argument("--without-voice", action="store_true")

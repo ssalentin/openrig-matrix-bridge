@@ -25,6 +25,12 @@ While an answer is being generated, Matrix also shows the bot typing. The same
 state is published as the `dev.openrig.agent_status` room event for clients and
 tooling that want structured data.
 
+Visible Codex progress messages are mirrored into the same Matrix thread while
+the agent works. The bridge forwards completed `commentary` messages, not hidden
+reasoning or raw tool output. The final answer is still posted after the work is
+complete. Disable interim messages with `mirror_commentary: false` or run
+`setup --no-commentary`.
+
 Because one Matrix bot account can only have one global presence, status is
 represented per room. OpenRig can use one bot for any number of agents.
 

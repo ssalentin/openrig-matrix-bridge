@@ -1,4 +1,6 @@
 import asyncio
+import json
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -179,7 +181,7 @@ def test_poll_answer_delivery_uses_decision_brief_as_thread_root():
                         "event_id": "$vote",
                         "reply_to_event_id": "$brief",
                         "answer_text": "Fertig.",
-                        "started_at": 1,
+                        "started_at": time.time(),
                         "session_id": "session",
                         "transcript_path": "/tmp/transcript.jsonl",
                         "offset": 0,
@@ -218,6 +220,98 @@ def test_poll_answer_delivery_uses_decision_brief_as_thread_root():
             "Fertig.",
             "$brief",
         )
+    ]
+    assert bridge.state.data["pending"]["advisor"] == []
+
+
+def test_poll_delivers_commentary_then_final_answer(tmp_path):
+    transcript = tmp_path / "rollout.jsonl"
+    records = [
+        {
+            "type": "event_msg",
+            "payload": {
+                "type": "item_completed",
+                "item": {
+                    "type": "AgentMessage",
+                    "id": "comment-1",
+                    "phase": "commentary",
+                    "content": [{"type": "Text", "text": "Ich prüfe das."}],
+                },
+            },
+        },
+        {
+            "type": "event_msg",
+            "payload": {
+                "type": "item_completed",
+                "item": {
+                    "type": "AgentMessage",
+                    "id": "final-1",
+                    "phase": "final_answer",
+                    "content": [{"type": "Text", "text": "Fertig."}],
+                },
+            },
+        },
+    ]
+    transcript.write_text(
+        "".join(json.dumps(record) + "\n" for record in records),
+        encoding="utf-8",
+    )
+    bridge = object.__new__(MatrixBridge)
+    agent = AgentConfig(
+        key="advisor",
+        display_name="Advisor",
+        session="advisor-lead@kernel",
+    )
+    bridge.config = SimpleNamespace(
+        mirror_commentary=True,
+        response_timeout_minutes=30,
+    )
+    bridge.locks = {"advisor": asyncio.Lock()}
+    bridge.state = SimpleNamespace(
+        save=lambda: None,
+        data={
+            "pending": {
+                "advisor": [
+                    {
+                        "event_id": "$prompt",
+                        "reply_to_event_id": "$prompt",
+                        "answer_text": None,
+                        "started_at": time.time(),
+                        "session_id": "session",
+                        "transcript_path": str(transcript),
+                        "offset": 0,
+                    }
+                ]
+            },
+            "rooms": {
+                "advisor": {
+                    "room_id": "!advisor:matrix.example.org",
+                    "name": "Advisor",
+                }
+            },
+        },
+    )
+    sent = []
+
+    async def send(room_id, text, reply_to=None):
+        sent.append((text, reply_to))
+        return RoomSendResponse(f"${len(sent)}", room_id)
+
+    async def set_typing(room_id, typing):
+        return None
+
+    async def update_status(agent, status, detail):
+        return None
+
+    bridge._send = send
+    bridge._set_typing = set_typing
+    bridge._update_agent_status = update_status
+
+    asyncio.run(bridge._poll_agent(agent))
+
+    assert sent == [
+        ("Ich prüfe das.", "$prompt"),
+        ("Fertig.", "$prompt"),
     ]
     assert bridge.state.data["pending"]["advisor"] == []
 

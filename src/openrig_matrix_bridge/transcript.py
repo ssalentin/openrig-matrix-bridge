@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from hashlib import sha256
 from pathlib import Path
 from typing import Any
 
@@ -34,7 +35,7 @@ def read_complete_records(path: Path, offset: int) -> tuple[list[dict[str, Any]]
     return records, offset + len(complete)
 
 
-def final_answer(record: dict[str, Any]) -> str | None:
+def _agent_message(record: dict[str, Any]) -> tuple[str, str] | None:
     if record.get("type") != "event_msg":
         return None
     payload = record.get("payload")
@@ -43,7 +44,7 @@ def final_answer(record: dict[str, Any]) -> str | None:
     item = payload.get("item")
     if not isinstance(item, dict):
         return None
-    if item.get("type") != "AgentMessage" or item.get("phase") != "final_answer":
+    if item.get("type") != "AgentMessage":
         return None
     parts = [
         str(part.get("text", ""))
@@ -51,5 +52,30 @@ def final_answer(record: dict[str, Any]) -> str | None:
         if isinstance(part, dict) and part.get("type") in (None, "Text")
     ]
     text = "".join(parts).strip()
-    return text or None
+    if not text:
+        return None
+    message_id = str(item.get("id") or sha256(text.encode()).hexdigest())
+    return message_id, text
+
+
+def final_answer(record: dict[str, Any]) -> str | None:
+    payload = record.get("payload")
+    item = payload.get("item") if isinstance(payload, dict) else None
+    if not isinstance(item, dict) or item.get("phase") != "final_answer":
+        return None
+    message = _agent_message(record)
+    return message[1] if message else None
+
+
+def commentary_messages(records: list[dict[str, Any]]) -> list[tuple[str, str]]:
+    messages: list[tuple[str, str]] = []
+    for record in records:
+        payload = record.get("payload")
+        item = payload.get("item") if isinstance(payload, dict) else None
+        if not isinstance(item, dict) or item.get("phase") != "commentary":
+            continue
+        message = _agent_message(record)
+        if message is not None:
+            messages.append(message)
+    return messages
 

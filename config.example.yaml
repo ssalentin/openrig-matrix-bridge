@@ -12,6 +12,7 @@ openrig:
   sender_session: matrix-bridge@kernel
   human_destinations:
     - sebastian@external
+  mirror_commentary: true
   poll_interval_seconds: 1.0
   max_message_age_minutes: 60
   response_timeout_minutes: 360

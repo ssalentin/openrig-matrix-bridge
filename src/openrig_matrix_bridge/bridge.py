@@ -61,7 +61,7 @@ from .openrig import (
     OpenRigGateway,
     OpenRigSessionResolver,
 )
-from .transcript import final_answer, read_complete_records
+from .transcript import commentary_messages, final_answer, read_complete_records
 from .transcription import Transcriber
 
 LOGGER = logging.getLogger("openrig-matrix-bridge")
@@ -1247,10 +1247,32 @@ class MatrixBridge:
                 except OSError:
                     return
                 request["offset"] = offset
+                sent_commentary = request.setdefault("sent_commentary", [])
+                sent_ids = set(sent_commentary)
+                if self.config.mirror_commentary:
+                    for message_id, text in commentary_messages(records):
+                        if message_id in sent_ids:
+                            continue
+                        room_id = self._room_for_agent(agent.key)
+                        response = await self._send(
+                            room_id,
+                            text,
+                            self._reply_target(request),
+                        )
+                        if not isinstance(response, RoomSendResponse):
+                            LOGGER.error(
+                                "commentary delivery failed for %s: %s",
+                                agent.key,
+                                response,
+                            )
+                            return
+                        sent_commentary.append(message_id)
+                        sent_ids.add(message_id)
+                        self.state.save()
                 answers = [text for record in records if (text := final_answer(record))]
                 if answers:
                     request["answer_text"] = answers[-1]
-                    self.state.save()
+                self.state.save()
 
             if request.get("answer_text") is None:
                 return

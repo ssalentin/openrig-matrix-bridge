@@ -46,6 +46,7 @@ class BridgeConfig:
     codex_home: Path
     sender_session: str
     human_destinations: tuple[str, ...]
+    mirror_commentary: bool
     poll_interval_seconds: float
     max_message_age_minutes: int
     response_timeout_minutes: int
@@ -132,6 +133,7 @@ def load_config(path: str | Path) -> BridgeConfig:
         isinstance(item, str) and item.strip() for item in human_destinations_raw
     ):
         raise ConfigError("openrig.human_destinations must be a list of seat addresses")
+    mirror_commentary = bool(transport.get("mirror_commentary", True))
     poll_interval = float(transport.get("poll_interval_seconds", 1.0))
     max_age = int(transport.get("max_message_age_minutes", 60))
     timeout = int(transport.get("response_timeout_minutes", 360))
@@ -160,6 +162,7 @@ def load_config(path: str | Path) -> BridgeConfig:
         codex_home=codex_home,
         sender_session=sender_session,
         human_destinations=tuple(str(item).strip() for item in human_destinations_raw),
+        mirror_commentary=mirror_commentary,
         poll_interval_seconds=poll_interval,
         max_message_age_minutes=max_age,
         response_timeout_minutes=timeout,
