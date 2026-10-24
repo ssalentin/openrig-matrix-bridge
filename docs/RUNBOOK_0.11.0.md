@@ -53,23 +53,26 @@ Do not proceed until a verified 0.10.0 rollback wheel exists.
 ```bash
 sudo systemctl stop openrig-matrix-bridge.service
 
-# Confirm the process is gone. There is no lock or pid-file guard — this check
-# is mandatory because two instances sharing one state directory will race
-# state.json and the crypto store.
+# Confirm the process is gone. If the release includes the single-instance
+# lock from issue #37, the bridge refuses to start while another instance
+# holds the state directory. If the lock is not yet present, this manual
+# check is the only guard against two instances racing state.json and the
+# crypto store.
 pgrep -af 'openrig-matrix-bridge'
 # Expected: no output.
 ```
 
-> **No single-instance guard exists.** Do not start 0.11.0 until the old
-> process has fully exited. Skipping this check risks double-processing events
-> and corrupting the crypto store.
+> **Verify single-instance.** Do not start 0.11.0 until the old process has
+> fully exited. If a pid/lock guard is present, confirm it rejects a second
+> start. If not, the manual `pgrep` check is mandatory — skipping it risks
+> double-processing events and corrupting the crypto store.
 
 ## 2 — Record the installed version and source artifact
 
 `--version` prints only the Python package version, not a commit SHA.
 
 ```bash
-openrig-matrix-bridge --version
+/opt/openrig-matrix/venv/bin/openrig-matrix-bridge --version
 # Expected: 0.10.0
 
 uv pip show --python /opt/openrig-matrix/venv/bin/python openrig-matrix-bridge
@@ -116,7 +119,7 @@ sha256sum "$WHEEL_PATH"
 uv pip install --python /opt/openrig-matrix/venv/bin/python "$WHEEL_PATH"
 
 # Confirm the installed version.
-openrig-matrix-bridge --version
+/opt/openrig-matrix/venv/bin/openrig-matrix-bridge --version
 # Expected: 0.11.0
 
 uv pip show --python /opt/openrig-matrix/venv/bin/python openrig-matrix-bridge
@@ -132,13 +135,10 @@ identity; the source SHA proves provenance. These are different things:
 Inject the token from the secret manager and run doctor:
 
 ```bash
-# Generic form — adapt to your secret manager:
+# Use the same secret lookup as the systemd launcher to inject the token:
 MATRIX_ACCESS_TOKEN="$(your-secret-manager-command)" \
-  openrig-matrix-bridge doctor --config /etc/openrig-matrix-bridge/config.yaml
-
-# On this host (Vaultwarden via bw-field):
-MATRIX_ACCESS_TOKEN="$(/usr/local/bin/bw-field matrix-bridge password)" \
-  openrig-matrix-bridge doctor --config /etc/openrig-matrix-bridge/config.yaml
+  /opt/openrig-matrix/venv/bin/openrig-matrix-bridge doctor \
+  --config /etc/openrig-matrix-bridge/config.yaml
 ```
 
 All checks must pass. Stop and investigate any failure before starting the
@@ -266,12 +266,13 @@ cp -a "$BACKUP_DIR/config.yaml" /etc/openrig-matrix-bridge/config.yaml
 ROLLBACK_WHEEL="/root/openrig-matrix-rollback-7719795/openrig_matrix_bridge-0.10.0-py3-none-any.whl"
 uv pip install --python /opt/openrig-matrix/venv/bin/python "$ROLLBACK_WHEEL"
 
-openrig-matrix-bridge --version
+/opt/openrig-matrix/venv/bin/openrig-matrix-bridge --version
 # Expected: 0.10.0
 
 # 5. Run doctor and start.
 MATRIX_ACCESS_TOKEN="$(your-secret-manager-command)" \
-  openrig-matrix-bridge doctor --config /etc/openrig-matrix-bridge/config.yaml
+  /opt/openrig-matrix/venv/bin/openrig-matrix-bridge doctor \
+  --config /etc/openrig-matrix-bridge/config.yaml
 
 sudo systemctl start openrig-matrix-bridge.service
 sudo systemctl status openrig-matrix-bridge.service
