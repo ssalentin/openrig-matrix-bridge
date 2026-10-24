@@ -492,6 +492,25 @@ def test_activity_refresh_edits_the_same_card_for_needs_input(tmp_path):
     ]
 
 
+def test_activity_refresh_does_not_create_a_second_card(tmp_path):
+    bridge, agent, _request, sent, edited = activity_bridge(tmp_path, [])
+    bridge.resolver = SimpleNamespace(
+        resolve_many=lambda sessions: {
+            agent.session: SimpleNamespace(
+                transcript_path=tmp_path / "rollout.jsonl",
+                busy=False,
+                activity_state="idle-at-prompt",
+                needs_input_count=0,
+            )
+        }
+    )
+
+    asyncio.run(bridge._refresh_agent_statuses(force=True))
+
+    assert sent == []
+    assert edited == []
+
+
 def test_activity_refresh_does_not_replace_terminal_card_intent(tmp_path):
     bridge, agent, request, _sent, edited = activity_bridge(tmp_path, [])
     terminal_intent = {
