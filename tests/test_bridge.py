@@ -6,6 +6,7 @@ from types import SimpleNamespace
 import pytest
 from nio import (
     ProfileSetAvatarResponse,
+    RoomEncryptedFile,
     RoomEncryptedImage,
     RoomGetEventResponse,
     RoomGetStateEventResponse,
@@ -17,6 +18,7 @@ from nio.crypto import encrypt_attachment
 from openrig_matrix_bridge.bridge import MatrixBridge, verification_decision
 from openrig_matrix_bridge.config import AgentConfig
 from openrig_matrix_bridge.decisions import POLL_RESPONSE_KEY
+from openrig_matrix_bridge.media import MediaError
 
 
 class RecordingClient:
@@ -44,6 +46,50 @@ def bridge_with_room():
         }
     )
     return bridge
+
+
+def inbound_file_bridge(tmp_path, download_body, *, max_file_bytes=1024):
+    class FileClient:
+        async def download(self, mxc):
+            return SimpleNamespace(body=download_body)
+
+    agent = AgentConfig(
+        key="advisor",
+        display_name="Advisor",
+        session="advisor-lead@kernel",
+    )
+    bridge = object.__new__(MatrixBridge)
+    bridge.config = SimpleNamespace(
+        user_id="@openrig:matrix.example.org",
+        allowed_users=("@owner:matrix.example.org",),
+        max_message_age_minutes=-1,
+        agents={"advisor": agent},
+        media=SimpleNamespace(
+            enabled=True,
+            inbox_dir=tmp_path,
+            max_file_bytes=max_file_bytes,
+        ),
+    )
+    bridge.room_agents = {"!advisor:matrix.example.org": "advisor"}
+    bridge.processed_events = set()
+    bridge.state = SimpleNamespace(
+        save=lambda: None,
+        data={"processed_events": []},
+    )
+    bridge.client = FileClient()
+    replies = []
+    forwarded = []
+
+    async def send(room_id, text, reply_to=None):
+        replies.append(text)
+        return RoomSendResponse("$reply", room_id)
+
+    async def enqueue_prompt(*args):
+        forwarded.append(args)
+
+    bridge._send = send
+    bridge._enqueue_prompt = enqueue_prompt
+    return bridge, forwarded, replies
 
 
 def test_assigns_unique_repo_avatars_and_profile():
@@ -1933,6 +1979,645 @@ def test_threaded_audio_uses_canonical_root_for_status_and_prompt():
         for reply_to, kwargs in sent
     )
     assert forwarded[0]["relates_to"] == relation
+
+
+def test_encrypted_pdf_is_safely_stored_and_forwarded_to_agent(tmp_path):
+    pdf = b"%PDF-1.7\nquarterly report bytes\n%%EOF\n"
+    encrypted, keys = encrypt_attachment(pdf)
+
+    class FileClient:
+        async def download(self, mxc):
+            assert mxc == "mxc://matrix.example.org/report"
+            return SimpleNamespace(body=encrypted)
+
+    bridge = object.__new__(MatrixBridge)
+    agent = AgentConfig(
+        key="advisor",
+        display_name="Advisor",
+        session="advisor-lead@kernel",
+    )
+    bridge.config = SimpleNamespace(
+        user_id="@openrig:matrix.example.org",
+        allowed_users=("@owner:matrix.example.org",),
+        max_message_age_minutes=-1,
+        agents={"advisor": agent},
+        media=SimpleNamespace(
+            enabled=True,
+            inbox_dir=tmp_path,
+            max_file_bytes=1024,
+        ),
+    )
+    bridge.room_agents = {"!advisor:matrix.example.org": "advisor"}
+    bridge.processed_events = set()
+    bridge.state = SimpleNamespace(
+        save=lambda: None,
+        data={"processed_events": []},
+    )
+    bridge.client = FileClient()
+    bridge._send = lambda *args: _completed(None)
+    forwarded = []
+
+    async def enqueue_prompt(*args):
+        forwarded.append(args)
+
+    bridge._enqueue_prompt = enqueue_prompt
+    room = SimpleNamespace(room_id="!advisor:matrix.example.org")
+    event = RoomEncryptedFile(
+        {
+            "event_id": "$report",
+            "sender": "@owner:matrix.example.org",
+            "origin_server_ts": 1_700_000_000_000,
+            "type": "m.room.encrypted",
+            "content": {
+                "filename": "../../Quarterly report.pdf",
+                "info": {"mimetype": "application/pdf", "size": len(pdf)},
+            },
+        },
+        "mxc://matrix.example.org/report",
+        "Quarterly report",
+        keys["key"],
+        keys["hashes"],
+        keys["iv"],
+        "application/pdf",
+    )
+
+    asyncio.run(bridge._handle_file(room, event))
+
+    agent_inbox = tmp_path / "advisor"
+    stored = list(agent_inbox.glob("*.pdf"))
+    assert len(stored) == 1
+    assert stored[0].read_bytes() == pdf
+    assert stored[0].parent == agent_inbox
+    assert "Quarterly report.pdf" in forwarded[0][4]
+    assert "application/pdf" in forwarded[0][4]
+    assert f"{len(pdf)} Bytes" in forwarded[0][4]
+    assert pdf.decode() not in forwarded[0][4]
+
+
+@pytest.mark.parametrize(
+    ("filename", "payload", "mime_type", "suffix"),
+    [
+        ("Quarterly report.pdf", b"%PDF-1.7\nreport\n", "application/pdf", ".pdf"),
+        (
+            "payload.custom",
+            b"\x00\xffunknown binary\x10",
+            "application/x-openrig-custom",
+            ".custom",
+        ),
+    ],
+)
+def test_publishes_encrypted_generic_file_with_original_metadata(
+    tmp_path,
+    filename,
+    payload,
+    mime_type,
+    suffix,
+):
+    source = tmp_path / filename
+    source.write_bytes(payload)
+    room_id = "!advisor:matrix.example.org"
+    request_id = f"file-{suffix.removeprefix('.')}"
+    events = []
+
+    class FileClient:
+        async def upload(
+            self,
+            data,
+            content_type,
+            filename,
+            filesize,
+            *,
+            encrypt,
+        ):
+            assert data(None, None).read_bytes() == payload
+            assert content_type == mime_type
+            assert filename == source.name
+            assert filesize == len(payload)
+            assert encrypt is True
+            return (
+                UploadResponse(f"mxc://matrix.example.org/{request_id}"),
+                {
+                    "key": {"k": "secret"},
+                    "hashes": {"sha256": "hash"},
+                    "iv": "iv",
+                },
+            )
+
+        async def room_send(
+            self,
+            sent_room_id,
+            event_type,
+            content,
+            *,
+            tx_id,
+            ignore_unverified_devices,
+        ):
+            assert sent_room_id == room_id
+            assert event_type == "m.room.message"
+            assert tx_id == request_id
+            assert ignore_unverified_devices is True
+            events.append(content)
+            return RoomSendResponse(f"$event-{suffix}", room_id)
+
+    bridge = object.__new__(MatrixBridge)
+    bridge.config = SimpleNamespace(
+        agents={
+            "advisor": AgentConfig(
+                key="advisor",
+                display_name="Advisor",
+                session="advisor-lead@kernel",
+            )
+        },
+        media=SimpleNamespace(
+            enabled=True,
+            max_file_bytes=1024,
+        ),
+    )
+    bridge.state = SimpleNamespace(
+        save=lambda: None,
+        data={
+            "rooms": {
+                "advisor": {
+                    "room_id": room_id,
+                }
+            },
+            "media": {},
+            "media_failures": {},
+        },
+    )
+    bridge.client = FileClient()
+    request = {
+        "id": request_id,
+        "kind": "file",
+        "agent": "advisor",
+        "path": str(source),
+        "filename": filename,
+        "mime_type": mime_type,
+        "caption": "Returned report",
+    }
+
+    asyncio.run(bridge._publish_file(request))
+
+    assert events == [
+        {
+            "msgtype": "m.file",
+            "body": "Returned report",
+            "filename": filename,
+            "info": {"mimetype": mime_type, "size": len(payload)},
+            "file": {
+                "url": f"mxc://matrix.example.org/{request_id}",
+                "key": {"k": "secret"},
+                "hashes": {"sha256": "hash"},
+                "iv": "iv",
+            },
+            "format": "org.matrix.custom.html",
+            "formatted_body": "<p>Returned report</p>",
+        }
+    ]
+    assert bridge.state.data["media"][request_id] == {
+        "agent": "advisor",
+        "event_id": f"$event-{suffix}",
+        "path": str(source),
+        "filename": filename,
+        "mime_type": mime_type,
+        "size": len(payload),
+        "sent_at": bridge.state.data["media"][request_id]["sent_at"],
+    }
+
+
+def test_rejects_incomplete_encrypted_file_upload_metadata(tmp_path):
+    source = tmp_path / "payload.pdf"
+    source.write_bytes(b"%PDF-1.7\nupload metadata\n")
+    room_id = "!advisor:matrix.example.org"
+
+    class FileClient:
+        async def upload(
+            self,
+            data,
+            content_type,
+            filename,
+            filesize,
+            *,
+            encrypt,
+        ):
+            return UploadResponse("mxc://matrix.example.org/incomplete"), {}
+
+        async def room_send(self, *args, **kwargs):
+            raise AssertionError("incomplete encryption metadata was sent")
+
+    bridge = object.__new__(MatrixBridge)
+    bridge.config = SimpleNamespace(
+        agents={
+            "advisor": AgentConfig(
+                key="advisor",
+                display_name="Advisor",
+                session="advisor-lead@kernel",
+            )
+        },
+        media=SimpleNamespace(enabled=True, max_file_bytes=1024),
+    )
+    bridge.state = SimpleNamespace(
+        save=lambda: None,
+        data={
+            "rooms": {"advisor": {"room_id": room_id}},
+            "media": {},
+            "media_failures": {},
+        },
+    )
+    bridge.client = FileClient()
+    request = {
+        "id": "file-incomplete",
+        "kind": "file",
+        "agent": "advisor",
+        "path": str(source),
+        "filename": source.name,
+        "mime_type": "application/pdf",
+    }
+
+    with pytest.raises(MediaError, match="encryption metadata"):
+        asyncio.run(bridge._publish_file(request))
+
+
+def test_media_outbox_routes_and_persists_generic_file_failure(tmp_path):
+    outbox = tmp_path / "outbox"
+    sent = outbox / "sent"
+    failed = outbox / "failed"
+    for directory in (outbox, sent, failed):
+        directory.mkdir()
+    request_path = outbox / "file-request.json"
+    request = {
+        "id": "file-request",
+        "kind": "file",
+        "agent": "advisor",
+    }
+    request_path.write_text(json.dumps(request), encoding="utf-8")
+
+    bridge = object.__new__(MatrixBridge)
+    bridge.media_outbox = outbox
+    bridge.media_sent = sent
+    bridge.media_failed = failed
+    bridge.state = SimpleNamespace(
+        save=lambda: None,
+        data={"media": {}, "media_failures": {}},
+    )
+    published = []
+
+    async def publish_file(value):
+        published.append(value)
+        raise MediaError("file rejected at 1024 bytes")
+
+    async def publish_image(value):
+        raise AssertionError(f"file request was misrouted as an image: {value}")
+
+    bridge._publish_file = publish_file
+    bridge._publish_image = publish_image
+
+    asyncio.run(bridge._process_media_outbox())
+
+    assert published == [request]
+    assert not request_path.exists()
+    assert (failed / request_path.name).exists()
+    failure = bridge.state.data["media_failures"]["file-request"]
+    assert failure["error"] == "file rejected at 1024 bytes"
+    assert failure["failed_at"] == bridge.state.data["media_failures"]["file-request"]["failed_at"]
+
+
+def test_media_outbox_does_not_republish_recorded_delivery_after_restart(tmp_path):
+    outbox = tmp_path / "outbox"
+    sent = outbox / "sent"
+    failed = outbox / "failed"
+    for directory in (outbox, sent, failed):
+        directory.mkdir()
+    request_id = "file-already-sent"
+    request_path = outbox / f"{request_id}.json"
+    request_path.write_text(
+        json.dumps(
+            {
+                "id": request_id,
+                "kind": "file",
+                "agent": "advisor",
+            }
+        ),
+        encoding="utf-8",
+    )
+    bridge = object.__new__(MatrixBridge)
+    bridge.media_outbox = outbox
+    bridge.media_sent = sent
+    bridge.media_failed = failed
+    bridge.state = SimpleNamespace(
+        save=lambda: None,
+        data={
+            "media": {
+                request_id: {
+                    "agent": "advisor",
+                    "event_id": "$delivered-once",
+                    "sent_at": 1,
+                }
+            },
+            "media_failures": {},
+        },
+    )
+
+    async def republish(request):
+        raise AssertionError(f"duplicate delivery attempted after restart: {request}")
+
+    bridge._publish_file = republish
+
+    asyncio.run(bridge._process_media_outbox())
+
+    assert (sent / request_path.name).exists()
+    assert not request_path.exists()
+    assert bridge.state.data["media"][request_id]["event_id"] == "$delivered-once"
+
+
+def test_encrypted_file_rejects_mismatched_declared_size(tmp_path):
+    payload = b"%PDF-1.7\nmalformed metadata\n"
+    encrypted, keys = encrypt_attachment(payload)
+
+    class FileClient:
+        async def download(self, mxc):
+            return SimpleNamespace(body=encrypted)
+
+    bridge = object.__new__(MatrixBridge)
+    agent = AgentConfig(
+        key="advisor",
+        display_name="Advisor",
+        session="advisor-lead@kernel",
+    )
+    bridge.config = SimpleNamespace(
+        user_id="@openrig:matrix.example.org",
+        allowed_users=("@owner:matrix.example.org",),
+        max_message_age_minutes=-1,
+        agents={"advisor": agent},
+        media=SimpleNamespace(
+            enabled=True,
+            inbox_dir=tmp_path,
+            max_file_bytes=1024,
+        ),
+    )
+    bridge.room_agents = {"!advisor:matrix.example.org": "advisor"}
+    bridge.processed_events = set()
+    bridge.state = SimpleNamespace(
+        save=lambda: None,
+        data={"processed_events": []},
+    )
+    bridge.client = FileClient()
+    replies = []
+
+    async def send(room_id, text, reply_to=None):
+        replies.append(text)
+        return RoomSendResponse("$reply", room_id)
+
+    bridge._send = send
+    forwarded = []
+
+    async def enqueue_prompt(*args):
+        forwarded.append(args)
+
+    bridge._enqueue_prompt = enqueue_prompt
+    room = SimpleNamespace(room_id="!advisor:matrix.example.org")
+    event = RoomEncryptedFile(
+        {
+            "event_id": "$bad-size",
+            "sender": "@owner:matrix.example.org",
+            "origin_server_ts": 1_700_000_000_000,
+            "type": "m.room.encrypted",
+            "content": {
+                "filename": "malformed.pdf",
+                "info": {
+                    "mimetype": "application/pdf",
+                    "size": len(payload) + 1,
+                },
+            },
+        },
+        "mxc://matrix.example.org/bad-size",
+        "malformed.pdf",
+        keys["key"],
+        keys["hashes"],
+        keys["iv"],
+        "application/pdf",
+    )
+
+    asyncio.run(bridge._handle_file(room, event))
+
+    assert forwarded == []
+    assert list((tmp_path / "advisor").glob("*")) == []
+    assert any("Dateigröße" in reply for reply in replies)
+
+
+def test_encrypted_unknown_binary_uses_generic_file_path(tmp_path):
+    payload = b"\x00\xffbinary\x10payload"
+    encrypted, keys = encrypt_attachment(payload)
+    bridge, forwarded, replies = inbound_file_bridge(tmp_path, encrypted)
+    event = RoomEncryptedFile(
+        {
+            "event_id": "$unknown",
+            "sender": "@owner:matrix.example.org",
+            "origin_server_ts": 1_700_000_000_000,
+            "type": "m.room.encrypted",
+            "content": {
+                "filename": "payload.without-safe-suffix!",
+                "info": {
+                    "mimetype": "application/x-openrig-unknown",
+                    "size": len(payload),
+                },
+            },
+        },
+        "mxc://matrix.example.org/unknown",
+        "payload.without-safe-suffix!",
+        keys["key"],
+        keys["hashes"],
+        keys["iv"],
+        "application/x-openrig-unknown",
+    )
+    room = SimpleNamespace(room_id="!advisor:matrix.example.org")
+
+    asyncio.run(bridge._handle_file(room, event))
+
+    stored = list((tmp_path / "advisor").glob("*.bin"))
+    assert len(stored) == 1
+    assert stored[0].read_bytes() == payload
+    assert forwarded[0][5] == "attachment"
+    assert "application/x-openrig-unknown" in forwarded[0][4]
+    assert any("gespeichert" in reply for reply in replies)
+
+
+@pytest.mark.parametrize(
+    ("filename", "payload", "mime_type", "suffix"),
+    [
+        ("notes.txt", b"short text\n", "text/plain", ".txt"),
+        (
+            "archive.zip",
+            b"PK\x03\x04openrig zip placeholder",
+            "application/zip",
+            ".zip",
+        ),
+        ("recording.ogg", b"OggS-openrig-audio", "audio/ogg", ".ogg"),
+    ],
+)
+def test_encrypted_common_generic_file_types_round_trip(
+    tmp_path,
+    filename,
+    payload,
+    mime_type,
+    suffix,
+):
+    encrypted, keys = encrypt_attachment(payload)
+    bridge, forwarded, _replies = inbound_file_bridge(tmp_path, encrypted)
+    event = RoomEncryptedFile(
+        {
+            "event_id": f"${filename}",
+            "sender": "@owner:matrix.example.org",
+            "origin_server_ts": 1_700_000_000_000,
+            "type": "m.room.encrypted",
+            "content": {
+                "filename": filename,
+                "info": {"mimetype": mime_type, "size": len(payload)},
+            },
+        },
+        f"mxc://matrix.example.org/{filename}",
+        filename,
+        keys["key"],
+        keys["hashes"],
+        keys["iv"],
+        mime_type,
+    )
+    room = SimpleNamespace(room_id="!advisor:matrix.example.org")
+
+    asyncio.run(bridge._handle_file(room, event))
+
+    stored = list((tmp_path / "advisor").glob(f"*{suffix}"))
+    assert len(stored) == 1
+    assert stored[0].read_bytes() == payload
+    assert f"Medientyp: {mime_type}" in forwarded[0][4]
+
+
+@pytest.mark.parametrize(
+    ("payload", "limit", "expected_error"),
+    [
+        (b"", 1024, "leer"),
+        (b"x" * 17, 16, "16 Bytes"),
+    ],
+)
+def test_encrypted_file_rejects_empty_or_oversized_payload(
+    tmp_path,
+    payload,
+    limit,
+    expected_error,
+):
+    encrypted, keys = encrypt_attachment(payload)
+    bridge, forwarded, replies = inbound_file_bridge(
+        tmp_path,
+        encrypted,
+        max_file_bytes=limit,
+    )
+    event = RoomEncryptedFile(
+        {
+            "event_id": "$invalid-size",
+            "sender": "@owner:matrix.example.org",
+            "origin_server_ts": 1_700_000_000_000,
+            "type": "m.room.encrypted",
+            "content": {
+                "filename": "payload.bin",
+                "info": {
+                    "mimetype": "application/octet-stream",
+                    "size": len(payload),
+                },
+            },
+        },
+        "mxc://matrix.example.org/invalid-size",
+        "payload.bin",
+        keys["key"],
+        keys["hashes"],
+        keys["iv"],
+        "application/octet-stream",
+    )
+    room = SimpleNamespace(room_id="!advisor:matrix.example.org")
+
+    asyncio.run(bridge._handle_file(room, event))
+
+    assert forwarded == []
+    assert list((tmp_path / "advisor").glob("*")) == []
+    assert any(expected_error in reply for reply in replies)
+
+
+def test_encrypted_file_rejects_interrupted_ciphertext(tmp_path):
+    payload = b"%PDF-1.7\ninterrupted\n"
+    encrypted, keys = encrypt_attachment(payload)
+    bridge, forwarded, replies = inbound_file_bridge(
+        tmp_path,
+        encrypted[:-8],
+    )
+    event = RoomEncryptedFile(
+        {
+            "event_id": "$interrupted",
+            "sender": "@owner:matrix.example.org",
+            "origin_server_ts": 1_700_000_000_000,
+            "type": "m.room.encrypted",
+            "content": {
+                "filename": "interrupted.pdf",
+                "info": {
+                    "mimetype": "application/pdf",
+                    "size": len(payload),
+                },
+            },
+        },
+        "mxc://matrix.example.org/interrupted",
+        "interrupted.pdf",
+        keys["key"],
+        keys["hashes"],
+        keys["iv"],
+        "application/pdf",
+    )
+    room = SimpleNamespace(room_id="!advisor:matrix.example.org")
+
+    asyncio.run(bridge._handle_file(room, event))
+
+    assert forwarded == []
+    assert list((tmp_path / "advisor").glob("*")) == []
+    assert any("konnte nicht übernommen" in reply for reply in replies)
+
+
+def test_encrypted_file_write_failure_leaves_no_partial_file(
+    tmp_path,
+    monkeypatch,
+):
+    payload = b"%PDF-1.7\ninterrupted write\n"
+    encrypted, keys = encrypt_attachment(payload)
+    bridge, forwarded, replies = inbound_file_bridge(tmp_path, encrypted)
+    event = RoomEncryptedFile(
+        {
+            "event_id": "$interrupted-write",
+            "sender": "@owner:matrix.example.org",
+            "origin_server_ts": 1_700_000_000_000,
+            "type": "m.room.encrypted",
+            "content": {
+                "filename": "interrupted.pdf",
+                "info": {
+                    "mimetype": "application/pdf",
+                    "size": len(payload),
+                },
+            },
+        },
+        "mxc://matrix.example.org/interrupted-write",
+        "interrupted.pdf",
+        keys["key"],
+        keys["hashes"],
+        keys["iv"],
+        "application/pdf",
+    )
+
+    def fail_replace(source, destination):
+        raise OSError("simulated interrupted rename")
+
+    monkeypatch.setattr("openrig_matrix_bridge.bridge.os.replace", fail_replace)
+    room = SimpleNamespace(room_id="!advisor:matrix.example.org")
+
+    asyncio.run(bridge._handle_file(room, event))
+
+    assert forwarded == []
+    assert list((tmp_path / "advisor").glob("*")) == []
+    assert any("konnte nicht übernommen" in reply for reply in replies)
 
 
 async def _completed(value):

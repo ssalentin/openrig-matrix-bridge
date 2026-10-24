@@ -72,6 +72,7 @@ class MediaConfig:
     enabled: bool
     inbox_dir: Path
     max_image_bytes: int
+    max_file_bytes: int
 
 
 @dataclass(frozen=True)
@@ -224,6 +225,9 @@ def load_config(path: str | Path) -> BridgeConfig:
     max_image_bytes = int(media.get("max_image_bytes", 25 * 1024 * 1024))
     if max_image_bytes <= 0:
         raise ConfigError("media.max_image_bytes must be positive")
+    max_file_bytes = int(media.get("max_file_bytes", 25 * 1024 * 1024))
+    if max_file_bytes <= 0:
+        raise ConfigError("media.max_file_bytes must be positive")
     media_inbox = Path(str(media.get("inbox_dir", state_dir / "media-inbox")))
 
     return BridgeConfig(
@@ -258,6 +262,7 @@ def load_config(path: str | Path) -> BridgeConfig:
             enabled=bool(media.get("enabled", True)),
             inbox_dir=media_inbox,
             max_image_bytes=max_image_bytes,
+            max_file_bytes=max_file_bytes,
         ),
         avatars=AvatarConfig(
             enabled=bool(avatars.get("enabled", True)),

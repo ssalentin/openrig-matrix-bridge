@@ -52,6 +52,7 @@ def test_loads_minimal_config(tmp_path: Path):
     assert config.avatars.set_profile is True
     assert config.media.enabled is True
     assert config.media.max_image_bytes == 25 * 1024 * 1024
+    assert config.media.max_file_bytes == 25 * 1024 * 1024
 
 
 def test_rejects_duplicate_sessions(tmp_path: Path):

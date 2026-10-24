@@ -4,6 +4,7 @@ import argparse
 import asyncio
 import json
 import logging
+import mimetypes
 import os
 import re
 import shutil
@@ -21,7 +22,7 @@ from . import __version__
 from .bridge import MatrixBridge
 from .config import ConfigError, load_config, validate_homeserver
 from .decisions import normalize_questions
-from .media import detect_image_type
+from .media import detect_image_type, normalize_mime_type
 from .openrig import AgentSessionNotFound, OpenRigSessionResolver
 from .transcription import MODEL_NAME, ensure_model, model_ready
 
@@ -270,6 +271,7 @@ def run_setup(args: argparse.Namespace) -> None:
             "enabled": True,
             "inbox_dir": str(state_dir / "media-inbox"),
             "max_image_bytes": 25 * 1024 * 1024,
+            "max_file_bytes": 25 * 1024 * 1024,
         },
         "avatars": {
             "enabled": not args.no_avatars,
@@ -412,6 +414,67 @@ def run_send_image(args: argparse.Namespace, config) -> int:
         if media:
             print(f"{request_id} sent as {media['event_id']}")
             return 0
+        failure = state.get("media_failures", {}).get(request_id)
+        if failure:
+            print(f"{request_id} failed: {failure['error']}")
+            return 1
+        time.sleep(0.2)
+
+    print(
+        f"queued {request_id}; the bridge did not confirm delivery within "
+        f"{args.wait_seconds}s"
+    )
+    return 1
+
+
+def run_send_file(args: argparse.Namespace, config) -> int:
+    if not args.agent:
+        raise SystemExit("send-file requires --agent")
+    if args.agent not in config.agents:
+        raise SystemExit(f"unknown agent: {args.agent}")
+    if not args.path:
+        raise SystemExit("send-file requires --path")
+    file_path = args.path.expanduser().resolve()
+    if not file_path.is_file():
+        raise SystemExit(f"file not found: {file_path}")
+    size = file_path.stat().st_size
+    if size <= 0 or size > config.media.max_file_bytes:
+        raise SystemExit(
+            "file size must be between 1 and "
+            f"{config.media.max_file_bytes} bytes"
+        )
+    inferred_mime = mimetypes.guess_type(file_path.name)[0]
+    mime_type = normalize_mime_type(args.mime_type or inferred_mime)
+
+    request_id = f"file-{uuid.uuid4().hex}"
+    request = {
+        "id": request_id,
+        "kind": "file",
+        "agent": args.agent,
+        "path": str(file_path),
+        "filename": file_path.name,
+        "mime_type": mime_type,
+        "caption": (args.caption or "").strip(),
+    }
+    outbox = config.state_dir / "media-outbox"
+    _write_private_json(outbox / f"{request_id}.json", request)
+
+    deadline = time.monotonic() + max(0, args.wait_seconds)
+    state_path = config.state_dir / "state.json"
+    while time.monotonic() < deadline:
+        try:
+            state = json.loads(state_path.read_text(encoding="utf-8"))
+        except (FileNotFoundError, json.JSONDecodeError):
+            time.sleep(0.2)
+            continue
+        media = state.get("media", {}).get(request_id)
+        if media:
+            print(f"{request_id} sent as {media['event_id']}")
+            return 0
+        failure = state.get("media_failures", {}).get(request_id)
+        if failure:
+            print(f"{request_id} failed: {failure['error']}")
+            return 1
         time.sleep(0.2)
 
     print(
@@ -533,6 +596,7 @@ def build_parser() -> argparse.ArgumentParser:
             "download-model",
             "decision",
             "send-image",
+            "send-file",
             "send-message",
         ),
     )
@@ -575,6 +639,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--body-file", type=Path)
     parser.add_argument("--option", action="append")
     parser.add_argument("--path", type=Path)
+    parser.add_argument("--mime-type")
     parser.add_argument("--caption")
     parser.add_argument("--wait-seconds", type=int, default=10)
     return parser
@@ -595,6 +660,8 @@ def main() -> None:
         raise SystemExit(run_decision(args, config))
     if args.command == "send-image":
         raise SystemExit(run_send_image(args, config))
+    if args.command == "send-file":
+        raise SystemExit(run_send_file(args, config))
     if args.command == "send-message":
         raise SystemExit(run_send_message(args, config))
     if args.command == "doctor":
