@@ -47,6 +47,10 @@ after the run. Use `--keep-workdir` only for local diagnosis; never commit that
 state. Use `--report PATH` to select another output location and `--timeout N`
 to bound individual wait operations.
 
+The issue #3 attachment run is preserved separately at
+`docs/artifacts/issue-3-integration-report.json`; it binds the report to source
+commit `3d7f8fb5211254bfb8f1161e9440874bb1d2ab03`.
+
 The harness uses `tools/fake_openrig.py` as a separate deterministic OpenRig CLI
 process. It exercises the bridge's real `rig ps`, `rig send`, and `rig queue`
 subprocess contracts, transcript polling, and final-answer extraction. It does
