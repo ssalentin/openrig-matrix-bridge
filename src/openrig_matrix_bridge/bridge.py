@@ -111,6 +111,10 @@ STATUS_LABELS = {
 }
 
 
+class QitemLifecycleError(GatewayError):
+    pass
+
+
 def _has_complete_encryption_metadata(encryption: object) -> bool:
     if not isinstance(encryption, dict):
         return False
@@ -1843,12 +1847,26 @@ class MatrixBridge:
             )
             qitem_id = None
             if queue_tracked:
-                qitem_id = await self._create_inbound_qitem(
-                    agent,
-                    event_id=event_id,
-                    text=text,
-                    source_label=source_label or "message",
-                )
+                try:
+                    qitem_id = await self._create_inbound_qitem(
+                        agent,
+                        event_id=event_id,
+                        text=text,
+                        source_label=source_label or "message",
+                    )
+                except (GatewayError, OSError) as exc:
+                    LOGGER.exception(
+                        "could not create durable qitem for Matrix event %s",
+                        event_id,
+                    )
+                    await self._send(
+                        room.room_id,
+                        "OpenRig konnte das Queue-Item für diese Anfrage nicht "
+                        f"anlegen. Die Anfrage wurde nicht an den Agenten gesendet: {exc}",
+                        target.reply_to_event_id,
+                        thread_root=target.thread_root_event_id,
+                    )
+                    return
             request = {
                 "id": uuid.uuid4().hex,
                 "event_id": event_id,
@@ -1901,8 +1919,7 @@ class MatrixBridge:
             getattr(self.config, "inbound_queue_source", "")
         ).strip()
         if not source_session:
-            LOGGER.warning("inbound queue source is not configured")
-            return None
+            raise GatewayError("inbound queue source is not configured")
         first_line = next(
             (line.strip() for line in text.splitlines() if line.strip()),
             f"Matrix {source_label}",
@@ -1910,26 +1927,18 @@ class MatrixBridge:
         priority = str(
             getattr(self.config, "inbound_message_priority", "urgent")
         )
-        try:
-            qitem_id = await self.gateway.queue_create(
-                source_session=source_session,
-                destination_session=agent.session,
-                summary=f"Matrix ({source_label}): {first_line[:180]}",
-                body=(
-                    f"Matrix message for {agent.session}\n"
-                    f"Event: {event_id}\n"
-                    f"Priority: {priority}\n\n"
-                    f"{text}"
-                ),
-                priority=priority,
-            )
-        except (GatewayError, OSError):
-            LOGGER.warning(
-                "could not create priority qitem for Matrix event %s",
-                event_id,
-                exc_info=True,
-            )
-            return None
+        qitem_id = await self.gateway.queue_create(
+            source_session=source_session,
+            destination_session=agent.session,
+            summary=f"Matrix ({source_label}): {first_line[:180]}",
+            body=(
+                f"Matrix message for {agent.session}\n"
+                f"Event: {event_id}\n"
+                f"Priority: {priority}\n\n"
+                f"{text}"
+            ),
+            priority=priority,
+        )
         LOGGER.info(
             "created %s qitem %s for Matrix event %s",
             priority,
@@ -2798,7 +2807,9 @@ class MatrixBridge:
             request["offset"] = ref.transcript_path.stat().st_size
             request["started_at"] = time.time()
             if not await self._claim_inbound_qitem(agent, request):
-                raise GatewayError(f"could not claim Matrix qitem {request.get('qitem_id')}")
+                raise QitemLifecycleError(
+                    f"could not claim Matrix qitem {request.get('qitem_id')}"
+                )
             request["prompt_phase"] = "sending"
             self.state.save()
             await self.gateway.send_prompt(ref, request["text"])
@@ -2808,6 +2819,22 @@ class MatrixBridge:
             if not request.get("suppress_reply"):
                 await self._set_typing(room_id, True)
                 await self._update_agent_status(agent, "busy", "arbeitet")
+        except QitemLifecycleError:
+            request["started_at"] = None
+            self.state.save()
+            if not request.get("qitem_error_notified"):
+                response = await self._send(
+                    room_id,
+                    "Das OpenRig Queue-Item konnte nicht beansprucht werden. "
+                    "Die Anfrage bleibt vorgemerkt und wird erneut versucht.",
+                    self._reply_target(request),
+                    tx_id=f"qitem-error-{request.get('id') or request['event_id']}",
+                    **self._delivery_kwargs(request),
+                )
+                if isinstance(response, RoomSendResponse):
+                    request["qitem_error_notified"] = response.event_id
+                    self.state.save()
+            return
         except (AgentSessionNotFound, GatewayError, OSError) as exc:
             LOGGER.exception("prompt failed for %s", agent.session)
             await self._fail_inbound_qitem(

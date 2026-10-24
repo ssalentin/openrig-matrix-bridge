@@ -190,7 +190,10 @@ def handle_queue(root: Path, args: list[str]) -> None:
     if not args:
         raise SystemExit("queue requires a command")
     command = args[0]
+    injected_failure = os.environ.get("OPENRIG_FAKE_FAIL")
     if command == "create":
+        if injected_failure == "create":
+            raise SystemExit("injected queue create failure")
         qitem_id = f"qitem-fake-{uuid.uuid4().hex[:12]}"
         item = {
             "qitemId": qitem_id,
@@ -219,6 +222,14 @@ def handle_queue(root: Path, args: list[str]) -> None:
         return
     if command in {"claim", "update"}:
         qitem_id = args[1]
+        if command == "claim" and injected_failure == "claim":
+            raise SystemExit("injected queue claim failure")
+        if command == "update":
+            target_state = option(args, "--state")
+            if target_state == "done" and injected_failure == "finish":
+                raise SystemExit("injected queue finish failure")
+            if target_state == "failed" and injected_failure == "fail":
+                raise SystemExit("injected queue fail failure")
 
         def mutate(state: dict[str, Any]) -> None:
             item = state["queue"][qitem_id]
