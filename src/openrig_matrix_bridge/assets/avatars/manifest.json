@@ -1,0 +1,168 @@
+[
+  {
+    "id": "openrig-01",
+    "style": "round",
+    "color": "coral"
+  },
+  {
+    "id": "openrig-02",
+    "style": "round",
+    "color": "amber"
+  },
+  {
+    "id": "openrig-03",
+    "style": "round",
+    "color": "lime"
+  },
+  {
+    "id": "openrig-04",
+    "style": "round",
+    "color": "green"
+  },
+  {
+    "id": "openrig-05",
+    "style": "round",
+    "color": "teal"
+  },
+  {
+    "id": "openrig-06",
+    "style": "round",
+    "color": "sky"
+  },
+  {
+    "id": "openrig-07",
+    "style": "round",
+    "color": "blue"
+  },
+  {
+    "id": "openrig-08",
+    "style": "round",
+    "color": "violet"
+  },
+  {
+    "id": "openrig-09",
+    "style": "visor",
+    "color": "coral"
+  },
+  {
+    "id": "openrig-10",
+    "style": "visor",
+    "color": "amber"
+  },
+  {
+    "id": "openrig-11",
+    "style": "visor",
+    "color": "lime"
+  },
+  {
+    "id": "openrig-12",
+    "style": "visor",
+    "color": "green"
+  },
+  {
+    "id": "openrig-13",
+    "style": "visor",
+    "color": "teal"
+  },
+  {
+    "id": "openrig-14",
+    "style": "visor",
+    "color": "sky"
+  },
+  {
+    "id": "openrig-15",
+    "style": "visor",
+    "color": "blue"
+  },
+  {
+    "id": "openrig-16",
+    "style": "visor",
+    "color": "violet"
+  },
+  {
+    "id": "openrig-17",
+    "style": "antenna",
+    "color": "coral"
+  },
+  {
+    "id": "openrig-18",
+    "style": "antenna",
+    "color": "amber"
+  },
+  {
+    "id": "openrig-19",
+    "style": "antenna",
+    "color": "lime"
+  },
+  {
+    "id": "openrig-20",
+    "style": "antenna",
+    "color": "green"
+  },
+  {
+    "id": "openrig-21",
+    "style": "antenna",
+    "color": "teal"
+  },
+  {
+    "id": "openrig-22",
+    "style": "antenna",
+    "color": "sky"
+  },
+  {
+    "id": "openrig-23",
+    "style": "antenna",
+    "color": "blue"
+  },
+  {
+    "id": "openrig-24",
+    "style": "antenna",
+    "color": "violet"
+  },
+  {
+    "id": "openrig-25",
+    "style": "wide",
+    "color": "coral"
+  },
+  {
+    "id": "openrig-26",
+    "style": "wide",
+    "color": "amber"
+  },
+  {
+    "id": "openrig-27",
+    "style": "wide",
+    "color": "lime"
+  },
+  {
+    "id": "openrig-28",
+    "style": "wide",
+    "color": "green"
+  },
+  {
+    "id": "openrig-29",
+    "style": "wide",
+    "color": "teal"
+  },
+  {
+    "id": "openrig-30",
+    "style": "wide",
+    "color": "sky"
+  },
+  {
+    "id": "openrig-31",
+    "style": "wide",
+    "color": "blue"
+  },
+  {
+    "id": "openrig-32",
+    "style": "wide",
+    "color": "violet"
+  },
+  {
+    "id": "openrig-profile",
+    "style": "profile",
+    "color": "sky",
+    "profile_only": true
+  }
+]

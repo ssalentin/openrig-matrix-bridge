@@ -7,6 +7,7 @@ import os
 import tempfile
 import time
 import uuid
+from io import BytesIO
 from pathlib import Path
 from typing import Any
 
@@ -20,6 +21,7 @@ from nio import (
     KeyVerificationMac,
     KeyVerificationStart,
     MatrixRoom,
+    ProfileSetAvatarResponse,
     RoomCreateResponse,
     RoomEncryptedAudio,
     RoomEncryptedImage,
@@ -37,6 +39,11 @@ from nio import (
 from nio.api import RoomPreset, RoomVisibility
 from nio.crypto import decrypt_attachment
 
+from .avatar_pool import (
+    assign_unique_avatar_ids,
+    avatar_png,
+    profile_png,
+)
 from .config import AgentConfig, BridgeConfig
 from .decisions import (
     POLL_RESPONSE_TYPE,
@@ -111,6 +118,11 @@ class StateStore:
             "messages": {},
             "queue_notices": {},
             "queue_mirror": {"initialized": False, "seen": {}},
+            "avatar_pool": {
+                "assignments": {},
+                "uploads": {},
+                "profile_mxc": None,
+            },
         }
         if path.exists():
             self.data.update(json.loads(path.read_text(encoding="utf-8")))
@@ -203,6 +215,7 @@ class MatrixBridge:
         if any(key not in self.state.data["rooms"] for key in self.config.agents):
             await self._create_rooms()
         await self._restore_room_names()
+        await self._ensure_room_avatars()
         self._initialize_transcript_offsets()
         self._repair_decision_reply_targets()
         await self._refresh_agent_statuses(force=True)
@@ -686,6 +699,105 @@ class MatrixBridge:
                 LOGGER.warning("failed to restore room name for %s", agent.session, exc_info=True)
                 continue
             room["name"] = stable_name
+        self.state.save()
+
+    async def _ensure_room_avatars(self) -> None:
+        if not self.config.avatars.enabled:
+            return
+        avatar_state = self.state.data.setdefault(
+            "avatar_pool",
+            {"assignments": {}, "uploads": {}, "profile_mxc": None},
+        )
+        assignments = avatar_state.setdefault("assignments", {})
+        uploads = avatar_state.setdefault("uploads", {})
+        candidates: list[str] = []
+        existing: dict[str, str] = {}
+        for key in self.config.agents:
+            room = self.state.data["rooms"].get(key)
+            if not room:
+                continue
+            current = assignments.get(key, {})
+            current_id = current.get("id") if isinstance(current, dict) else None
+            room_state = self.client.rooms.get(str(room["room_id"]))
+            current_url = getattr(room_state, "avatar_url", None)
+            managed_url = current.get("mxc") if isinstance(current, dict) else None
+            if (
+                not self.config.avatars.replace_existing
+                and current_url
+                and current_url != managed_url
+            ):
+                continue
+            candidates.append(key)
+            if isinstance(current_id, str):
+                existing[key] = current_id
+
+        selected = assign_unique_avatar_ids(candidates, existing)
+        assignments.clear()
+        assignments.update(
+            {
+                key: {"id": avatar_id}
+                for key, avatar_id in selected.items()
+            }
+        )
+        for key, avatar_id in selected.items():
+            room = self.state.data["rooms"][key]
+            room_id = str(room["room_id"])
+            avatar_url = uploads.get(avatar_id)
+            if not isinstance(avatar_url, str):
+                image_data = avatar_png(avatar_id)
+                upload, _encryption = await self.client.upload(
+                    BytesIO(image_data),
+                    content_type="image/png",
+                    filename=f"{avatar_id}.png",
+                    filesize=len(image_data),
+                )
+                if not isinstance(upload, UploadResponse):
+                    LOGGER.warning("avatar upload failed for %s: %s", avatar_id, upload)
+                    continue
+                avatar_url = upload.content_uri
+                uploads[avatar_id] = avatar_url
+            room_state = self.client.rooms.get(room_id)
+            if (
+                self.config.avatars.replace_existing
+                or getattr(room_state, "avatar_url", None) != avatar_url
+            ):
+                response = await self.client.room_put_state(
+                    room_id,
+                    "m.room.avatar",
+                    {"url": avatar_url},
+                )
+                if hasattr(response, "status_code") and response.status_code >= 400:
+                    LOGGER.warning("room avatar update failed for %s: %s", key, response)
+                    continue
+            assignments[key] = {"id": avatar_id, "mxc": avatar_url}
+            room["avatar"] = avatar_id
+
+        missing = [key for key in candidates if key not in selected]
+        if missing:
+            LOGGER.warning(
+                "avatar pool exhausted; no avatar assigned for: %s",
+                ", ".join(missing),
+            )
+
+        if self.config.avatars.set_profile:
+            profile_url = avatar_state.get("profile_mxc")
+            if not isinstance(profile_url, str):
+                image_data = profile_png()
+                upload, _encryption = await self.client.upload(
+                    BytesIO(image_data),
+                    content_type="image/png",
+                    filename="openrig-profile.png",
+                    filesize=len(image_data),
+                )
+                if isinstance(upload, UploadResponse):
+                    profile_url = upload.content_uri
+                    avatar_state["profile_mxc"] = profile_url
+                else:
+                    LOGGER.warning("OpenRig profile avatar upload failed: %s", upload)
+            if isinstance(profile_url, str):
+                response = await self.client.set_avatar(profile_url)
+                if not isinstance(response, ProfileSetAvatarResponse):
+                    LOGGER.warning("OpenRig profile avatar update failed: %s", response)
         self.state.save()
 
     async def _create_rooms(self) -> None:

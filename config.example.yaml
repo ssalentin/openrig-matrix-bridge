@@ -30,6 +30,11 @@ media:
   inbox_dir: /var/lib/openrig-matrix-bridge/media-inbox
   max_image_bytes: 26214400
 
+avatars:
+  enabled: true
+  replace_existing: false
+  set_profile: true
+
 agents:
   advisor:
     display_name: Advisor

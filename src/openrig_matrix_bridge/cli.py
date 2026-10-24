@@ -266,6 +266,11 @@ def run_setup(args: argparse.Namespace) -> None:
             "inbox_dir": str(state_dir / "media-inbox"),
             "max_image_bytes": 25 * 1024 * 1024,
         },
+        "avatars": {
+            "enabled": not args.no_avatars,
+            "replace_existing": args.replace_avatars,
+            "set_profile": not args.no_avatar_profile,
+        },
         "agents": agents,
     }
     _write_private_yaml(args.config, config)
@@ -552,6 +557,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--replace-human", action="store_true")
     parser.add_argument("--no-human-registration", action="store_true")
     parser.add_argument("--no-commentary", action="store_true")
+    parser.add_argument("--no-avatars", action="store_true")
+    parser.add_argument("--replace-avatars", action="store_true")
+    parser.add_argument("--no-avatar-profile", action="store_true")
     parser.add_argument("--parakeet-threads", type=int, default=4)
     parser.add_argument("--skip-model", action="store_true")
     parser.add_argument("--without-voice", action="store_true")

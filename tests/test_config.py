@@ -43,6 +43,9 @@ def test_loads_minimal_config(tmp_path: Path):
     assert config.sender_session == "matrix-bridge@kernel"
     assert config.human_destinations == ("owner@external",)
     assert config.mirror_commentary is True
+    assert config.avatars.enabled is True
+    assert config.avatars.replace_existing is False
+    assert config.avatars.set_profile is True
     assert config.media.enabled is True
     assert config.media.max_image_bytes == 25 * 1024 * 1024
 

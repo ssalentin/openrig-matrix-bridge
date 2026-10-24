@@ -4,7 +4,12 @@ import time
 from types import SimpleNamespace
 
 import pytest
-from nio import RoomEncryptedImage, RoomSendResponse
+from nio import (
+    ProfileSetAvatarResponse,
+    RoomEncryptedImage,
+    RoomSendResponse,
+    UploadResponse,
+)
 from nio.crypto import encrypt_attachment
 
 from openrig_matrix_bridge.bridge import MatrixBridge, verification_decision
@@ -37,6 +42,79 @@ def bridge_with_room():
         }
     )
     return bridge
+
+
+def test_assigns_unique_repo_avatars_and_profile():
+    class AvatarClient:
+        def __init__(self):
+            self.rooms = {
+                "!advisor:matrix.example.org": SimpleNamespace(avatar_url=None),
+                "!operator:matrix.example.org": SimpleNamespace(avatar_url=None),
+            }
+            self.room_avatars = []
+            self.profile_avatar = None
+
+        async def upload(self, data, content_type, filename, filesize):
+            assert data.read(8) == b"\x89PNG\r\n\x1a\n"
+            assert filesize > 0
+            return UploadResponse(f"mxc://example.org/{filename}"), None
+
+        async def room_put_state(self, room_id, event_type, content):
+            self.room_avatars.append((room_id, event_type, content))
+            return SimpleNamespace()
+
+        async def set_avatar(self, avatar_url):
+            self.profile_avatar = avatar_url
+            return ProfileSetAvatarResponse()
+
+    bridge = object.__new__(MatrixBridge)
+    bridge.config = SimpleNamespace(
+        avatars=SimpleNamespace(
+            enabled=True,
+            replace_existing=True,
+            set_profile=True,
+        ),
+        agents={
+            "advisor": AgentConfig(
+                key="advisor",
+                display_name="Advisor",
+                session="advisor-lead@kernel",
+            ),
+            "operator": AgentConfig(
+                key="operator",
+                display_name="Operator",
+                session="operator-agent@kernel",
+            ),
+        },
+    )
+    bridge.client = AvatarClient()
+    bridge.state = SimpleNamespace(
+        save=lambda: None,
+        data={
+            "rooms": {
+                "advisor": {
+                    "room_id": "!advisor:matrix.example.org",
+                    "name": "Advisor",
+                },
+                "operator": {
+                    "room_id": "!operator:matrix.example.org",
+                    "name": "Operator",
+                },
+            },
+            "avatar_pool": {
+                "assignments": {},
+                "uploads": {},
+                "profile_mxc": None,
+            },
+        },
+    )
+
+    asyncio.run(bridge._ensure_room_avatars())
+
+    assignments = bridge.state.data["avatar_pool"]["assignments"]
+    assert len({item["id"] for item in assignments.values()}) == 2
+    assert len(bridge.client.room_avatars) == 2
+    assert bridge.client.profile_avatar == "mxc://example.org/openrig-profile.png"
 
 
 def test_status_uses_topic_and_structured_event_instead_of_room_name():

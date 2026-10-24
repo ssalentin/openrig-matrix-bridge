@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.6.0
+
+- Add 32 original OpenRig agent avatars with deterministic collision-free assignment.
+- Preserve custom room avatars by default and provide explicit avatar replacement.
+
 ## 0.5.0
 
 - Replace the Moshi gateway with direct OpenRig seat transport.

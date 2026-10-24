@@ -54,6 +54,7 @@ represented per room. OpenRig can use one bot for any number of agents.
 - Local speech-to-text for encrypted Matrix voice messages with NVIDIA Parakeet.
 - Encrypted PNG, JPEG, GIF, and WebP transfer in both directions.
 - Native Matrix rendering for Markdown, including headings, lists, code, and tables.
+- A bundled pool of 32 original OpenRig agent avatars with collision-free assignment.
 - Explicit proactive messages from an agent into its Matrix room.
 - Per-agent room status: `🟢 bereit`, `🟡 arbeitet`, `🟠 Fehler`, `⚫ offline`.
 - A refreshed Matrix typing indicator while the agent is working.
@@ -105,6 +106,22 @@ MATRIX_ACCESS_TOKEN='...' openrig-matrix-bridge run
 
 On first start, it creates a private encrypted room for each configured agent
 and invites the allow-listed owner.
+
+## Agent avatars
+
+Every configured agent room receives a distinct avatar from the bundled
+OpenRig bot pool. Assignments are persisted in `state.json`; existing
+assignments are retained and a new agent takes the next unused avatar. The
+bridge never assigns the same pool entry twice.
+
+Existing custom room avatars are preserved by default. Set
+`avatars.replace_existing: true` to replace them, or use
+`setup --replace-avatars`. The bot profile also uses the dedicated OpenRig
+profile avatar unless `avatars.set_profile` is disabled.
+
+The 32 source SVGs live under `assets/avatars/svg/`. Their runtime PNGs and
+manifest are packaged under `src/openrig_matrix_bridge/assets/avatars/` so
+installing the bridge does not require `rsvg-convert` or another image tool.
 
 ## Verify the bot
 

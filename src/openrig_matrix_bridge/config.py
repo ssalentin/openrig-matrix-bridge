@@ -36,6 +36,13 @@ class MediaConfig:
 
 
 @dataclass(frozen=True)
+class AvatarConfig:
+    enabled: bool
+    replace_existing: bool
+    set_profile: bool
+
+
+@dataclass(frozen=True)
 class BridgeConfig:
     homeserver: str
     user_id: str
@@ -54,6 +61,7 @@ class BridgeConfig:
     status_refresh_seconds: float
     transcription: TranscriptionConfig
     media: MediaConfig
+    avatars: AvatarConfig
     agents: dict[str, AgentConfig]
 
 
@@ -78,6 +86,7 @@ def load_config(path: str | Path) -> BridgeConfig:
     agents_raw = _mapping(root.get("agents"), "agents")
     transcription = _mapping(root.get("transcription", {}), "transcription")
     media = _mapping(root.get("media", {}), "media")
+    avatars = _mapping(root.get("avatars", {}), "avatars")
 
     homeserver = str(matrix.get("homeserver", "")).rstrip("/")
     user_id = str(matrix.get("user_id", ""))
@@ -184,6 +193,11 @@ def load_config(path: str | Path) -> BridgeConfig:
             enabled=bool(media.get("enabled", True)),
             inbox_dir=media_inbox,
             max_image_bytes=max_image_bytes,
+        ),
+        avatars=AvatarConfig(
+            enabled=bool(avatars.get("enabled", True)),
+            replace_existing=bool(avatars.get("replace_existing", False)),
+            set_profile=bool(avatars.get("set_profile", True)),
         ),
         agents=agents,
     )

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "openrig-matrix-bridge"
-version = "0.5.0"
+version = "0.6.0"
 description = "Matrix rooms for specific OpenRig agent seats"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -30,6 +30,9 @@ dev = ["pytest>=8,<9"]
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+openrig_matrix_bridge = ["assets/avatars/*.png", "assets/avatars/manifest.json"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

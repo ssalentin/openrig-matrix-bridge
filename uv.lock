@@ -885,7 +885,7 @@ wheels = [
 
 [[package]]
 name = "openrig-matrix-bridge"
-version = "0.5.0"
+version = "0.6.0"
 source = { editable = "." }
 dependencies = [
     { name = "matrix-nio", extra = ["e2e"] },
