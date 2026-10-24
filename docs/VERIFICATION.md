@@ -162,6 +162,36 @@ exact-source runs passed 20/20 checks; the persisted run completed in 54.1s with
 `evidence_valid: true`. Report:
 [`matrix-stability-report.json`](artifacts/matrix-stability-report.json).
 
+### Issue #4 hybrid steering evidence
+
+Issue #4 source `774d1038b61f79fbf28c6709a8d7c5dfbc8dee99` passed 277 unit
+tests. Three consecutive exact-source disposable-Synapse runs passed
+(`evidence_valid: true`, 22/22 checks in 92.7s, 102.0s, and 106.4s). The runs
+covered queue/steer/auto behavior, one ordered
+same-thread batch with every source event ID and canonical root, top-level and
+cross-thread FIFO isolation, one answer with source-event metadata, qitem
+closure, refused-injection fallback, crash-after-injection restart recovery,
+completion-race adoption without resend, and rejection of an unrelated human
+transcript turn. Multi-qitem terminal recovery preserves known terminal members,
+fail-closes remaining siblings, and removes the batch only after one durable
+notice. `finishing` and `failing` reconciliation accepts every remote terminal
+state before retrying a contradictory local transition. Unconfirmed steering
+gets a bounded asynchronous transcript-rescan grace period before fallback. The
+grace also covers restart-from-`injecting` and is refreshed before timeout or
+delivery-failure removal. Legacy pending requests without an `id` are removed by
+object identity and retain stable `event_id`-based failure transaction IDs. The
+worktree was clean for the tested SHA. The retained final run's report is
+[`issue-4-integration-report.json`](artifacts/issue-4-integration-report.json).
+
+Initial activity-card sends now carry the stable
+`activity-card-<request-id>` Matrix transaction ID, so a slow or ambiguous send
+response cannot create a second card on retry.
+
+This evidence supports only the narrowed best-effort contract. The fake
+transport models pane-style admission under an explicit test switch; it does
+not prove that a live Codex runtime accepts input at a model/tool boundary.
+OpenRig exposes no admitted-turn or safe-boundary acknowledgement.
+
 ## Documentation checks
 
 Check every relative Markdown link from the repository root:
