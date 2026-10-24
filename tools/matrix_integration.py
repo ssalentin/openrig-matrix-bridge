@@ -1058,6 +1058,80 @@ class IntegrationRun:
             ),
         )
 
+    async def check_qitem_claim_crash_recovery(self, room_id: str) -> None:
+        assert self.owner is not None
+        owner = self.owner
+        prompt = "claim crash recovery request"
+        self.stop_bridge()
+        self.start_bridge(crash_after="qitem_claim")
+        await owner.sync_until(
+            lambda: str(owner.client.rooms[room_id].topic).startswith("🟢 bereit"),
+            self.args.timeout,
+            description="ready status before qitem claim crash probe",
+        )
+        await owner.send_text(room_id, prompt)
+        self.wait_for_bridge_crash()
+
+        fake = json.loads((self.fake_state / "fake-openrig.json").read_text())
+        matching_qitems = [
+            item
+            for item in fake["queue"].values()
+            if prompt in str(item.get("body") or "")
+        ]
+        if len(matching_qitems) != 1 or matching_qitems[0].get("state") != "in-progress":
+            raise CheckFailure(
+                f"claim crash did not leave one in-progress qitem: {matching_qitems}"
+            )
+        if any(item.get("prompt") == prompt for item in fake["prompts"]):
+            raise CheckFailure("prompt was sent before the injected claim crash")
+
+        self.start_bridge()
+        await owner.sync_until(
+            lambda: any(
+                item.get("prompt") == prompt
+                for item in json.loads(
+                    (self.fake_state / "fake-openrig.json").read_text()
+                )["prompts"]
+            ),
+            self.args.timeout,
+            description="prompt resumed after claim crash",
+        )
+        await owner.sync_until(
+            lambda: any(
+                message["sender"] == BRIDGE_USER
+                and f"Fake integration answer: {prompt}" in str(message["body"])
+                for message in owner.messages
+            ),
+            self.args.timeout,
+            description="answer after claim crash recovery",
+        )
+        wait_for_json_state(
+            self.state_dir / "state.json",
+            lambda value: not value.get("pending", {}).get(AGENT_KEY),
+            self.args.timeout,
+        )
+        fake = json.loads((self.fake_state / "fake-openrig.json").read_text())
+        prompts = [item for item in fake["prompts"] if item.get("prompt") == prompt]
+        qitems = [
+            item
+            for item in fake["queue"].values()
+            if prompt in str(item.get("body") or "")
+        ]
+        if len(prompts) != 1 or len(qitems) != 1 or qitems[0].get("state") != "done":
+            raise CheckFailure(
+                f"claim crash recovery was not exactly-once: prompts={prompts} qitems={qitems}"
+            )
+        validate_qitem_history(qitems[0])
+        self.record(
+            "qitem-claim-crash-recovery",
+            "pass",
+            (
+                "The bridge exited immediately after claiming an OpenRig qitem. "
+                "Restart recognized the in-progress qitem, resumed the unsent prompt "
+                "exactly once, and completed the same qitem."
+            ),
+        )
+
     async def check_fifo(self, room_id: str) -> None:
         assert self.owner is not None
         owner = self.owner
@@ -1846,6 +1920,7 @@ class IntegrationRun:
         await self.check_room(room_id)
         await self.check_chat_and_queue(room_id)
         await self.check_threaded_reply(room_id)
+        await self.check_qitem_claim_crash_recovery(room_id)
         await self.check_answer_crash_recovery(room_id)
         await self.check_fifo(room_id)
         await self.check_reaction(room_id)

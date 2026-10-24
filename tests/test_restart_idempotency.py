@@ -147,6 +147,57 @@ def test_recovered_claim_resumes_prompt_that_never_started_sending(tmp_path):
     assert item["prompt_phase"] == "sent"
 
 
+def test_recovered_claim_waits_for_busy_agent_then_sends_once(tmp_path):
+    item = request(
+        prompt_phase="pending",
+        qitem_phase="claiming",
+        started_at=123.0,
+    )
+    bridge, agent = operation_bridge(tmp_path, item)
+    transcript = tmp_path / "transcript.jsonl"
+    transcript.write_text("", encoding="utf-8")
+    prompts = []
+    busy = {"value": True}
+
+    class Resolver:
+        def resolve(self, session):
+            return SimpleNamespace(
+                session_id="session-one",
+                transcript_path=transcript,
+                busy=busy["value"],
+            )
+
+    class Gateway:
+        async def queue_show(self, qitem_id):
+            return {
+                "state": "in-progress",
+                "waiting": {"owner": agent.session},
+            }
+
+        async def queue_claim(self, qitem_id, session):
+            raise AssertionError("already-claimed qitem was claimed again")
+
+        async def send_prompt(self, ref, text):
+            prompts.append(text)
+
+    bridge.resolver = Resolver()
+    bridge.gateway = Gateway()
+    del bridge._start_request
+
+    asyncio.run(bridge._reconcile_pending_operations())
+
+    assert prompts == []
+    assert item["qitem_phase"] == "claimed"
+    assert item["prompt_phase"] == "pending"
+    assert item["started_at"] is None
+
+    busy["value"] = False
+    asyncio.run(bridge._poll_agent(agent))
+
+    assert prompts == ["do the work"]
+    assert item["prompt_phase"] == "sent"
+
+
 def test_finish_reconciliation_accepts_already_done_qitem(tmp_path):
     item = request(
         answer_phase="sent",

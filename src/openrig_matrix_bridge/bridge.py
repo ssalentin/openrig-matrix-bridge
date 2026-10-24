@@ -2218,6 +2218,9 @@ class MatrixBridge:
                 agent.session,
             )
             if ref.busy:
+                if request.get("prompt_phase") == "pending":
+                    request["started_at"] = None
+                    self.state.save()
                 return
             request["session_id"] = ref.session_id
             request["transcript_path"] = str(ref.transcript_path)
