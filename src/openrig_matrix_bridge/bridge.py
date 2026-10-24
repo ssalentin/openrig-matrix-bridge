@@ -1925,6 +1925,8 @@ class MatrixBridge:
         queue_tracked: bool = True,
     ) -> None:
         async with self.locks[agent.key]:
+            if event_id in self.processed_events:
+                return
             pending = self.state.data["pending"].setdefault(agent.key, [])
             self.processed_events.add(event_id)
             self.state.data["processed_events"] = list(self.processed_events)[-2000:]

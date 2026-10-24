@@ -872,6 +872,49 @@ def test_enqueue_prompt_stores_canonical_delivery_target(
     assert request["source_relation"] == relates_to
 
 
+def test_concurrent_enqueue_of_same_event_creates_one_request():
+    agent = AgentConfig(
+        key="advisor",
+        display_name="Advisor",
+        session="advisor-lead@kernel",
+    )
+    bridge = object.__new__(MatrixBridge)
+    bridge.config = SimpleNamespace(inbound_message_priority="urgent")
+    bridge.locks = {"advisor": asyncio.Lock()}
+    bridge.processed_events = set()
+    bridge.state = SimpleNamespace(
+        save=lambda: None,
+        data={"pending": {}, "processed_events": []},
+    )
+
+    async def create_qitem(*args, **kwargs):
+        return "$qitem"
+
+    async def start_request(*args, **kwargs):
+        return None
+
+    bridge._create_inbound_qitem = create_qitem
+    bridge._start_request = start_request
+    room = SimpleNamespace(room_id="!advisor:matrix.example.org")
+
+    async def enqueue_twice():
+        await asyncio.gather(
+            bridge._enqueue_prompt(
+                agent, room, "$dup", 1_700_000_000_000, "hello",
+            ),
+            bridge._enqueue_prompt(
+                agent, room, "$dup", 1_700_000_000_000, "hello",
+            ),
+        )
+
+    asyncio.run(enqueue_twice())
+
+    pending = bridge.state.data["pending"].get("advisor", [])
+    assert len(pending) == 1, (
+        f"expected 1 request but got {len(pending)} — duplicate enqueue race"
+    )
+
+
 def test_failed_commentary_delivery_does_not_skip_transcript(tmp_path):
     transcript = tmp_path / "rollout.jsonl"
     transcript.write_text(
