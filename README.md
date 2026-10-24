@@ -246,7 +246,9 @@ live Matrix delivery.
 ## Matrix device verification
 
 The first connection from a new client may show an unverified bot device. The
-bridge currently supports device-to-device emoji SAS verification:
+bridge can handle an incoming device-to-device emoji SAS request and persists
+the transaction phase so a restart cannot turn `ja` or `nein` into an agent
+prompt:
 
 1. In Element, open the bot device details and start **Verify by emoji**.
 2. The bridge posts seven emojis in the `Advisor` room, or another configured
@@ -255,11 +257,16 @@ bridge currently supports device-to-device emoji SAS verification:
 4. Type `ja` in that Matrix room to confirm the bridge side.
 
 Verification applies to the specific Element device. `matrix-nio` does not
-currently provide complete cross-signing setup, so verification does not
-automatically trust every device on the owner account.
+currently provide complete cross-signing setup, so the bridge does not create a
+cross-signed identity that Element automatically trusts across devices. In the
+2026-10-24 Element Web investigation, Element showed `(User verification
+unavailable)` for the bridge account even with a synthetic client and
+disposable homeserver. Treat direct SAS as unverified until a real-client run
+records success; do not infer it from unit tests.
 
-Live Element SAS verification is not covered by the automated test suite. The
-verification flow and cross-signing limitation remain tracked in
+Live Element SAS verification is not covered by the automated test suite.
+Restart interruption, timeout, cancellation and confirmation state are
+unit-tested. The real-client flow and cross-signing limitation remain tracked in
 [Issue #1](https://github.com/ssalentin/openrig-matrix-bridge/issues/1); do not
 describe them as fully verified until a real client check is recorded.
 
@@ -544,7 +551,8 @@ verification](#matrix-device-verification) and Issue #1.
   but the repository does not have a redacted screenshot or versioned client
   record. Nested thread-reply delivery remains tracked by issue #16.
 - Live Element SAS and the broader cross-signing strategy are not fully verified
-  by the repository; see Issue #1.
+  by the repository; Element Web currently reports verification unavailable
+  for the bridge account. See Issue #1.
 - A mocked Matrix client is not a substitute for the committed integration run.
 - Voice transcription quality and every audio format are not covered by a
   deterministic end-to-end test; model readiness and checksum configuration
