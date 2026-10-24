@@ -8,6 +8,7 @@ import asyncio
 import io
 import json
 import os
+import re
 import shutil
 import signal
 import socket
@@ -60,6 +61,78 @@ AGENT_KEY = "integration-agent"
 
 class CheckFailure(RuntimeError):
     pass
+
+
+def validate_answer_relation(raw_answer: dict[str, Any], prompt_event_id: str) -> None:
+    relation = raw_answer.get("content", {}).get("m.relates_to")
+    if not isinstance(relation, dict) or relation.get("rel_type") != "m.thread":
+        raise CheckFailure("final answer is not a Matrix thread relation")
+    if relation.get("event_id") != prompt_event_id:
+        raise CheckFailure("final answer thread does not reference the owner prompt")
+    fallback = relation.get("m.in_reply_to")
+    if not isinstance(fallback, dict) or fallback.get("event_id") != prompt_event_id:
+        raise CheckFailure("final answer lacks the Matrix in-reply-to fallback")
+
+
+def validate_qitem_history(item: dict[str, Any]) -> None:
+    history = item.get("history")
+    if not isinstance(history, list):
+        raise CheckFailure(
+            "qitem history must contain pending -> in-progress -> done"
+        )
+    states = [entry.get("state") for entry in history if isinstance(entry, dict)]
+    if states != ["pending", "in-progress", "done"]:
+        raise CheckFailure(
+            f"qitem history is not pending -> in-progress -> done: {states}"
+        )
+    timestamps = [entry.get("at") for entry in history]
+    if not all(isinstance(value, (int, float)) for value in timestamps):
+        raise CheckFailure(f"qitem history has invalid timestamps: {timestamps}")
+    if timestamps != sorted(timestamps):
+        raise CheckFailure(f"qitem history timestamps are out of order: {timestamps}")
+
+
+def validate_fifo_records(
+    records: list[dict[str, Any]],
+    first_prompt: str,
+    second_prompt: str,
+) -> None:
+    first = next((item for item in records if item.get("prompt") == first_prompt), None)
+    second = next((item for item in records if item.get("prompt") == second_prompt), None)
+    if first is None or second is None:
+        raise CheckFailure("FIFO evidence is missing one of the prompts")
+    completed_at = first.get("completed_at")
+    second_sent_at = second.get("sent_at")
+    if not isinstance(completed_at, (int, float)) or not isinstance(
+        second_sent_at, (int, float)
+    ):
+        raise CheckFailure("FIFO evidence has incomplete send/completion timestamps")
+    if second_sent_at <= completed_at:
+        raise CheckFailure(
+            "second prompt was sent before the first prompt completed: "
+            f"{second_sent_at} <= {completed_at}"
+        )
+
+
+def validate_source_provenance(
+    head_commit: str,
+    tracked_status: str,
+    expected_commit: str | None,
+) -> dict[str, Any]:
+    commit = (expected_commit or head_commit).strip()
+    if not re.fullmatch(r"[0-9a-f]{40}", commit):
+        raise CheckFailure(f"source commit is unknown or invalid: {commit!r}")
+    if head_commit.strip() != commit:
+        raise CheckFailure(
+            f"source commit {commit} does not match checked-out HEAD {head_commit}"
+        )
+    if tracked_status.strip():
+        raise CheckFailure(f"source worktree is dirty: {tracked_status.strip()[:500]}")
+    return {
+        "commit": commit,
+        "source": "git",
+        "worktree_clean": True,
+    }
 
 
 def free_port() -> int:
@@ -314,6 +387,35 @@ class IntegrationRun:
         self.owner: MatrixOwner | None = None
         self.bridge_token = ""
         self.results: list[dict[str, Any]] = []
+        self.source_provenance: dict[str, Any]
+        self.source_provenance_error: str | None = None
+        try:
+            head = subprocess.run(
+                ["git", "rev-parse", "HEAD"],
+                cwd=ROOT,
+                check=True,
+                capture_output=True,
+                text=True,
+            ).stdout.strip()
+            tracked_status = subprocess.run(
+                ["git", "status", "--porcelain", "--untracked-files=no"],
+                cwd=ROOT,
+                check=True,
+                capture_output=True,
+                text=True,
+            ).stdout
+            self.source_provenance = validate_source_provenance(
+                head,
+                tracked_status,
+                args.source_commit,
+            )
+        except (OSError, subprocess.CalledProcessError, CheckFailure) as exc:
+            self.source_provenance = {
+                "commit": args.source_commit or "unknown",
+                "source": "git",
+                "worktree_clean": False,
+            }
+            self.source_provenance_error = str(exc)
 
     def record(
         self,
@@ -647,7 +749,10 @@ class IntegrationRun:
         initial_bridge_messages = sum(
             message["sender"] == BRIDGE_USER for message in owner.messages
         )
-        await owner.send_text(room_id, "ordinary encrypted matrix request")
+        prompt_event_id = await owner.send_text(
+            room_id,
+            "ordinary encrypted matrix request",
+        )
         await owner.sync_until(
             lambda: any(
                 message["sender"] == BRIDGE_USER
@@ -672,6 +777,7 @@ class IntegrationRun:
             raise CheckFailure(f"Matrix request qitem was not completed: {qitems[-1:]}")
         if qitems[-1]["priority"] != "urgent":
             raise CheckFailure(f"Matrix request qitem priority is wrong: {qitems[-1]}")
+        validate_qitem_history(qitems[-1])
         if not any(
             BRIDGE_USER in item["users"] for item in owner.typing
         ):
@@ -699,14 +805,16 @@ class IntegrationRun:
             raise CheckFailure(
                 f"bridge answer was not Megolm encrypted on the wire: {raw_answer}"
             )
+        validate_answer_relation(raw_answer, prompt_event_id)
         self.record(
             "encrypted-chat-queue-typing",
             "pass",
             (
                 "Owner text was encrypted by matrix-nio; the fake OpenRig "
-                "subprocess received it exactly once, an urgent qitem moved "
-                "pending -> in-progress -> done, typing was observed, "
+                "subprocess received it exactly once, and the recorded qitem "
+                "history is pending -> in-progress -> done. Typing was observed, "
                 "commentary was mirrored, and the final answer returned in-thread. "
+                "The raw thread relation references the owner prompt. "
                 "The homeserver API reported the final event as raw "
                 "`m.room.encrypted` with Megolm ciphertext."
             ),
@@ -735,18 +843,27 @@ class IntegrationRun:
             description="second FIFO answer",
         )
         fake = json.loads((self.fake_state / "fake-openrig.json").read_text())
-        recent = [item["prompt"] for item in fake["prompts"][-4:]]
-        first = recent.index("hold first request")
-        second = recent.index("second queued request")
-        if first >= second:
-            raise CheckFailure(f"per-agent FIFO order was violated: {recent}")
+        records = fake["prompts"]
+        validate_fifo_records(
+            records,
+            "hold first request",
+            "second queued request",
+        )
+        first = next(
+            item for item in records if item["prompt"] == "hold first request"
+        )
+        second = next(
+            item for item in records if item["prompt"] == "second queued request"
+        )
         self.record(
             "fifo-queue-notice",
             "pass",
             (
                 "A second owner message arrived during a deliberately slow "
                 "first turn; Matrix showed the pinned queue notice and the "
-                "fake OpenRig transport received both prompts in FIFO order."
+                "fake OpenRig transport received the second prompt only after "
+                "recording completion of the first "
+                f"({first['completed_at']} < {second['sent_at']})."
             ),
         )
 
@@ -1139,10 +1256,12 @@ class IntegrationRun:
             "schema_version": REPORT_SCHEMA_VERSION,
             "generated_at": datetime.now(UTC).isoformat(),
             "duration_seconds": round(time.monotonic() - self.started_at, 1),
-            "status": status,
+            "status": "invalid" if self.source_provenance_error else status,
+            "evidence_valid": self.source_provenance_error is None,
             "target": {
                 "package": "openrig-matrix-bridge",
                 "version": __version__,
+                "source": self.source_provenance,
             },
             "environment": {
                 "matrix_homeserver": "ephemeral Synapse on loopback",
@@ -1183,6 +1302,8 @@ class IntegrationRun:
         }
         if error:
             report["error"] = error
+        if self.source_provenance_error:
+            report["provenance_error"] = self.source_provenance_error
         self.report_path.write_text(
             json.dumps(report, indent=2, sort_keys=True) + "\n",
             encoding="utf-8",
@@ -1220,7 +1341,15 @@ async def async_main(args: argparse.Namespace) -> int:
         exit_code = 1
     else:
         integration.report("pass")
-        print(f"integration passed: {integration.report_path}")
+        if integration.source_provenance_error:
+            print(
+                "integration checks passed, but evidence is invalid: "
+                f"{integration.source_provenance_error}",
+                file=sys.stderr,
+            )
+            exit_code = 1
+        else:
+            print(f"integration passed: {integration.report_path}")
     finally:
         if integration.owner is not None:
             await integration.owner.close()
@@ -1236,6 +1365,10 @@ def build_parser() -> argparse.ArgumentParser:
         default=ROOT / "artifacts" / "integration" / "report.json",
     )
     parser.add_argument("--timeout", type=float, default=45)
+    parser.add_argument(
+        "--source-commit",
+        help="expected 40-character Git commit; defaults to checked-out HEAD",
+    )
     parser.add_argument(
         "--keep-workdir",
         action="store_true",

@@ -50,8 +50,9 @@ to bound individual wait operations.
 The harness uses `tools/fake_openrig.py` as a separate deterministic OpenRig CLI
 process. It exercises the bridge's real `rig ps`, `rig send`, and `rig queue`
 subprocess contracts, transcript polling, and final-answer extraction. It does
-not prove delivery into a live Codex terminal. That limitation is recorded in
-the report.
+not prove delivery into a live Codex terminal. The fake transport refuses a
+second concurrent `rig send` while its simulated agent is busy. That limitation
+is recorded in the report.
 
 ### Automated integration coverage
 
@@ -59,8 +60,8 @@ the report.
 |---|---|
 | `setup-and-doctor` | Public `setup` and `doctor` commands against Synapse and the fake OpenRig transport |
 | `room-status-avatar` | Private room creation, owner invite/join, Megolm room state, managed avatar, ready topic, structured status |
-| `encrypted-chat-queue-typing` | Owner text, typing indicator, visible commentary, final answer, priority qitem lifecycle, raw `m.room.encrypted` event |
-| `fifo-queue-notice` | Per-agent FIFO ordering and the pinned queue notice |
+| `encrypted-chat-queue-typing` | Owner text, typing indicator, visible commentary, thread-related final answer, recorded pending -> in-progress -> done qitem history, raw `m.room.encrypted` event |
+| `fifo-queue-notice` | Per-agent FIFO ordering with second-send timestamp after first completion, plus the pinned queue notice |
 | `silent-reaction-feedback` | Reaction forwarding without a visible reply |
 | `encrypted-images` | Owner-to-agent encrypted PNG storage and agent-to-owner `send-image` byte round trip |
 | `voice-disabled-path` | Encrypted audio handling with voice deliberately disabled |
@@ -85,9 +86,12 @@ the report.
 
 The integration report uses `schema_version: 1`. Its top-level keys are:
 
-- `status`: `pass` or `fail`
+- `status`: `pass`, `fail`, or `invalid` when source provenance is dirty or
+  mismatched
+- `evidence_valid`: whether the result is bound to a clean source commit
 - `duration_seconds`: wall-clock runtime
-- `target`: package name and version
+- `target`: package name/version plus `source.commit`, provenance source and
+  `worktree_clean`
 - `environment`: disposable homeserver, Docker image digest, transport, voice
   and SAS limits
 - `results`: checks with `id`, `status`, `automated` and human-readable
@@ -101,3 +105,32 @@ The report contains synthetic localhost fixture identities but no access
 tokens, room IDs, private infrastructure, Matrix recovery data or unredacted
 terminal state. Bridge and homeserver logs stay in the temporary work directory
 and are removed on success.
+
+## Evidence provenance
+
+The harness reads the checked-out Git commit and tracked worktree status. A
+report is valid only when HEAD is a full 40-character commit, matches an optional
+`--source-commit SHA`, and has no tracked modifications. Untracked output such
+as the generated report and review notes is excluded from the dirty check so it
+does not invalidate the source under test.
+
+A commit cannot contain the hash that will result from committing its own test
+evidence. The final flow therefore is:
+
+1. commit the harness change;
+2. run the harness from that clean commit;
+3. commit the regenerated evidence as a separate evidence-only commit;
+4. have QA and review bind their verdict to that final evidence commit and cite
+   the source commit recorded in the report.
+
+Use an explicit expected commit when running from automation that already knows
+the tested SHA:
+
+```bash
+.venv/bin/python tools/matrix_integration.py \
+  --timeout 60 \
+  --source-commit "$(git rev-parse HEAD)"
+```
+
+A dirty tracked worktree or mismatched `--source-commit` produces
+`status: invalid` and `evidence_valid: false`; it is not valid release proof.

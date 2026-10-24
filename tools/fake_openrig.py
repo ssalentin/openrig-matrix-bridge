@@ -25,6 +25,10 @@ TRANSCRIPT_RECORD = {
 }
 
 
+class TransportBusy(RuntimeError):
+    pass
+
+
 def state_root() -> Path:
     raw = os.environ.get("OPENRIG_FAKE_STATE")
     if not raw:
@@ -116,18 +120,26 @@ def option(args: list[str], name: str) -> str | None:
         return None
 
 
-def complete_prompt(root: Path, prompt: str) -> None:
-    delay = 3.2 if "hold first" in prompt.lower() else 1.2
+def complete_prompt(root: Path, prompt: str, prompt_id: str) -> None:
+    delay = (
+        3.2
+        if "hold first" in prompt.lower()
+        else float(os.environ.get("OPENRIG_FAKE_RESPONSE_DELAY", "1.2"))
+    )
     time.sleep(delay)
     append_transcript(root, "commentary", f"Fake transport received: {prompt[:80]}")
     time.sleep(0.15)
-    answer = f"Fake integration answer: {prompt[:120]}"
-    append_transcript(root, "final_answer", answer)
 
     def ready(state: dict[str, Any]) -> None:
         state["busy_until"] = 0.0
+        for record in reversed(state["prompts"]):
+            if record["id"] == prompt_id:
+                record["completed_at"] = time.time()
+                break
 
     update_state(root, ready)
+    answer = f"Fake integration answer: {prompt[:120]}"
+    append_transcript(root, "final_answer", answer)
 
 
 def handle_send(root: Path, args: list[str]) -> None:
@@ -136,21 +148,35 @@ def handle_send(root: Path, args: list[str]) -> None:
     destination, prompt = args[0], args[1]
     if destination != SESSION:
         raise SystemExit(f"unknown session: {destination}")
-    delay = 3.2 if "hold first" in prompt.lower() else 1.2
+    delay = (
+        3.2
+        if "hold first" in prompt.lower()
+        else float(os.environ.get("OPENRIG_FAKE_RESPONSE_DELAY", "1.2"))
+    )
+    prompt_id = uuid.uuid4().hex
 
     def record(state: dict[str, Any]) -> None:
+        if float(state.get("busy_until", 0)) > time.time():
+            raise TransportBusy(
+                f"agent is busy; refusing concurrent send to {destination}"
+            )
         state["prompts"].append(
             {
+                "id": prompt_id,
                 "destination": destination,
                 "prompt": prompt,
-                "at": time.time(),
+                "sent_at": time.time(),
+                "completed_at": None,
             }
         )
         state["busy_until"] = time.time() + delay
 
-    update_state(root, record)
+    try:
+        update_state(root, record)
+    except TransportBusy as exc:
+        raise SystemExit(str(exc)) from exc
     process = subprocess.Popen(
-        [sys.executable, __file__, "_complete", prompt],
+        [sys.executable, __file__, "_complete", prompt, prompt_id],
         stdin=subprocess.DEVNULL,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
@@ -175,6 +201,7 @@ def handle_queue(root: Path, args: list[str]) -> None:
             "priority": option(args, "--priority"),
             "tags": (option(args, "--tags") or "").split(","),
             "state": "pending",
+            "history": [{"state": "pending", "at": time.time()}],
         }
 
         def create(state: dict[str, Any]) -> None:
@@ -202,6 +229,9 @@ def handle_queue(root: Path, args: list[str]) -> None:
                 item["state"] = option(args, "--state") or item["state"]
                 item["closure_reason"] = option(args, "--closure-reason")
                 item["resolution"] = option(args, "--resolution")
+            item.setdefault("history", []).append(
+                {"state": item["state"], "at": time.time()}
+            )
 
         update_state(root, mutate)
         print_json({"qitemId": qitem_id, "ok": True})
@@ -241,7 +271,7 @@ def main() -> None:
     elif command == "gateway":
         handle_human(root, args)
     elif command == "_complete":
-        complete_prompt(root, args[1])
+        complete_prompt(root, args[1], args[2])
     else:
         raise SystemExit(f"unsupported fake command: {command}")
 
