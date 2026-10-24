@@ -88,6 +88,8 @@ Integrated and independently accepted:
 - #1 state-machine slice at source `539f8b9`, evidence `6c81780`: persisted
   verification state, interruption notices, timeout handling, late-reply
   protection, and bounded retention. Real-device SAS/cross-signing remains open.
+- #22 naming analysis: the 0.11.0 disposition keeps `OpenRig Matrix Bridge`
+  unchanged and defers a public rename.
 
 The combined release branch passes its unit, lint, documentation, and 18-check
 Matrix integration gates after resolving the voice/attachment callback overlap.
@@ -97,7 +99,6 @@ Outstanding before release:
 - #4's steering-contract decision and implementation;
 - #11/#12 restart and qitem-lifecycle hardening;
 - #20 accessible setup documentation;
-- #22 owner naming disposition;
 - #23 owner symbol selection;
 - #24/#25 queue and activity presentation;
 - #1 real-client trust evidence or an explicit owner disposition;
