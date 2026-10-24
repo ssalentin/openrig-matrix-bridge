@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import hashlib
 import json
 import logging
 import os
@@ -35,9 +36,14 @@ def _default_config() -> Path:
     )
 
 
-def _agent_key(session: str) -> str:
+def _agent_key(session: str, max_length: int = 64) -> str:
     base = session.split("@", 1)[0]
-    return re.sub(r"[^a-z0-9]+", "-", base.lower()).strip("-") or "agent"
+    key = re.sub(r"[^a-z0-9]+", "-", base.lower()).strip("-") or "agent"
+    if len(key) > max_length:
+        digest = hashlib.sha256(session.encode()).hexdigest()[:8]
+        prefix = key[: max_length - len(digest) - 1].rstrip("-")
+        key = f"{prefix}-{digest}"
+    return key
 
 
 def _display_name(logical_id: str) -> str:
