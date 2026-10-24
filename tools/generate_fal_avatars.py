@@ -16,237 +16,96 @@ from pathlib import Path
 
 import fal_client
 
-ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_OUTPUT = Path("/tmp/openrig-avatar-fal-masters")
 ENDPOINT = "openai/gpt-image-2.5/sunburst/text-to-image"
 MODEL = "GPT Image 2.5 Sunburst"
 QUALITY = "medium"
 
-SHAPES = [
+BODY_SHAPES = [
+    ("circle", "a clean circular body with one softly rippled lower edge"),
+    ("squircle", "a rounded-square body with one subtly notched lower corner"),
+    ("pill", "a vertical pill-shaped body with a straight lower edge"),
+    ("oblong", "a horizontal oblong body with a shallow central dip"),
+    ("triangle", "an upright triangular body with softly rounded corners"),
+    ("diamond", "a tall diamond-shaped body with softly rounded corners"),
+    ("hexagon", "a clean hexagonal body tilted a few degrees"),
+    ("octagon", "a compact octagonal body with one widened lower edge"),
+    ("cloud", "a symmetrical cloud body with three large upper bumps"),
+    ("star", "a rounded five-point star body"),
     (
-        "round bell scallop",
-        (
-            "a round bell-shaped ghost with two short side ears, three soft "
-            "scallops at the hem and a circular pale face patch"
-        ),
+        "crescent",
+        "a crescent-moon body with the opening facing right and one rounded tip",
     ),
     (
-        "pinched bell",
-        (
-            "a bell ghost pinched at one shoulder, ending in one narrow curled "
-            "tail, with a tall oval face patch"
-        ),
+        "heart",
+        "a soft geometric heart body with the point forming the ghost tail",
+    ),
+    ("leaf", "an asymmetric leaf-shaped body with one curled tip"),
+    (
+        "teardrop",
+        "an inverted teardrop body with a narrow curling point below",
+    ),
+    ("arch", "a tall arch-shaped body with two straight feet"),
+    ("trapezoid", "a broad trapezoid body with a rippled wide base"),
+    (
+        "lens",
+        "a horizontal lens-shaped body with two tapered pointed ends",
     ),
     (
-        "stretched bell",
-        (
-            "a vertically stretched bell ghost with a curled quiff and a broad "
-            "arched face patch"
-        ),
+        "semicircle",
+        "a perfect half-circle body with its flat edge resting horizontally",
     ),
     (
-        "lobed bell",
-        (
-            "a broad bell ghost with two round side lobes, a stepped four-point "
-            "hem and a softly squared face patch"
-        ),
+        "comet",
+        "a round head with one thick crescent-shaped trail sweeping to the side",
     ),
     (
-        "pear ghost",
-        (
-            "a pear-shaped ghost with one drooping ear, a comma-shaped tail and "
-            "an off-center oval face patch"
-        ),
+        "flower",
+        "a body with eight large rounded petals around a simple face",
     ),
     (
-        "leaning bean",
-        (
-            "an asymmetric bean ghost leaning left, with a small cape tab and a "
-            "round face patch tilted with the lean"
-        ),
+        "mushroom",
+        "a wide mushroom-shaped body with a short rounded stem",
+    ),
+    ("hourglass", "an hourglass body with a narrow waist and matching lobes"),
+    ("shield", "a heraldic shield body with one pointed lower tip"),
+    (
+        "pennant",
+        "a triangular pennant body with a gently waving lower edge",
+    ),
+    ("bean", "a kidney-bean body bent toward the right"),
+    ("snowfigure", "two unequal spheres stacked vertically"),
+    (
+        "gem",
+        "a faceted gem-shaped body with four broad sides and a blunt base",
     ),
     (
-        "almond crown",
-        (
-            "a plump almond-shaped ghost with a pointed crown, three tufted "
-            "feet and a long vertical face patch"
-        ),
+        "crown",
+        "a broad crown-shaped body with three large rounded points on top",
     ),
     (
-        "square split",
-        (
-            "a softly square ghost with rounded shoulder caps, a split skirt and "
-            "a broad semicircular face patch"
-        ),
+        "notebook",
+        "a portrait rectangle with a rounded spine and one small corner tab",
     ),
     (
-        "flame spiral",
-        (
-            "a tall flame-shaped ghost with a rippling body and a spiral-shaped "
-            "tip, carrying a narrow teardrop face patch"
-        ),
+        "lightning",
+        "a single softly rounded lightning-bolt body tilted to one side",
     ),
     (
-        "candle ribbons",
-        (
-            "a thin candle ghost with a bulbous head, two ribbon-like lower tails "
-            "and a small oval face patch"
-        ),
+        "bubbles",
+        "three unequal overlapping circular lobes forming one connected body",
     ),
     (
-        "lightning hem",
-        (
-            "a narrow lightning-shaped ghost with a zigzag lower edge and a "
-            "faceted diamond face patch"
-        ),
+        "ribbon",
+        "an S-shaped ribbon body with two rounded ends and a gentle twist",
     ),
-    (
-        "side-fin teardrop",
-        (
-            "a tall teardrop ghost leaning right with one curved side fin and a "
-            "long pointed face patch"
-        ),
-    ),
-    (
-        "cumulus",
-        (
-            "a wide cumulus ghost with two top bumps, four round lower lobes and "
-            "a wide oval face patch"
-        ),
-    ),
-    (
-        "fan ridge",
-        (
-            "a broad fan-shaped ghost with ridged sides, three triangular hem "
-            "points and a flat-topped face patch"
-        ),
-    ),
-    (
-        "spread cloud",
-        (
-            "a cloud ghost with one long side arm, a blunt bottom and an "
-            "asymmetric face patch"
-        ),
-    ),
-    (
-        "mushroom bell",
-        (
-            "a bulbous mushroom ghost with a wavy cap, two tiny feet and a short "
-            "round face patch"
-        ),
-    ),
-    (
-        "comet drop",
-        (
-            "a drop-shaped comet ghost with a curved upper tip and a single "
-            "spiral tail, featuring an oval face patch"
-        ),
-    ),
-    (
-        "horned drop",
-        (
-            "an inverted-drop ghost with two small horns, a scalloped base and a "
-            "tall narrow face patch"
-        ),
-    ),
-    (
-        "long comet",
-        (
-            "a long comet ghost sweeping to one side with a tapered trail and a "
-            "round face patch near the head"
-        ),
-    ),
-    (
-        "lantern oval",
-        (
-            "an oval lantern ghost with a dimpled crown, one short tail and a "
-            "vertical pill-shaped face patch"
-        ),
-    ),
-    (
-        "classic sheet",
-        (
-            "a classic draped sheet ghost with an asymmetric hood fold, one "
-            "upturned corner and a heart-shaped face patch"
-        ),
-    ),
-    (
-        "sleeved sheet",
-        (
-            "a sheet ghost with wide sculptural sleeves, a divided pointed hem "
-            "and an oval face patch"
-        ),
-    ),
-    (
-        "pleated sheet",
-        (
-            "a pleated sheet ghost with a tall top knot, five crisp folds and a "
-            "small round face patch"
-        ),
-    ),
-    (
-        "draped diagonal",
-        (
-            "a draped ghost with one shoulder peak, a broad crooked hem and an "
-            "off-center diamond face patch"
-        ),
-    ),
-    (
-        "pebble stack",
-        (
-            "a ghost made from three stacked pebble forms, with crescent ears, "
-            "floating lower tips and a wide oval face patch"
-        ),
-    ),
-    (
-        "double sphere",
-        (
-            "a snow-creature ghost with two unequal spheres, small side puffs "
-            "and a tall oval face patch"
-        ),
-    ),
-    (
-        "totem lobes",
-        (
-            "a totem ghost with three slim stacked lobes, tendril tails and a "
-            "narrow vertical face patch"
-        ),
-    ),
-    (
-        "stone bulge",
-        (
-            "a rounded stone ghost with one large side bulge, a cleft hem and a "
-            "broad asymmetric face patch"
-        ),
-    ),
-    (
-        "pointed cowl",
-        (
-            "a hooded cape ghost with a pointed cowl, two swept cape wings and a "
-            "round face patch"
-        ),
-    ),
-    (
-        "square hood",
-        (
-            "a hooded ghost with squared shoulders, three cloak tails and a "
-            "softly rectangular face patch"
-        ),
-    ),
-    (
-        "halo ribbons",
-        (
-            "a round halo ghost with a circular cape edge, two side ribbons and "
-            "an oval face patch"
-        ),
-    ),
-    (
-        "bishop fold",
-        (
-            "an asymmetric bishop-shaped ghost with a tall hood, one folded "
-            "sleeve and a tapered face patch"
-        ),
-    ),
+]
+
+FACE_STYLES = [
+    "two tiny round eyes and a short upward mouth",
+    "two narrow vertical eyes and a small straight mouth",
+    "two dot eyes on a broad oval face patch and a minimal dot mouth",
+    "two calm oval eyes on a tall face patch and a shallow U-shaped mouth",
 ]
 
 PALETTES = [
@@ -260,61 +119,43 @@ PALETTES = [
     ("violet", "one flat saturated violet across the whole ghost"),
 ]
 
+SHAPES = [
+    (name, f"{body_detail}; face with {FACE_STYLES[index % len(FACE_STYLES)]}")
+    for index, (name, body_detail) in enumerate(BODY_SHAPES)
+]
+
 
 def prompt_for(shape: str, shape_detail: str, palette: str) -> str:
     return (
         "Use case: stylized-concept\n"
-        "Asset type: 1:1 profile portrait for a professional OpenRig AI agent\n"
-        "Primary request: One original, friendly ghost character with an "
-        f"instantly distinctive {shape} silhouette.\n"
+        "Asset type: 1:1 profile avatar for a professional OpenRig AI agent\n"
+        "Primary request: design one original minimalist ghost whose body has "
+        f"the unmistakable silhouette of a {shape}.\n"
         f"Subject: {shape_detail}.\n"
-        "Style/medium: contemporary flat vector character illustration; precise "
-        "geometric planes, crisp negative space, clean edges, restrained details "
-        "and the calm product polish of Muse's agent mascot without copying its "
-        "specific design. The result must feel designed for a serious software "
-        "product team, not for a children's game.\n"
-        "Reference goal: the controlled variety and interface-scale simplicity "
-        "of contemporary AI-agent avatar systems such as Grok Bot and Muse, "
-        "while creating an original OpenRig ghost language; do not copy their "
-        "exact body shapes, face, eyes or accessories.\n"
-        "Face: clearly visible and facing the viewer; two small, calm, solid "
-        "dark eyes and one tiny restrained mouth line. Friendly and intelligent, "
-        "not surprised, not grinning and not baby-like.\n"
-        "Composition/framing: single centered full ghost, silhouette complete "
-        "inside a generous circular-safe area, readable at 48 pixels.\n"
-        f"Color palette: one flat {palette} body color, a slightly darker edge "
-        "tone for separation, and a warm off-white face patch if needed.\n"
+        "Shape hierarchy: the silhouette must be recognizable before the face "
+        "is noticed. Treat it like a coherent interface avatar system with "
+        "controlled, strongly varied geometric archetypes.\n"
+        "Style/medium: contemporary flat vector character illustration; crisp "
+        "edges, broad simple color fields, subtle darker edge tone and a calm "
+        "Muse-inspired product character language. Keep it original; do not "
+        "copy Muse, Grok Bot or any other branded character.\n"
+        "Face: visible and facing the viewer; small simple eyes and minimal "
+        "mouth. The expression is calm, intelligent and quietly friendly, "
+        "never surprised, grinning or baby-like.\n"
+        "Composition/framing: one centered figure, complete silhouette inside "
+        "a generous circular-safe area, readable at 32 pixels.\n"
+        f"Color palette: {palette}, with off-white or pale cream for the face "
+        "markings and near-black for the pupils and mouth.\n"
         "Scene/backdrop: completely flat very dark blue-slate field filling the "
-        "entire square canvas edge-to-edge; no scenery, circle or inner tile.\n"
-        "Constraints: original ghost design; no resemblance to an existing "
-        "branded mascot, television character, game character or logo; no text, "
-        "letters, numbers, watermark or border; no props; no cropped edges.\n"
-        "Avoid: child, baby proportions, oversized anime eyes, glossy eyes, "
-        "blush, broad smile, mascot costume, robot, animal, skull, Halloween "
-        "horror, clay, 3D, plastic toy, gradients, soft shadows, busy details, "
-        "photorealism."
+        "entire square canvas edge-to-edge; no scenery, glow, circle or tile.\n"
+        "Constraints: exactly one character; no text, letters, numbers, logos, "
+        "watermark, border or props; no cropped shape; no limbs or accessories "
+        "beyond those explicitly required by the silhouette.\n"
+        "Avoid: cute mascot, child, baby proportions, oversized anime eyes, "
+        "glossy eyes, blush, smiley emoji, robot, animal costume, skull, "
+        "Halloween horror, clay, 3D, plastic toy, gradients, shadows, texture, "
+        "busy details, photorealism."
     )
-
-
-def jobs_for(preview: bool) -> list[dict[str, str]]:
-    jobs = []
-    for shape_index, (shape, detail) in enumerate(SHAPES):
-        palette, description = PALETTES[shape_index % len(PALETTES)]
-        avatar_id = (
-            f"preview-{shape_index + 1:02d}"
-            if preview
-            else f"openrig-{shape_index + 1:02d}"
-        )
-        jobs.append(
-            {
-                "id": avatar_id,
-                "shape": shape,
-                "palette": palette,
-                "palette_detail": description,
-                "prompt": prompt_for(shape, detail, description),
-            }
-        )
-    return jobs
 
 
 def generate(job: dict[str, str], output_dir: Path) -> dict[str, str]:
@@ -347,23 +188,57 @@ def generate(job: dict[str, str], output_dir: Path) -> dict[str, str]:
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
-    parser.add_argument("--preview", action="store_true")
     parser.add_argument("--workers", type=int, default=4)
+    parser.add_argument("--resume", action="store_true")
     args = parser.parse_args()
 
     if not os.environ.get("FAL_KEY"):
         raise SystemExit("FAL_KEY is not set")
 
     args.output.mkdir(parents=True, exist_ok=True)
-    jobs = jobs_for(args.preview)
     records = []
+    jobs = []
+    for index, (shape, detail) in enumerate(SHAPES):
+        palette, palette_detail = PALETTES[index % len(PALETTES)]
+        jobs.append(
+            {
+                "id": f"openrig-{index + 1:02d}",
+                "shape": shape,
+                "palette": palette,
+                "prompt": prompt_for(shape, detail, palette_detail),
+            }
+        )
+
+    pending_jobs = [
+        job
+        for job in jobs
+        if not (args.resume and (args.output / f"{job['id']}.png").is_file())
+    ]
     with ThreadPoolExecutor(max_workers=args.workers) as pool:
-        futures = {pool.submit(generate, job, args.output): job for job in jobs}
+        futures = {
+            pool.submit(generate, job, args.output): job for job in pending_jobs
+        }
         for future in as_completed(futures):
             job = futures[future]
             record = future.result()
             records.append(record)
             print(f"{job['id']} ready: {record['source_path']}", flush=True)
+
+    generated_by_id = {record["id"]: record for record in records}
+    for job in jobs:
+        if job["id"] in generated_by_id:
+            continue
+        path = args.output / f"{job['id']}.png"
+        if path.is_file():
+            records.append(
+                {
+                    **job,
+                    "model": MODEL,
+                    "endpoint": ENDPOINT,
+                    "quality": QUALITY,
+                    "source_path": str(path),
+                }
+            )
 
     records.sort(key=lambda record: record["id"])
     manifest_path = args.output / "manifest.json"
@@ -373,7 +248,6 @@ def main() -> None:
                 "model": MODEL,
                 "endpoint": ENDPOINT,
                 "quality": QUALITY,
-                "preview": args.preview,
                 "avatars": records,
             },
             indent=2,

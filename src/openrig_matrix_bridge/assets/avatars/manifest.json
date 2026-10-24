@@ -1,162 +1,162 @@
 [
   {
     "id": "openrig-01",
-    "style": "round bell scallop",
+    "style": "circle",
     "color": "coral"
   },
   {
     "id": "openrig-02",
-    "style": "pinched bell",
+    "style": "squircle",
     "color": "saffron"
   },
   {
     "id": "openrig-03",
-    "style": "stretched bell",
+    "style": "pill",
     "color": "lime"
   },
   {
     "id": "openrig-04",
-    "style": "lobed bell",
+    "style": "oblong",
     "color": "jade"
   },
   {
     "id": "openrig-05",
-    "style": "pear ghost",
+    "style": "triangle",
     "color": "turquoise"
   },
   {
     "id": "openrig-06",
-    "style": "leaning bean",
+    "style": "diamond",
     "color": "azure"
   },
   {
     "id": "openrig-07",
-    "style": "almond crown",
+    "style": "hexagon",
     "color": "periwinkle"
   },
   {
     "id": "openrig-08",
-    "style": "square split",
+    "style": "octagon",
     "color": "violet"
   },
   {
     "id": "openrig-09",
-    "style": "flame spiral",
+    "style": "cloud",
     "color": "coral"
   },
   {
     "id": "openrig-10",
-    "style": "candle ribbons",
+    "style": "star",
     "color": "saffron"
   },
   {
     "id": "openrig-11",
-    "style": "lightning hem",
+    "style": "crescent",
     "color": "lime"
   },
   {
     "id": "openrig-12",
-    "style": "side-fin teardrop",
+    "style": "heart",
     "color": "jade"
   },
   {
     "id": "openrig-13",
-    "style": "cumulus",
+    "style": "leaf",
     "color": "turquoise"
   },
   {
     "id": "openrig-14",
-    "style": "fan ridge",
+    "style": "teardrop",
     "color": "azure"
   },
   {
     "id": "openrig-15",
-    "style": "spread cloud",
+    "style": "arch",
     "color": "periwinkle"
   },
   {
     "id": "openrig-16",
-    "style": "mushroom bell",
+    "style": "trapezoid",
     "color": "violet"
   },
   {
     "id": "openrig-17",
-    "style": "comet drop",
+    "style": "lens",
     "color": "coral"
   },
   {
     "id": "openrig-18",
-    "style": "horned drop",
+    "style": "semicircle",
     "color": "saffron"
   },
   {
     "id": "openrig-19",
-    "style": "long comet",
+    "style": "comet",
     "color": "lime"
   },
   {
     "id": "openrig-20",
-    "style": "lantern oval",
+    "style": "flower",
     "color": "jade"
   },
   {
     "id": "openrig-21",
-    "style": "classic sheet",
+    "style": "mushroom",
     "color": "turquoise"
   },
   {
     "id": "openrig-22",
-    "style": "sleeved sheet",
+    "style": "hourglass",
     "color": "azure"
   },
   {
     "id": "openrig-23",
-    "style": "pleated sheet",
+    "style": "shield",
     "color": "periwinkle"
   },
   {
     "id": "openrig-24",
-    "style": "draped diagonal",
+    "style": "pennant",
     "color": "violet"
   },
   {
     "id": "openrig-25",
-    "style": "pebble stack",
+    "style": "bean",
     "color": "coral"
   },
   {
     "id": "openrig-26",
-    "style": "double sphere",
+    "style": "snowfigure",
     "color": "saffron"
   },
   {
     "id": "openrig-27",
-    "style": "totem lobes",
+    "style": "gem",
     "color": "lime"
   },
   {
     "id": "openrig-28",
-    "style": "stone bulge",
+    "style": "crown",
     "color": "jade"
   },
   {
     "id": "openrig-29",
-    "style": "pointed cowl",
+    "style": "notebook",
     "color": "turquoise"
   },
   {
     "id": "openrig-30",
-    "style": "square hood",
+    "style": "lightning",
     "color": "azure"
   },
   {
     "id": "openrig-31",
-    "style": "halo ribbons",
+    "style": "bubbles",
     "color": "periwinkle"
   },
   {
     "id": "openrig-32",
-    "style": "bishop fold",
+    "style": "ribbon",
     "color": "violet"
   },
   {
