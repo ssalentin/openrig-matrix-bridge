@@ -400,7 +400,9 @@ With `uv` installed, the equivalent lint command is `uv tool run ruff check .`.
 The reproducible Matrix integration harness requires Docker:
 
 ```bash
-.venv/bin/python tools/matrix_integration.py --timeout 60
+.venv/bin/python tools/matrix_integration.py \
+  --timeout 60 \
+  --source-commit "$(git rev-parse HEAD)"
 ```
 
 It starts disposable Synapse on loopback, runs the bridge as a separate

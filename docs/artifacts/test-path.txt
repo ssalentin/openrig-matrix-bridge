@@ -1,30 +1,42 @@
 OpenRig Matrix Bridge - verification path
+Tested source commit: b35945549dc913846ea06c4aa7479bd62c0e857e
 Base revision: 78ae4be5128d632a0b1b6df5ac4b0c3afc69cb0d
+Engine evidence change: aac588a16219736d34cf7b16e04ca2474b0838a8
 
 Unit path:
-  uv run --extra dev pytest -q
-  65 passed
+  .venv/bin/python -m pytest -q
+  74 passed in 0.92s
 
-  uv tool run ruff check .
+  .venv/bin/ruff check .
   All checks passed
 
 Documentation path:
   npx --yes markdownlint-cli2
-  Summary: 0 issues in 0 files
+  Linting: 5 files
+  Summary: 0 issues
 
   Relative Markdown link scan
-  checked=4 missing=0
+  checked=5 missing=0
+
+Release path:
+  .venv/bin/python -m build --outdir <temporary-dist-directory>
+  .venv/bin/python tools/verify_release.py --dist <temporary-dist-directory>
+  Built wheel and sdist; clean installs verified console and 32 avatars.
+  Result: release artifacts verified for 0.10.0
 
 Integration path:
-  .venv/bin/python tools/matrix_integration.py --timeout 60
+  .venv/bin/python tools/matrix_integration.py --timeout 60 \
+    --source-commit b35945549dc913846ea06c4aa7479bd62c0e857e
 
   The harness starts disposable Synapse and uses a real matrix-nio client for
   the owner side. Its OpenRig boundary is tools/fake_openrig.py, not a live
   Codex process. The bridge itself runs as a separate subprocess and creates,
   joins, encrypts, publishes, restarts, and rejects the test room.
 
-  Result: pass (13 checks, 25.5 seconds)
+  Result: pass (13 checks, 24.6 seconds)
   Report: docs/artifacts/integration-report.json
+  evidence_valid: true
+  target.source.worktree_clean: true
   Matrix homeserver: loopback-only disposable Synapse
   Synapse image: matrixdotorg/synapse@sha256:390f5e67227378eb87c84627b57f0582cdb235fcc8159d89f371f37bf7cccfd7
 

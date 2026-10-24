@@ -1,5 +1,6 @@
 OpenRig Matrix Bridge - agent room and status evidence
-Generated from the engine harness report at 2026-10-24T17:09:32Z
+Tested source commit: b35945549dc913846ea06c4aa7479bd62c0e857e
+Generated from the clean-worktree harness report at 2026-10-24T17:19:52Z
 
 Environment:
   Matrix: disposable Synapse on loopback
@@ -20,3 +21,4 @@ Translation note for English documentation readers:
 
 Source report:
   docs/artifacts/integration-report.json
+  evidence_valid: true

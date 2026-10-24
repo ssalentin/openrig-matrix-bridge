@@ -4,16 +4,17 @@
     "rejected_rooms": 1,
     "rooms": 0
   },
-  "duration_seconds": 25.5,
+  "duration_seconds": 24.6,
   "environment": {
-    "command": ".venv/bin/python tools/matrix_integration.py --timeout 60",
+    "command": ".venv/bin/python tools/matrix_integration.py --timeout 60 --source-commit b35945549dc913846ea06c4aa7479bd62c0e857e",
     "element_sas": "not exercised; requires a human client action",
     "matrix_homeserver": "ephemeral Synapse on loopback",
     "openrig_transport": "tools/fake_openrig.py subprocess protocol; not live Codex",
     "synapse_image": "matrixdotorg/synapse@sha256:390f5e67227378eb87c84627b57f0582cdb235fcc8159d89f371f37bf7cccfd7",
     "voice_model": "not downloaded or executed"
   },
-  "generated_at": "2026-10-24T17:09:32.080741+00:00",
+  "evidence_valid": true,
+  "generated_at": "2026-10-24T17:19:52.284525+00:00",
   "known_gaps": [
     "Real Codex prompt delivery and native transcript completion are represented by the fake OpenRig subprocess transport.",
     "The Parakeet model and real voice transcription were not run.",
@@ -29,7 +30,7 @@
   "results": [
     {
       "automated": true,
-      "evidence": "Started disposable Synapse matrixdotorg/synapse@sha256:390f5e67227378eb87c84627b57f0582cdb235fcc8159d89f371f37bf7cccfd7 on loopback; the container and state directory are removed at exit.",
+      "evidence": "Started disposable Synapse matrixdotorg/synapse@sha256:390f5e67227378eb87c84627b57f0582cdb235fcc8159d89f371f37bf7cccfd7 on loopback; the container and state directory are removed at exit unless `--keep-workdir` is set.",
       "id": "ephemeral-matrix",
       "status": "pass"
     },
@@ -47,13 +48,13 @@
     },
     {
       "automated": true,
-      "evidence": "Owner text was encrypted by matrix-nio; the fake OpenRig subprocess received it exactly once, an urgent qitem moved pending -> in-progress -> done, typing was observed, commentary was mirrored, and the final answer returned in-thread. The homeserver API reported the final event as raw `m.room.encrypted` with Megolm ciphertext.",
+      "evidence": "Owner text was encrypted by matrix-nio; the fake OpenRig subprocess received it exactly once, and the recorded qitem history is pending -> in-progress -> done. Typing was observed, commentary was mirrored, and the final answer returned in-thread. The raw thread relation references the owner prompt. The homeserver API reported the final event as raw `m.room.encrypted` with Megolm ciphertext.",
       "id": "encrypted-chat-queue-typing",
       "status": "pass"
     },
     {
       "automated": true,
-      "evidence": "A second owner message arrived during a deliberately slow first turn; Matrix showed the pinned queue notice and the fake OpenRig transport received both prompts in FIFO order.",
+      "evidence": "A second owner message arrived during a deliberately slow first turn; Matrix showed the pinned queue notice and the fake OpenRig transport received the second prompt only after recording completion of the first (1792862381.760248 < 1792862382.110671).",
       "id": "fifo-queue-notice",
       "status": "pass"
     },
@@ -110,6 +111,11 @@
   "status": "pass",
   "target": {
     "package": "openrig-matrix-bridge",
+    "source": {
+      "commit": "b35945549dc913846ea06c4aa7479bd62c0e857e",
+      "source": "git",
+      "worktree_clean": true
+    },
     "version": "0.10.0"
   }
 }

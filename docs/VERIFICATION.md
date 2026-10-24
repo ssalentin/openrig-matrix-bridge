@@ -14,8 +14,19 @@ path whenever a manual or integration check is performed.
 | Manual | A person or documented harness performed the check in a named environment. The result and limitations must be recorded in an artifact. |
 | Unverified | The repository does not currently prove the claim. It must not appear as a launch promise. |
 
-All links below refer to the branch at the time of this audit. The base revision
-was `78ae4be5128d632a0b1b6df5ac4b0c3afc69cb0d`.
+## Provenance
+
+The clean combined source under test is
+`b35945549dc913846ea06c4aa7479bd62c0e857e`. It contains the product base
+`78ae4be5128d632a0b1b6df5ac4b0c3afc69cb0d`, the engine evidence fix
+`aac588a16219736d34cf7b16e04ca2474b0838a8`, and the positioning correction.
+The integration report records this source commit and
+`target.source.worktree_clean: true`.
+
+The commit that publishes these evidence edits follows the tested source
+commit. A commit cannot contain the hash it will derive after changing its own
+contents, so the QA/review handoff names that evidence commit explicitly and
+binds its verdict to the source SHA recorded here and in the report.
 
 ## Product claim matrix
 
@@ -43,16 +54,16 @@ python -m pip install ruff
 ruff check .
 ```
 
-Observed results for this branch must be filled from the final verification
-run, not copied from an earlier revision:
+Observed results from the clean combined source:
 
 | Check | Exact command | Commit | Observed result |
 |---|---|---|---|
-| Unit tests | `uv run --extra dev pytest -q` | Docs branch working tree | 65 passed in 0.71s |
-| Python lint | `uv tool run ruff check .` | Docs branch working tree | All checks passed |
-| Markdown structure | `npx --yes markdownlint-cli2` | Docs branch working tree | 4 files, 0 issues |
-| Relative links | Documentation link-check command below | Docs branch working tree | 4 files, 0 missing |
-| Matrix integration | `.venv/bin/python tools/matrix_integration.py --timeout 60` | Engine slice report, 2026-10-24T17:09:32Z | 13 checks passed in 25.5s; see `docs/artifacts/integration-report.json` |
+| Unit tests | `.venv/bin/python -m pytest -q` | `b35945549dc913846ea06c4aa7479bd62c0e857e` | 74 passed in 0.92s |
+| Python lint | `.venv/bin/ruff check .` | `b35945549dc913846ea06c4aa7479bd62c0e857e` | All checks passed |
+| Markdown structure | `npx --yes markdownlint-cli2` | `b35945549dc913846ea06c4aa7479bd62c0e857e` | 5 files, 0 issues |
+| Relative links | Documentation link-check command below | `b35945549dc913846ea06c4aa7479bd62c0e857e` | checked=5, missing=0 |
+| Release artifacts | `.venv/bin/python -m build` then `.venv/bin/python tools/verify_release.py --dist <dir>` | `b35945549dc913846ea06c4aa7479bd62c0e857e` | Wheel and sdist clean installs passed; 32 avatars present |
+| Matrix integration | `.venv/bin/python tools/matrix_integration.py --timeout 60 --source-commit b35945549dc913846ea06c4aa7479bd62c0e857e` | `b35945549dc913846ea06c4aa7479bd62c0e857e` | `evidence_valid: true`, 13 checks passed in 24.6s |
 
 With `uv` installed, `uv tool run ruff check .` is equivalent to the lint
 command above.
@@ -106,13 +117,17 @@ OpenRig CLI fixture. Its JSON report is
 The observed run used:
 
 ```bash
-.venv/bin/python tools/matrix_integration.py --timeout 60
+.venv/bin/python tools/matrix_integration.py \
+  --timeout 60 \
+  --source-commit b35945549dc913846ea06c4aa7479bd62c0e857e
 ```
 
 It reported `status: pass` with 13 checks at
-`2026-10-24T17:09:32Z` in 25.5 seconds. The digest-pinned Synapse image is recorded in the
-report. The owner client was a real `matrix-nio` client; the homeserver was
-loopback-only; the OpenRig transport was fake.
+`2026-10-24T17:19:52Z` in 24.6 seconds, with
+`target.source.commit` equal to the tested source SHA and
+`target.source.worktree_clean: true`. The digest-pinned Synapse image is
+recorded in the report. The owner client was a real `matrix-nio` client; the
+homeserver was loopback-only; the OpenRig transport was fake.
 
 The harness boundary intentionally does not prove:
 
