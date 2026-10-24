@@ -1054,6 +1054,80 @@ def test_persistent_commentary_edit_exception_falls_through_to_final_answer(
     assert bridge.state.data["pending"]["advisor"] == []
 
 
+def test_successful_commentary_delivery_resets_failure_count(tmp_path):
+    transcript = tmp_path / "rollout.jsonl"
+    transcript.write_text(
+        json.dumps(
+            {
+                "type": "event_msg",
+                "payload": {
+                    "type": "item_completed",
+                    "item": {
+                        "type": "AgentMessage",
+                        "id": "comment-1",
+                        "phase": "commentary",
+                        "content": [{"type": "Text", "text": "Ich prüfe das."}],
+                    },
+                },
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    agent = AgentConfig(
+        key="advisor",
+        display_name="Advisor",
+        session="advisor-lead@kernel",
+    )
+    request = {
+        "event_id": "$prompt",
+        "thread_root_event_id": "$prompt",
+        "reply_to_event_id": "$prompt",
+        "answer_text": None,
+        "started_at": time.time(),
+        "session_id": "session",
+        "transcript_path": str(transcript),
+        "offset": 0,
+    }
+    bridge = object.__new__(MatrixBridge)
+    bridge.config = SimpleNamespace(
+        mirror_commentary=True,
+        response_timeout_minutes=30,
+    )
+    bridge.locks = {"advisor": asyncio.Lock()}
+    bridge.state = SimpleNamespace(
+        save=lambda: None,
+        data={
+            "pending": {"advisor": [request]},
+            "rooms": {"advisor": {"room_id": "!advisor:matrix.example.org"}},
+        },
+    )
+    attempts = 0
+
+    async def send(room_id, text, reply_to=None, **kwargs):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            return SimpleNamespace(status_code="M_LIMIT_EXCEEDED")
+        return RoomSendResponse("$commentary", room_id)
+
+    async def noop(*args, **kwargs):
+        return None
+
+    bridge._send = send
+    bridge._set_typing = noop
+    bridge._update_agent_status = noop
+    bridge._update_queue_notice = noop
+
+    asyncio.run(bridge._poll_agent(agent))
+    assert request["commentary_failure_count"] == 1
+
+    asyncio.run(bridge._poll_agent(agent))
+
+    assert request["commentary_failure_count"] == 0
+    assert request["sent_commentary"] == ["comment-1"]
+
+
 def test_persistent_final_delivery_failure_fails_qitem_and_advances(tmp_path):
     transcript = tmp_path / "rollout.jsonl"
     transcript.write_text(
@@ -1689,11 +1763,11 @@ def test_encrypted_image_is_saved_and_forwarded_to_agent(tmp_path):
         data={"processed_events": []},
     )
     bridge.client = ImageClient()
-    bridge._send = lambda *args: _completed(None)
+    bridge._send = lambda *args, **kwargs: _completed(None)
     forwarded = []
 
-    async def enqueue_prompt(*args):
-        forwarded.append(args)
+    async def enqueue_prompt(*args, **kwargs):
+        forwarded.append((args, kwargs))
 
     bridge._enqueue_prompt = enqueue_prompt
     room = SimpleNamespace(room_id="!advisor:matrix.example.org")
@@ -1718,8 +1792,147 @@ def test_encrypted_image_is_saved_and_forwarded_to_agent(tmp_path):
     stored = list((tmp_path / "advisor").glob("*.png"))
     assert len(stored) == 1
     assert stored[0].read_bytes() == png
-    assert forwarded[0][5] == "image"
-    assert str(stored[0]) in forwarded[0][4]
+    assert forwarded[0][0][5] == "image"
+    assert str(stored[0]) in forwarded[0][0][4]
+
+
+def test_threaded_image_uses_canonical_root_for_status_and_prompt(tmp_path):
+    png = b"\x89PNG\r\n\x1a\n" + b"threaded image"
+    relation = {
+        "rel_type": "m.thread",
+        "event_id": "$root",
+        "m.in_reply_to": {"event_id": "$parent"},
+    }
+
+    class ImageClient:
+        async def download(self, mxc):
+            return SimpleNamespace(body=png)
+
+    bridge = object.__new__(MatrixBridge)
+    agent = AgentConfig(
+        key="advisor",
+        display_name="Advisor",
+        session="advisor-lead@kernel",
+    )
+    bridge.config = SimpleNamespace(
+        user_id="@openrig:matrix.example.org",
+        allowed_users=("@owner:matrix.example.org",),
+        max_message_age_minutes=-1,
+        agents={"advisor": agent},
+        media=SimpleNamespace(
+            enabled=True,
+            inbox_dir=tmp_path,
+            max_image_bytes=1024 * 1024,
+        ),
+    )
+    bridge.room_agents = {"!advisor:matrix.example.org": "advisor"}
+    bridge.processed_events = set()
+    bridge.state = SimpleNamespace(
+        save=lambda: None,
+        data={"processed_events": []},
+    )
+    bridge.client = ImageClient()
+    sent = []
+    forwarded = []
+
+    async def send(room_id, text, reply_to=None, **kwargs):
+        sent.append((reply_to, kwargs))
+        return RoomSendResponse(f"${len(sent)}", room_id)
+
+    async def enqueue_prompt(*args, **kwargs):
+        forwarded.append(kwargs)
+
+    bridge._send = send
+    bridge._enqueue_prompt = enqueue_prompt
+    room = SimpleNamespace(room_id="!advisor:matrix.example.org")
+    event = SimpleNamespace(
+        event_id="$image",
+        sender="@owner:matrix.example.org",
+        server_timestamp=1_700_000_000_000,
+        source={"content": {"m.relates_to": relation}},
+        url="mxc://matrix.example.org/image",
+        body="Screenshot",
+    )
+
+    asyncio.run(bridge._handle_image(room, event))
+
+    assert sent
+    assert all(
+        reply_to == "$root" and kwargs["thread_root"] == "$root"
+        for reply_to, kwargs in sent
+    )
+    assert forwarded[0]["relates_to"] == relation
+
+
+def test_threaded_audio_uses_canonical_root_for_status_and_prompt():
+    relation = {
+        "rel_type": "m.thread",
+        "event_id": "$root",
+        "m.in_reply_to": {"event_id": "$parent"},
+    }
+
+    class AudioClient:
+        async def download(self, mxc):
+            return SimpleNamespace(body=b"audio")
+
+    class Transcriber:
+        def transcribe(self, audio, filename):
+            return "Hallo"
+
+    bridge = object.__new__(MatrixBridge)
+    agent = AgentConfig(
+        key="advisor",
+        display_name="Advisor",
+        session="advisor-lead@kernel",
+    )
+    bridge.config = SimpleNamespace(
+        user_id="@openrig:matrix.example.org",
+        allowed_users=("@owner:matrix.example.org",),
+        max_message_age_minutes=-1,
+        agents={"advisor": agent},
+        transcription=SimpleNamespace(
+            enabled=True,
+            max_audio_bytes=1024 * 1024,
+        ),
+    )
+    bridge.room_agents = {"!advisor:matrix.example.org": "advisor"}
+    bridge.processed_events = set()
+    bridge.state = SimpleNamespace(
+        save=lambda: None,
+        data={"processed_events": []},
+    )
+    bridge.client = AudioClient()
+    bridge.transcriber = Transcriber()
+    sent = []
+    forwarded = []
+
+    async def send(room_id, text, reply_to=None, **kwargs):
+        sent.append((reply_to, kwargs))
+        return RoomSendResponse(f"${len(sent)}", room_id)
+
+    async def enqueue_prompt(*args, **kwargs):
+        forwarded.append(kwargs)
+
+    bridge._send = send
+    bridge._enqueue_prompt = enqueue_prompt
+    room = SimpleNamespace(room_id="!advisor:matrix.example.org")
+    event = SimpleNamespace(
+        event_id="$audio",
+        sender="@owner:matrix.example.org",
+        server_timestamp=1_700_000_000_000,
+        source={"content": {"m.relates_to": relation}},
+        url="mxc://matrix.example.org/audio",
+        body="voice.ogg",
+    )
+
+    asyncio.run(bridge._handle_audio(room, event))
+
+    assert sent
+    assert all(
+        reply_to == "$root" and kwargs["thread_root"] == "$root"
+        for reply_to, kwargs in sent
+    )
+    assert forwarded[0]["relates_to"] == relation
 
 
 async def _completed(value):

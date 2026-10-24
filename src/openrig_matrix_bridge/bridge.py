@@ -111,6 +111,17 @@ def resolve_response_target(
     return ResponseTarget(event_id, event_id)
 
 
+def message_relation(event: Any) -> dict[str, Any] | None:
+    source = getattr(event, "source", {})
+    if not isinstance(source, dict):
+        return None
+    content = source.get("content", {})
+    if not isinstance(content, dict):
+        return None
+    relation = content.get("m.relates_to")
+    return relation if isinstance(relation, dict) else None
+
+
 def formatted_message_content(text: str) -> dict[str, Any]:
     content: dict[str, Any] = {"msgtype": "m.text", "body": text[:60000]}
     formatted_body = markdown_to_matrix_html(text[:60000])
@@ -1214,14 +1225,14 @@ class MatrixBridge:
             return
         if await self._handle_verification_reply(room, event, text):
             return
-        relates_to = event.source.get("content", {}).get("m.relates_to")
+        relates_to = message_relation(event)
         await self._enqueue_prompt(
             agent,
             room,
             event.event_id,
             event.server_timestamp,
             text,
-            relates_to=relates_to if isinstance(relates_to, dict) else None,
+            relates_to=relates_to,
         )
 
     async def _handle_verification_reply(
@@ -1521,24 +1532,28 @@ class MatrixBridge:
         if self.config.max_message_age_minutes >= 0:
             age_ms = int(time.time() * 1000) - int(event.server_timestamp)
             if age_ms > self.config.max_message_age_minutes * 60_000:
-                await self._send(
+                await self._send_to_event(
                     room.room_id,
                     "Sprachnachricht ist zu alt und wurde nicht verarbeitet.",
-                    event.event_id,
+                    event,
                 )
                 return
         if not self.config.transcription.enabled:
-            await self._send(
+            await self._send_to_event(
                 room.room_id,
                 "Sprachnachrichten sind auf dieser Bridge deaktiviert.",
-                event.event_id,
+                event,
             )
             return
 
         self.processed_events.add(event.event_id)
         self.state.data["processed_events"] = list(self.processed_events)[-2000:]
         self.state.save()
-        await self._send(room.room_id, "Sprachnachricht empfangen, transkribiere …", event.event_id)
+        await self._send_to_event(
+            room.room_id,
+            "Sprachnachricht empfangen, transkribiere …",
+            event,
+        )
         try:
             download = await self.client.download(mxc=event.url)
             body = getattr(download, "body", None)
@@ -1557,20 +1572,20 @@ class MatrixBridge:
             text = await asyncio.to_thread(self.transcriber.transcribe, audio, event.body)
         except Exception as exc:
             LOGGER.exception("audio transcription failed")
-            await self._send(
+            await self._send_to_event(
                 room.room_id,
                 f"Sprachnachricht konnte nicht transkribiert werden: {exc}",
-                event.event_id,
+                event,
             )
             return
         if not text:
-            await self._send(
+            await self._send_to_event(
                 room.room_id,
                 "In der Sprachnachricht wurde kein Text erkannt.",
-                event.event_id,
+                event,
             )
             return
-        await self._send(room.room_id, f"Transkript:\n{text}", event.event_id)
+        await self._send_to_event(room.room_id, f"Transkript:\n{text}", event)
         await self._enqueue_prompt(
             agent,
             room,
@@ -1578,6 +1593,7 @@ class MatrixBridge:
             event.server_timestamp,
             f"Sprachnachricht von {event.sender} via Matrix (lokal transkribiert):\n\n{text}",
             "audio",
+            relates_to=message_relation(event),
         )
 
     async def _handle_image(
@@ -1597,20 +1613,20 @@ class MatrixBridge:
         if self.config.max_message_age_minutes >= 0:
             age_ms = int(time.time() * 1000) - int(event.server_timestamp)
             if age_ms > self.config.max_message_age_minutes * 60_000:
-                await self._send(
+                await self._send_to_event(
                     room.room_id,
                     "Bild ist zu alt und wurde nicht verarbeitet.",
-                    event.event_id,
+                    event,
                 )
                 return
 
         self.processed_events.add(event.event_id)
         self.state.data["processed_events"] = list(self.processed_events)[-2000:]
         self.state.save()
-        await self._send(
+        await self._send_to_event(
             room.room_id,
             "Bild empfangen, lade und entschlüssele …",
-            event.event_id,
+            event,
         )
         try:
             download = await self.client.download(mxc=event.url)
@@ -1644,19 +1660,19 @@ class MatrixBridge:
             await asyncio.to_thread(write_image)
         except Exception as exc:
             LOGGER.exception("image download failed")
-            await self._send(
+            await self._send_to_event(
                 room.room_id,
                 f"Bild konnte nicht übernommen werden: {exc}",
-                event.event_id,
+                event,
             )
             return
 
         caption = event.body.strip()
         caption_line = f"\nBildunterschrift: {caption}" if caption else ""
-        await self._send(
+        await self._send_to_event(
             room.room_id,
             f"Bild gespeichert als `{stored.name}`.",
-            event.event_id,
+            event,
         )
         await self._enqueue_prompt(
             agent,
@@ -1667,6 +1683,7 @@ class MatrixBridge:
             f"Lokale Datei: {stored}\n"
             f"Format: {image_type.mime_type}, {len(image)} Bytes",
             "image",
+            relates_to=message_relation(event),
         )
 
     async def _start_request(
@@ -1859,6 +1876,7 @@ class MatrixBridge:
                         ):
                             request["commentary_event_id"] = response.event_id
                         if isinstance(response, RoomSendResponse):
+                            request["commentary_failure_count"] = 0
                             sent_commentary.extend(
                                 message_id for message_id, _text in pending_commentary
                             )
@@ -2074,6 +2092,15 @@ class MatrixBridge:
             "m.room.message",
             content,
             ignore_unverified_devices=True,
+        )
+
+    async def _send_to_event(self, room_id: str, text: str, event: Any):
+        target = resolve_response_target(event.event_id, message_relation(event))
+        return await self._send(
+            room_id,
+            text,
+            target.reply_to_event_id,
+            thread_root=target.thread_root_event_id,
         )
 
     async def _send(
