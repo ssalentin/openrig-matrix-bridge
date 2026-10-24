@@ -121,6 +121,7 @@ class StateStore:
             "messages": {},
             "queue_notices": {},
             "queue_mirror": {"initialized": False, "seen": {}},
+            "rejected_rooms": {},
             "avatar_pool": {
                 "asset_fingerprint": None,
                 "assignments": {},
@@ -217,6 +218,7 @@ class MatrixBridge:
     async def run(self) -> None:
         await self._initial_sync()
         self._load_room_index()
+        await self._reconcile_room_memberships()
         if any(key not in self.state.data["rooms"] for key in self.config.agents):
             await self._create_rooms()
         await self._restore_room_names()
@@ -826,6 +828,7 @@ class MatrixBridge:
 
     async def _create_rooms(self) -> None:
         owner = self.config.allowed_users[0]
+        rejected = self.state.data.setdefault("rejected_rooms", {})
         encryption = {
             "type": "m.room.encryption",
             "state_key": "",
@@ -836,6 +839,14 @@ class MatrixBridge:
             },
         }
         for key, agent in self.config.agents.items():
+            if key in self.state.data["rooms"]:
+                continue
+            if key in rejected:
+                LOGGER.info(
+                    "skipping rejected Matrix room for %s",
+                    agent.session,
+                )
+                continue
             name = room_name(agent)
             LOGGER.info("creating Matrix room %s for %s", name, agent.session)
             response = await self.client.room_create(
@@ -856,6 +867,76 @@ class MatrixBridge:
                 self.state.save()
                 continue
             raise RuntimeError(f"room creation failed for {name}: {response}")
+
+    async def _reconcile_room_memberships(self) -> None:
+        owner = self.config.allowed_users[0]
+        for key, room in list(self.state.data["rooms"].items()):
+            agent = self.config.agents.get(key)
+            if agent is None:
+                continue
+            room_id = str(room.get("room_id") or "")
+            if not room_id:
+                continue
+            response = await self.client.room_get_state_event(
+                room_id,
+                "m.room.member",
+                owner,
+            )
+            if not isinstance(response, RoomGetStateEventResponse):
+                LOGGER.warning(
+                    "could not read owner membership for %s: %s",
+                    room_id,
+                    response,
+                )
+                continue
+            membership = str(response.content.get("membership") or "")
+            if membership in {"leave", "ban"}:
+                await self._reject_agent_room(
+                    agent,
+                    room_id,
+                    reason=f"owner_{membership}",
+                )
+
+    async def _reject_agent_room(
+        self,
+        agent: AgentConfig,
+        room_id: str,
+        *,
+        reason: str,
+    ) -> None:
+        rejected = self.state.data.setdefault("rejected_rooms", {})
+        existing = rejected.get(agent.key)
+        if isinstance(existing, dict) and existing.get("room_id") == room_id:
+            return
+        rejected[agent.key] = {
+            "room_id": room_id,
+            "reason": reason,
+            "rejected_at": int(time.time() * 1000),
+        }
+        self.state.data["rooms"].pop(agent.key, None)
+        self.state.data["pending"].pop(agent.key, None)
+        self.state.data["welcomed"].pop(agent.key, None)
+        self.state.data["queue_notices"].pop(agent.key, None)
+        avatar_pool = self.state.data.get("avatar_pool", {})
+        assignments = avatar_pool.get("assignments")
+        if isinstance(assignments, dict):
+            assignments.pop(agent.key, None)
+        self.room_agents.pop(room_id, None)
+        self.agent_statuses.pop(agent.key, None)
+        self.state.save()
+        LOGGER.info(
+            "rejected Matrix room %s for %s (%s)",
+            room_id,
+            agent.session,
+            reason,
+        )
+        response = await self.client.room_leave(room_id)
+        if hasattr(response, "status_code") and response.status_code >= 400:
+            LOGGER.warning(
+                "could not leave rejected Matrix room %s: %s",
+                room_id,
+                response,
+            )
 
     def _initialize_transcript_offsets(self) -> None:
         offsets = self.state.data.setdefault("transcripts", {})
@@ -883,10 +964,19 @@ class MatrixBridge:
         asyncio.create_task(self._handle_member(room, event))
 
     async def _handle_member(self, room: MatrixRoom, event: RoomMemberEvent) -> None:
-        if event.membership != "join" or event.state_key not in self.config.allowed_users:
+        if event.state_key not in self.config.allowed_users:
             return
         agent = self._agent_for_room(room.room_id)
-        if not agent or self.state.data["welcomed"].get(agent.key):
+        if not agent:
+            return
+        if event.membership in {"leave", "ban"}:
+            await self._reject_agent_room(
+                agent,
+                room.room_id,
+                reason=f"owner_{event.membership}",
+            )
+            return
+        if event.membership != "join" or self.state.data["welcomed"].get(agent.key):
             return
         response = await self._send(
             room.room_id,

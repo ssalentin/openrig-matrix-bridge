@@ -8,6 +8,7 @@ from nio import (
     ProfileSetAvatarResponse,
     RoomEncryptedImage,
     RoomGetEventResponse,
+    RoomGetStateEventResponse,
     RoomSendResponse,
     UploadResponse,
 )
@@ -160,6 +161,167 @@ def test_restore_room_names_removes_status_emoji_and_product_prefix():
         )
     ]
     assert bridge.state.data["rooms"]["advisor"]["name"] == "Advisor"
+
+
+def test_owner_leaving_room_rejects_agent_and_removes_mapping():
+    bridge = object.__new__(MatrixBridge)
+    agent = AgentConfig(
+        key="operator",
+        display_name="Operator",
+        session="operator-agent@kernel",
+    )
+    bridge.config = SimpleNamespace(
+        allowed_users=("@owner:matrix.example.org",),
+        agents={"operator": agent},
+    )
+    bridge.room_agents = {"!operator:matrix.example.org": "operator"}
+    bridge.agent_statuses = {"operator": "ready"}
+    bridge.state = SimpleNamespace(
+        save=lambda: None,
+        data={
+            "rooms": {
+                "operator": {
+                    "room_id": "!operator:matrix.example.org",
+                    "name": "Operator",
+                }
+            },
+            "pending": {"operator": []},
+            "welcomed": {"operator": True},
+            "queue_notices": {"operator": {"event_id": "$notice"}},
+            "rejected_rooms": {},
+            "avatar_pool": {
+                "assignments": {
+                    "operator": {
+                        "id": "openrig-02",
+                        "mxc": "mxc://example.org/operator",
+                    }
+                }
+            },
+        },
+    )
+    left = []
+
+    class Client:
+        async def room_leave(self, room_id):
+            left.append(room_id)
+            return SimpleNamespace(status_code=200)
+
+    bridge.client = Client()
+    room = SimpleNamespace(room_id="!operator:matrix.example.org")
+    event = SimpleNamespace(
+        state_key="@owner:matrix.example.org",
+        membership="leave",
+    )
+
+    asyncio.run(bridge._handle_member(room, event))
+
+    assert left == ["!operator:matrix.example.org"]
+    assert "operator" not in bridge.state.data["rooms"]
+    assert bridge.state.data["rejected_rooms"]["operator"]["reason"] == "owner_leave"
+    assert "operator" not in bridge.room_agents
+    assert "operator" not in bridge.state.data["avatar_pool"]["assignments"]
+
+
+def test_reconcile_rejects_room_when_owner_has_left():
+    bridge = object.__new__(MatrixBridge)
+    agent = AgentConfig(
+        key="queue",
+        display_name="Queue",
+        session="queue-worker@kernel",
+    )
+    bridge.config = SimpleNamespace(
+        allowed_users=("@owner:matrix.example.org",),
+        agents={"queue": agent},
+    )
+    bridge.room_agents = {"!queue:matrix.example.org": "queue"}
+    bridge.agent_statuses = {}
+    bridge.state = SimpleNamespace(
+        save=lambda: None,
+        data={
+            "rooms": {
+                "queue": {
+                    "room_id": "!queue:matrix.example.org",
+                    "name": "Queue",
+                }
+            },
+            "pending": {},
+            "welcomed": {},
+            "queue_notices": {},
+            "rejected_rooms": {},
+            "avatar_pool": {"assignments": {}},
+        },
+    )
+    left = []
+
+    class Client:
+        async def room_get_state_event(self, room_id, event_type, state_key):
+            assert event_type == "m.room.member"
+            assert state_key == "@owner:matrix.example.org"
+            return RoomGetStateEventResponse(
+                content={"membership": "leave"},
+                event_type=event_type,
+                state_key=state_key,
+                room_id=room_id,
+            )
+
+        async def room_leave(self, room_id):
+            left.append(room_id)
+            return SimpleNamespace(status_code=200)
+
+    bridge.client = Client()
+
+    asyncio.run(bridge._reconcile_room_memberships())
+
+    assert left == ["!queue:matrix.example.org"]
+    assert "queue" not in bridge.state.data["rooms"]
+    assert bridge.state.data["rejected_rooms"]["queue"]["reason"] == "owner_leave"
+
+
+def test_rejected_agent_room_is_not_recreated():
+    bridge = object.__new__(MatrixBridge)
+    advisor = AgentConfig(
+        key="advisor",
+        display_name="Advisor",
+        session="advisor-lead@kernel",
+    )
+    operator = AgentConfig(
+        key="operator",
+        display_name="Operator",
+        session="operator-agent@kernel",
+    )
+    bridge.config = SimpleNamespace(
+        allowed_users=("@owner:matrix.example.org",),
+        agents={"advisor": advisor, "operator": operator},
+    )
+    bridge.state = SimpleNamespace(
+        save=lambda: None,
+        data={
+            "rooms": {
+                "advisor": {
+                    "room_id": "!advisor:matrix.example.org",
+                    "name": "Advisor",
+                }
+            },
+            "rejected_rooms": {
+                "operator": {
+                    "room_id": "!old:matrix.example.org",
+                    "reason": "owner_leave",
+                }
+            },
+        },
+    )
+    created = []
+
+    class Client:
+        async def room_create(self, **kwargs):
+            created.append(kwargs)
+            raise AssertionError("rejected room must not be recreated")
+
+    bridge.client = Client()
+
+    asyncio.run(bridge._create_rooms())
+
+    assert created == []
 
 
 def test_poll_answer_is_forwarded_and_pinned_decision_is_cleared():

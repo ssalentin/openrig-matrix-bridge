@@ -122,6 +122,12 @@ MATRIX_ACCESS_TOKEN='...' openrig-matrix-bridge run
 On first start, it creates a private encrypted room for each configured agent
 and invites the allow-listed owner.
 
+If the owner declines an invitation to an agent room or later leaves it, the
+bridge treats that room as rejected: it leaves the room itself, removes the
+agent's runtime mapping and persists a rejection tombstone in `state.json`.
+Rejected rooms are not recreated on restart. To opt an agent back in later,
+remove its entry from `rejected_rooms` in `state.json` and restart the bridge.
+
 ## Agent avatars
 
 Every configured agent room receives a distinct avatar from the bundled
