@@ -131,12 +131,17 @@ It includes deterministic bridge exits immediately after qitem claim and final
 answer send. Restart resumes the claimed-but-unsent prompt exactly once and
 reuses the answer transaction ID, returning the same Matrix event and closing
 one qitem. Unit fault tests also cover busy-agent recovery, ambiguous prompt
-sends, qitem claim/finish/fail reconciliation, and pre-0.11 state migration.
-Legacy requests with `started_at` but no `prompt_phase` are treated as
-ambiguous and fail closed rather than being resent.
-Tracked legacy requests are also excluded from the normal poller; an
-authoritative done qitem completes locally without answer replay, while a
-transient qitem-close error emits one stable failure and stops polling.
+sends, and qitem claim/finish/fail reconciliation.
+
+The covered pre-0.11 migration shape is: requests with `started_at` but no
+`prompt_phase` are treated as ambiguous and fail closed rather than being
+resent. For those tracked requests, an authoritative done qitem completes
+locally without answer replay, while a transient qitem-close error emits one
+stable failure and stops polling.
+
+Migration of unstarted legacy pending requests whose qitems are already
+terminal is not covered by 0.11.0 and is deferred to issue #41 in milestone
+0.12.0.
 
 ### Issue #12 qitem lifecycle evidence
 
