@@ -6,7 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from openrig_matrix_bridge.bridge import MatrixBridge
+from openrig_matrix_bridge.bridge import MatrixBridge, queue_notice_text
 from openrig_matrix_bridge.config import AgentConfig
 
 
@@ -212,6 +212,37 @@ def test_same_thread_followups_form_one_ordered_fallback_batch(
     assert "$follow-one" in pending[1]["text"]
     assert "$follow-two" in pending[1]["text"]
     assert pending[0]["steering_group_id"] == pending[1]["id"]
+
+
+def test_queue_card_uses_real_steering_batch_without_waiting_container(
+    tmp_path: Path,
+):
+    harness = SteeringHarness(tmp_path, "auto")
+    harness.enqueue("$root", "root request", None)
+    harness.busy = True
+    harness.enqueue("$follow-one", "first follow-up", "$root")
+    harness.enqueue("$follow-two", "second follow-up", "$root")
+
+    card = queue_notice_text(harness.bridge.state.data["pending"]["advisor"])
+
+    assert card is not None
+    assert "0 Nachrichten warten" in card
+    assert "Aktiv (3 Eingaben)" in card
+    assert "first follow-up" not in card
+    assert "second follow-up" not in card
+
+
+def test_queue_card_marks_busy_unstarted_request_as_next(tmp_path: Path):
+    harness = SteeringHarness(tmp_path, "auto")
+    harness.busy = True
+    harness.enqueue("$waiting", "waiting for busy seat", None)
+
+    card = queue_notice_text(harness.bridge.state.data["pending"]["advisor"])
+
+    assert card is not None
+    assert "1 Nachricht wartet" in card
+    assert "**Aktiv:**" not in card
+    assert "**Nächste Anfrage:** Text" in card
 
 
 def test_queue_mode_keeps_same_thread_followups_fifo(tmp_path: Path):

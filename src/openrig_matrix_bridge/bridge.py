@@ -254,16 +254,51 @@ def queue_notice_text(
     *,
     priority_label: str = "hoch",
 ) -> str | None:
-    if not pending:
+    visible = [
+        request
+        for request in pending
+        if not request.get("suppress_reply")
+    ]
+    if not visible:
         return None
-    active = pending[0]
-    waiting = pending[1:]
+    first = visible[0]
+    active = first if first.get("started_at") is not None else None
+    steering_group = None
+    if active is not None:
+        group_id = active.get("steering_group_id")
+        if group_id:
+            steering_group = next(
+                (
+                    request
+                    for request in visible[1:]
+                    if request.get("id") == group_id
+                    and request.get("deferred_steering")
+                ),
+                None,
+            )
+    waiting = (
+        [
+            request
+            for request in visible[1:]
+            if request is not steering_group
+        ]
+        if active is not None
+        else visible
+    )
     noun = "Nachricht wartet" if len(waiting) == 1 else "Nachrichten warten"
-    source_ids = active.get("source_event_ids")
+    source_ids = []
+    if active is not None:
+        active_sources = active.get("source_event_ids")
+        if isinstance(active_sources, list):
+            source_ids.extend(active_sources)
+    if steering_group is not None:
+        steering_sources = steering_group.get("source_event_ids")
+        if isinstance(steering_sources, list):
+            source_ids.extend(steering_sources)
     source_count = len(set(source_ids)) if isinstance(source_ids, list) else 1
     active_label = (
         f"Aktiv ({source_count} Eingaben)"
-        if source_count > 1
+        if active is not None and source_count > 1
         else "Aktiv"
     )
     lines = [
@@ -272,14 +307,18 @@ def queue_notice_text(
             f"Priorität {priority_label}."
         ),
         "",
-        f"**{active_label}:** {queue_request_entry(active)}",
     ]
+    if active is not None:
+        lines.append(f"**{active_label}:** {queue_request_entry(active)}")
+    else:
+        lines.append(f"**Nächste Anfrage:** {queue_request_entry(first)}")
+        waiting = waiting[1:]
     if waiting:
         lines.extend(
             f"{position}. {queue_request_entry(request)}"
             for position, request in enumerate(waiting, start=1)
         )
-    else:
+    elif active is not None:
         lines.append("Keine weiteren Nachrichten warten.")
     return "\n".join(lines)
 

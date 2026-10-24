@@ -1769,6 +1769,8 @@ def queued_request(
     source_label="message",
     thread_root_event_id=None,
     source_event_ids=None,
+    started_at="default",
+    suppress_reply=False,
 ):
     return {
         "id": f"request-{event_id}",
@@ -1778,7 +1780,8 @@ def queued_request(
         "source_event_ids": source_event_ids or [event_id],
         "source_label": source_label,
         "text": text,
-        "started_at": None,
+        "started_at": time.time() if started_at == "default" else started_at,
+        "suppress_reply": suppress_reply,
     }
 
 
@@ -1866,13 +1869,21 @@ def test_queue_notice_redacts_and_truncates_previews():
 
 
 def test_queue_notice_traces_steered_batch_without_waiting_duplicate():
-    pending = [
-        queued_request(
-            "$one",
-            "Combined active request",
-            source_event_ids=["$one", "$steered"],
-        )
-    ]
+    active = queued_request(
+        "$one",
+        "Combined active request",
+        source_event_ids=["$one"],
+    )
+    group = queued_request(
+        "$steering-group",
+        "Steering batch fallback container",
+        source_event_ids=["$steered-one", "$steered-two"],
+        started_at=None,
+    )
+    group["id"] = "steering-group"
+    group["deferred_steering"] = True
+    active["steering_group_id"] = group["id"]
+    pending = [active, group]
     bridge, sent, _edited, _pinned, _unpinned = queue_notice_bridge(pending)
     agent = AgentConfig(
         key="advisor",
@@ -1884,9 +1895,87 @@ def test_queue_notice_traces_steered_batch_without_waiting_duplicate():
 
     card = sent[0]
     assert "0 Nachrichten warten" in card
-    assert "Aktiv (2 Eingaben)" in card
+    assert "Aktiv (3 Eingaben)" in card
     assert "1. " not in card
+    assert "Steering batch fallback container" not in card
     assert "Keine weiteren Nachrichten warten" in card
+
+
+def test_queue_notice_hides_queued_silent_reaction():
+    pending = [
+        queued_request("$one", "Visible active request"),
+        queued_request(
+            "$reaction",
+            "Matrix-Reaktion von @owner: 👍",
+            source_label="reaction",
+            started_at=None,
+            suppress_reply=True,
+        ),
+    ]
+    bridge, sent, _edited, _pinned, _unpinned = queue_notice_bridge(pending)
+    agent = AgentConfig(
+        key="advisor",
+        display_name="Advisor",
+        session="advisor-lead@kernel",
+    )
+
+    asyncio.run(bridge._update_queue_notice(agent, "!advisor", 1))
+
+    card = sent[0]
+    assert "0 Nachrichten warten" in card
+    assert "Matrix-Reaktion" not in card
+
+
+def test_queue_notice_restart_does_not_resurface_silent_reaction():
+    reaction = queued_request(
+        "$reaction",
+        "Matrix-Reaktion von @owner: 👍",
+        source_label="reaction",
+        started_at=None,
+        suppress_reply=True,
+    )
+    bridge, sent, edited, _pinned, unpinned = queue_notice_bridge(
+        [reaction],
+        notice={"event_id": "$queue", "pinned": True},
+    )
+    agent = AgentConfig(
+        key="advisor",
+        display_name="Advisor",
+        session="advisor-lead@kernel",
+    )
+    bridge.config.agents = {"advisor": agent}
+    bridge.state.data["rooms"] = {"advisor": {"room_id": "!advisor"}}
+
+    asyncio.run(bridge._restore_queue_notices())
+
+    assert sent == []
+    assert edited == []
+    assert unpinned == [["$queue"]]
+    assert "Matrix-Reaktion" not in str(bridge.state.data["queue_notices"])
+
+
+def test_queue_notice_does_not_call_unstarted_request_active():
+    pending = [
+        queued_request(
+            "$claiming",
+            "request waiting for qitem claim",
+            started_at=None,
+        )
+    ]
+    pending[0]["qitem_phase"] = "claiming"
+    bridge, sent, _edited, _pinned, _unpinned = queue_notice_bridge(pending)
+    agent = AgentConfig(
+        key="advisor",
+        display_name="Advisor",
+        session="advisor-lead@kernel",
+    )
+
+    asyncio.run(bridge._update_queue_notice(agent, "!advisor", 0))
+
+    card = sent[0]
+    assert "1 Nachricht wartet" in card
+    assert "**Aktiv:**" not in card
+    assert '**Nächste Anfrage:** Text · "request waiting for qitem claim"' in card
 
 
 def test_queue_notice_reconstructs_pending_previews_after_restart():
