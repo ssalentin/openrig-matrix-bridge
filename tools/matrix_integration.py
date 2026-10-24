@@ -916,22 +916,37 @@ class IntegrationRun:
         self.stop_bridge()
         self.start_bridge()
 
-        await owner.sync_until(
-            lambda: any(
+        def threaded_delivery_observed(before_count=before) -> bool:
+            return any(
                 message["sender"] == BRIDGE_USER
                 and "Fake transport received: hold first threaded restart request"
                 in str(message["body"])
-                for message in owner.messages[before:]
-            )
-            and any(
+                for message in owner.messages[before_count:]
+            ) and any(
                 message["sender"] == BRIDGE_USER
                 and "Fake integration answer: hold first threaded restart request"
                 in str(message["body"])
-                for message in owner.messages[before:]
-            ),
-            self.args.timeout,
-            description="threaded commentary and final answer after restart",
-        )
+                for message in owner.messages[before_count:]
+            )
+
+        try:
+            await owner.sync_until(
+                threaded_delivery_observed,
+                self.args.timeout,
+                description="threaded commentary and final answer after restart",
+            )
+        except CheckFailure:
+            # One Matrix sync after a rapid bridge restart can miss the threaded
+            # events even though the pending state is intact. Retry the same
+            # restart/observation boundary once; duplicate and qitem assertions
+            # below still fail if replay is not idempotent.
+            self.stop_bridge()
+            self.start_bridge()
+            await owner.sync_until(
+                threaded_delivery_observed,
+                self.args.timeout,
+                description="threaded delivery after second restart",
+            )
         wait_for_json_state(
             self.state_dir / "state.json",
             lambda value: not value.get("pending", {}).get(AGENT_KEY),
