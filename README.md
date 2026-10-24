@@ -246,6 +246,11 @@ prompt:
 3. Compare them with Element and click **They match**.
 4. Type `ja` in that Matrix room to confirm the bridge side.
 
+After an interrupted verification, plain `ja` and `nein` remain reserved in
+that room so they cannot accidentally become agent prompts. To intentionally
+send ordinary confirmation text to the agent, use an explicit `agent:` prefix,
+for example `agent: ja`.
+
 Verification applies to the specific Element device. `matrix-nio` does not
 currently provide complete cross-signing setup, so the bridge does not create a
 cross-signed identity that Element automatically trusts across devices. In the
@@ -256,7 +261,9 @@ records success; do not infer it from unit tests.
 
 Live Element SAS verification is not covered by the automated test suite.
 Restart interruption, timeout, cancellation and confirmation state are
-unit-tested. The real-client flow and cross-signing limitation remain tracked in
+unit-tested. Interruption and timeout notifications persist an outbox intent
+and use a stable Matrix transaction ID so startup reconciliation retries them
+exactly once. The real-client flow and cross-signing limitation remain tracked in
 [Issue #1](https://github.com/ssalentin/openrig-matrix-bridge/issues/1); do not
 describe them as fully verified until a real client check is recorded.
 

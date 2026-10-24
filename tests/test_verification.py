@@ -4,6 +4,7 @@ import asyncio
 import time
 from types import SimpleNamespace
 
+import pytest
 from nio import KeyVerificationStart
 
 from openrig_matrix_bridge.bridge import MatrixBridge
@@ -12,6 +13,7 @@ from openrig_matrix_bridge.verification import (
     expire_active_verifications,
     mark_verification,
     pending_verification,
+    prune_terminal_verifications,
     recover_interrupted_verifications,
 )
 
@@ -38,7 +40,8 @@ def test_terminal_verification_is_not_pending():
     begin_verification(records, "tx-one", "!advisor:example.org", now=100)
     mark_verification(records, "tx-one", "verified", now=110)
 
-    assert pending_verification(records, "!advisor:example.org", now=111) is None
+    assert pending_verification(records, "!advisor:example.org", now=111) is not None
+    assert pending_verification(records, "!advisor:example.org", now=1000) is None
 
 
 def test_recovery_marks_active_transaction_interrupted_once():
@@ -49,17 +52,58 @@ def test_recovery_marks_active_transaction_interrupted_once():
 
     assert interrupted == [("tx-one", "!advisor:example.org")]
     assert records["tx-one"]["phase"] == "interrupted"
+    assert records["tx-one"]["terminal_notification"]["state"] == "pending"
     assert pending_verification(records, "!advisor:example.org", now=201) is not None
     assert recover_interrupted_verifications(records, now=202) == []
 
 
-def test_interrupted_transaction_stops_capturing_after_grace_period():
+def test_interrupted_transaction_stops_guarding_after_reply_grace_period():
     records = {}
     begin_verification(records, "tx-one", "!advisor:example.org", now=100)
     recover_interrupted_verifications(records, now=200)
 
     assert pending_verification(records, "!advisor:example.org", now=500) is not None
     assert pending_verification(records, "!advisor:example.org", now=1000) is None
+
+
+@pytest.mark.parametrize(
+    "phase",
+    ["verified", "rejected", "cancelled", "failed", "timed_out"],
+)
+def test_recent_terminal_transaction_guards_late_confirmation(phase: str):
+    records = {}
+    begin_verification(records, "tx-one", "!advisor:example.org", now=100)
+    mark_verification(records, "tx-one", phase, now=200)
+
+    assert pending_verification(records, "!advisor:example.org", now=201) is not None
+    assert pending_verification(records, "!advisor:example.org", now=1000) is None
+
+
+def test_new_verification_supersedes_interrupted_guard():
+    records = {}
+    begin_verification(records, "tx-old", "!advisor:example.org", now=100)
+    recover_interrupted_verifications(records, now=200)
+
+    begin_verification(records, "tx-new", "!advisor:example.org", now=300)
+    mark_verification(records, "tx-new", "verified", now=400)
+
+    assert records["tx-old"]["phase"] == "superseded"
+    pending = pending_verification(records, "!advisor:example.org", now=500)
+    assert pending is not None
+    assert pending[0] == "tx-new"
+
+
+def test_prunes_only_expired_terminal_records():
+    records = {}
+    begin_verification(records, "tx-terminal", "!advisor:example.org", now=100)
+    mark_verification(records, "tx-terminal", "verified", now=200)
+    begin_verification(records, "tx-active", "!advisor:example.org", now=100)
+
+    pruned = prune_terminal_verifications(records, now=1000, retention=500)
+
+    assert pruned == ["tx-terminal"]
+    assert "tx-terminal" not in records
+    assert records["tx-active"]["phase"] == "starting"
 
 
 def test_expires_each_active_transaction_once():
@@ -71,6 +115,7 @@ def test_expires_each_active_transaction_once():
         ("tx-one", "!advisor:example.org")
     ]
     assert records["tx-one"]["phase"] == "timed_out"
+    assert records["tx-one"]["terminal_notification"]["state"] == "pending"
     assert expire_active_verifications(records, now=1000, timeout=300) == []
 
 
@@ -109,6 +154,101 @@ def test_restart_recovery_marks_and_reports_interruption_once():
     assert records["tx-one"]["phase"] == "interrupted"
     assert len(bridge.sent) == 1
     assert "Neustart" in bridge.sent[0][1]
+
+
+def test_restart_delivers_interrupted_notification_saved_before_crash():
+    records = {}
+    begin_verification(records, "tx-one", "!advisor:example.org", now=100)
+    recover_interrupted_verifications(records, now=200)
+    bridge = verification_bridge(records)
+
+    asyncio.run(bridge._recover_verifications())
+    asyncio.run(bridge._recover_verifications())
+
+    assert len(bridge.sent) == 1
+    assert "Neustart" in bridge.sent[0][1]
+    notification = records["tx-one"]["terminal_notification"]
+    assert notification["state"] == "delivered"
+    assert notification["event_id"] == "$status"
+
+
+def test_restart_delivers_timed_out_notification_saved_before_crash():
+    records = {}
+    begin_verification(records, "tx-one", "!advisor:example.org", now=100)
+    expire_active_verifications(records, now=500, timeout=300)
+    bridge = verification_bridge(records)
+
+    asyncio.run(bridge._recover_verifications())
+    asyncio.run(bridge._recover_verifications())
+
+    assert len(bridge.sent) == 1
+    assert "Zeitüberschreitung" in bridge.sent[0][1]
+    notification = records["tx-one"]["terminal_notification"]
+    assert notification["state"] == "delivered"
+    assert notification["event_id"] == "$status"
+
+
+def test_restart_reconciles_timed_out_record_without_notification_intent():
+    records = {}
+    begin_verification(records, "tx-one", "!advisor:example.org", now=100)
+    mark_verification(records, "tx-one", "timed_out", now=200)
+    bridge = verification_bridge(records)
+
+    asyncio.run(bridge._recover_verifications())
+
+    assert len(bridge.sent) == 1
+    assert "Zeitüberschreitung" in bridge.sent[0][1]
+    assert records["tx-one"]["terminal_notification"]["state"] == "delivered"
+
+
+def test_failed_notification_retry_reuses_stable_transaction_id():
+    records = {}
+    begin_verification(records, "tx-one", "!advisor:example.org", now=100)
+    recover_interrupted_verifications(records, now=200)
+    bridge = verification_bridge(records)
+    attempts = []
+
+    async def fail_then_deliver(room_id, text, reply_to=None, **kwargs):
+        attempts.append(kwargs["tx_id"])
+        if len(attempts) == 1:
+            raise OSError("simulated notification crash")
+        return SimpleNamespace(event_id="$delivered")
+
+    bridge._send = fail_then_deliver
+
+    asyncio.run(bridge._recover_verifications())
+    assert records["tx-one"]["terminal_notification"]["state"] == "pending"
+
+    asyncio.run(bridge._recover_verifications())
+
+    assert attempts == [
+        "verification-tx-one-interrupted",
+        "verification-tx-one-interrupted",
+    ]
+    assert records["tx-one"]["terminal_notification"]["state"] == "delivered"
+    assert records["tx-one"]["terminal_notification"]["event_id"] == "$delivered"
+
+
+def test_send_forwards_verification_transaction_id_to_matrix_client():
+    calls = []
+
+    async def room_send(room_id, event_type, content, **kwargs):
+        calls.append((room_id, event_type, content, kwargs))
+        return SimpleNamespace(event_id="$verified")
+
+    bridge = object.__new__(MatrixBridge)
+    bridge.client = SimpleNamespace(room_send=room_send)
+
+    response = asyncio.run(
+        bridge._send(
+            "!advisor:example.org",
+            "verification update",
+            tx_id="verification-tx-one-interrupted",
+        )
+    )
+
+    assert response.event_id == "$verified"
+    assert calls[0][3]["tx_id"] == "verification-tx-one-interrupted"
 
 
 def test_confirmation_is_persisted_before_remote_accept():
@@ -159,6 +299,50 @@ def test_interrupted_confirmation_is_not_forwarded_to_agent():
                 session="advisor@example.org",
             )
         },
+        user_id="@bridge:example.org",
+        allowed_users=("@owner:example.org",),
+        max_message_age_minutes=-1,
+    )
+    room = SimpleNamespace(room_id="!advisor:example.org")
+    event = SimpleNamespace(
+        event_id="$reply",
+        sender="@owner:example.org",
+        body="ja",
+        server_timestamp=0,
+    )
+
+    asyncio.run(bridge._handle_room_message(room, event))
+
+    assert forwarded == []
+    assert records["tx-one"]["phase"] == "interrupted"
+    assert "keine aktive" in bridge.sent[-1][1].lower()
+
+    explicit = SimpleNamespace(
+        event_id="$explicit",
+        sender="@owner:example.org",
+        body="agent: ja",
+        server_timestamp=0,
+    )
+    asyncio.run(bridge._handle_room_message(room, explicit))
+
+    assert len(forwarded) == 1
+
+
+def test_late_confirmation_after_terminal_state_is_not_forwarded_to_agent():
+    records = {}
+    now = time.time()
+    begin_verification(records, "tx-one", "!advisor:example.org", now=now - 10)
+    mark_verification(records, "tx-one", "timed_out", now=now - 1)
+    forwarded = []
+    bridge = verification_bridge(records)
+
+    async def enqueue(*args, **kwargs):
+        forwarded.append((args, kwargs))
+
+    bridge._enqueue_prompt = enqueue
+    bridge.room_agents = {"!advisor:example.org": "advisor"}
+    bridge.config = SimpleNamespace(
+        agents={"advisor": SimpleNamespace(key="advisor", session="advisor@example.org")},
         user_id="@bridge:example.org",
         allowed_users=("@owner:example.org",),
         max_message_age_minutes=-1,

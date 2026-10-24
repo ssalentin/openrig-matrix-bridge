@@ -75,6 +75,7 @@ from .openrig import (
 from .transcript import commentary_messages, final_answer, read_complete_records
 from .transcription import Transcriber
 from .verification import (
+    TERMINAL_PHASES,
     begin_verification,
     expire_active_verifications,
     mark_verification,
@@ -1271,12 +1272,7 @@ class MatrixBridge:
         self.state.data["processed_events"] = list(self.processed_events)[-2000:]
         phase = str(verification.get("phase") or "")
         if phase == "interrupted":
-            mark_verification(
-                self.verification_records,
-                transaction_id,
-                "stale_reply",
-                now=now,
-            )
+            verification["interrupted_reply_at"] = now
             self.state.save()
             await self._send(
                 room.room_id,
@@ -1286,11 +1282,26 @@ class MatrixBridge:
             )
             return True
         if phase != "awaiting_confirmation":
-            await self._send(
-                room.room_id,
-                "Die Geräteverifikation ist noch nicht bereit für `ja` oder `nein`.",
-                event.event_id,
-            )
+            if phase in TERMINAL_PHASES:
+                mark_verification(
+                    self.verification_records,
+                    transaction_id,
+                    "stale_reply",
+                    now=now,
+                )
+                self.state.save()
+                await self._send(
+                    room.room_id,
+                    "Für dieses Gerät läuft keine aktive Verifikation mehr. "
+                    "Bitte starte die Verifikation erneut.",
+                    event.event_id,
+                )
+            else:
+                await self._send(
+                    room.room_id,
+                    "Die Geräteverifikation ist noch nicht bereit für `ja` oder `nein`.",
+                    event.event_id,
+                )
             return True
         if decision:
             mark_verification(
@@ -1357,15 +1368,9 @@ class MatrixBridge:
             self.verification_records,
             now=time.time(),
         )
-        if not interrupted:
-            return
-        self.state.save()
-        for _transaction_id, room_id in interrupted:
-            await self._send(
-                room_id,
-                "Die Geräteverifikation wurde durch einen Neustart unterbrochen. "
-                "Bitte starte sie im Matrix-Client erneut.",
-            )
+        if interrupted:
+            self.state.save()
+        await self._deliver_verification_notifications()
 
     async def _expire_verifications(self, *, now: float, timeout: float) -> None:
         expired = expire_active_verifications(
@@ -1373,9 +1378,8 @@ class MatrixBridge:
             now=now,
             timeout=timeout,
         )
-        if not expired:
-            return
-        self.state.save()
+        if expired:
+            self.state.save()
         for transaction_id, room_id in expired:
             sas = self.client.key_verifications.get(transaction_id)
             if sas is not None:
@@ -1387,11 +1391,50 @@ class MatrixBridge:
                         transaction_id,
                         exc_info=True,
                     )
-            await self._send(
-                room_id,
-                "Zeitüberschreitung bei der Geräteverifikation. "
-                "Bitte starte sie erneut.",
+        await self._deliver_verification_notifications()
+
+    async def _deliver_verification_notifications(self) -> None:
+        for record in self.verification_records.values():
+            notification = record.get("terminal_notification")
+            if not isinstance(notification, dict):
+                continue
+            if notification.get("state") == "delivered":
+                continue
+            room_id = str(notification.get("room_id") or "")
+            text = str(notification.get("text") or "")
+            tx_id = str(notification.get("tx_id") or "")
+            if not room_id or not text or not tx_id:
+                LOGGER.warning("invalid verification notification: %s", notification)
+                continue
+            try:
+                response = await self._send(
+                    room_id,
+                    text,
+                    tx_id=tx_id,
+                )
+            except Exception:
+                LOGGER.warning(
+                    "could not deliver verification notification %s",
+                    tx_id,
+                    exc_info=True,
+                )
+                continue
+            event_id = str(getattr(response, "event_id", "") or "")
+            if not event_id:
+                LOGGER.warning(
+                    "verification notification %s failed: %s",
+                    tx_id,
+                    response,
+                )
+                continue
+            notification.update(
+                {
+                    "state": "delivered",
+                    "event_id": event_id,
+                    "delivered_at": time.time(),
+                }
             )
+            self.state.save()
 
     async def _poll_verification_timeouts(self) -> None:
         while True:
@@ -2298,6 +2341,7 @@ class MatrixBridge:
         reply_to: str | None = None,
         *,
         thread_root: str | None | object = _DEFAULT_THREAD_ROOT,
+        tx_id: str | None = None,
     ):
         content = formatted_message_content(text)
         effective_root = reply_to if thread_root is _DEFAULT_THREAD_ROOT else thread_root
@@ -2314,6 +2358,7 @@ class MatrixBridge:
             room_id,
             "m.room.message",
             content,
+            tx_id=tx_id,
             ignore_unverified_devices=True,
         )
 
