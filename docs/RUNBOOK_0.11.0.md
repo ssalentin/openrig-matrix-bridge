@@ -14,13 +14,39 @@ This runbook uses production paths. Adapt if your layout differs.
 |---|---|
 | Virtual environment | `/opt/openrig-matrix/venv` |
 | Config | `/etc/openrig-matrix-bridge/config.yaml` |
-| State directory | `/root/.local/share/openrig-matrix-bridge` |
+| State directory | `/var/lib/openrig-matrix-bridge` |
 | systemd unit | `openrig-matrix-bridge.service` |
-| Environment file | `/etc/openrig-matrix-bridge/matrix.env` |
+| Launcher | `/usr/local/sbin/openrig-matrix-start` |
 
-The examples below use these paths directly. A local development install would
-use `~/.local/state/openrig-matrix-bridge` for state and `.venv` for the
-virtual environment — substitute accordingly.
+The launcher (`openrig-matrix-start`) obtains `MATRIX_ACCESS_TOKEN` from the
+secret manager before exec. On this host, `/usr/local/bin/bw-field` provides
+the token via Vaultwarden. A generic install must inject the token through
+whatever secret manager is in use — the runbook shows the wrapper path; adapt
+it to your credential source.
+
+The production venv has no `pip` binary. Use `uv pip install --python
+/opt/openrig-matrix/venv/bin/python` for all package operations.
+
+## 0 — Prepare rollback artifacts
+
+Before replacing the current install, build or retain a known 0.10.0 wheel so
+that rollback (step 9) does not depend on network access or the editable
+install still being present.
+
+```bash
+# If a 0.10.0 wheel already exists, save its path and hash:
+ROLLBACK_WHEEL="/root/openrig-matrix-rollback-7719795/openrig_matrix_bridge-0.10.0-py3-none-any.whl"
+sha256sum "$ROLLBACK_WHEEL"
+# Expected (current host): 6e5f353ec0be5ec2a65d754206c89bdf26f7a147a82019da4779da6d2a111a98
+
+# If no wheel exists, build one from the deployed source:
+cd /path/to/openrig-matrix-bridge-source
+git checkout v0.10.0  # or the deployed commit
+python -m build --wheel --outdir /root/openrig-matrix-rollback/
+sha256sum /root/openrig-matrix-rollback/openrig_matrix_bridge-0.10.0-py3-none-any.whl
+```
+
+Do not proceed until a verified 0.10.0 rollback wheel exists.
 
 ## 1 — Stop the running bridge
 
@@ -40,27 +66,15 @@ pgrep -af 'openrig-matrix-bridge'
 
 ## 2 — Record the installed version and source artifact
 
-`--version` prints only the Python package version, not a commit SHA. Use
-`pip show` and the installed wheel hash to identify the exact source artifact:
+`--version` prints only the Python package version, not a commit SHA.
 
 ```bash
-/opt/openrig-matrix/venv/bin/openrig-matrix-bridge --version
+openrig-matrix-bridge --version
 # Expected: 0.10.0
 
-/opt/openrig-matrix/venv/bin/pip show openrig-matrix-bridge
+uv pip show --python /opt/openrig-matrix/venv/bin/python openrig-matrix-bridge
 # Record Version and Location.
-
-# Record the installed wheel file hash for comparison with the release asset.
-WHEEL_PATH=$(/opt/openrig-matrix/venv/bin/pip show -f openrig-matrix-bridge \
-  | sed -n 's/^Location: //p')
-sha256sum "$WHEEL_PATH"/openrig_matrix_bridge-*.dist-info/RECORD 2>/dev/null \
-  || echo "editable install — no wheel RECORD"
 ```
-
-When verifying the 0.11.0 candidate (step 4), compare the installed wheel file
-hash with the release asset digest published alongside the candidate SHA.
-Record the expected source SHA separately in the evidence — `pip show` alone
-does not prove the exact candidate source.
 
 ## 3 — Back up state and config
 
@@ -68,7 +82,7 @@ Back up the state directory and config without exposing secrets. The backup
 must be restorable for rollback (step 9) and crypto-store recovery.
 
 ```bash
-STATE_DIR="/root/.local/share/openrig-matrix-bridge"
+STATE_DIR="/var/lib/openrig-matrix-bridge"
 CONFIG_PATH="/etc/openrig-matrix-bridge/config.yaml"
 BACKUP_DIR="/root/openrig-matrix-bridge-backup-$(date -u +%Y%m%dT%H%M%SZ)"
 
@@ -88,32 +102,43 @@ echo "Backup at: $BACKUP_DIR"
 
 ## 4 — Install the 0.11.0 candidate
 
-Install the exact wheel or sdist. Do not use an editable install for
-production.
+Download the exact release wheel. Hash the wheel file itself before installing
+so the evidence records the artifact that was actually deployed.
 
 ```bash
-# From the built wheel:
-/opt/openrig-matrix/venv/bin/pip install openrig_matrix_bridge-0.11.0-py3-none-any.whl
+WHEEL_PATH="/root/openrig_matrix_bridge-0.11.0-py3-none-any.whl"
+
+# Hash the exact wheel file and compare with the published release asset digest.
+sha256sum "$WHEEL_PATH"
+# Must match the digest published alongside the candidate SHA.
+
+# Install.
+uv pip install --python /opt/openrig-matrix/venv/bin/python "$WHEEL_PATH"
 
 # Confirm the installed version.
-/opt/openrig-matrix/venv/bin/openrig-matrix-bridge --version
+openrig-matrix-bridge --version
 # Expected: 0.11.0
 
-# Verify the installed artifact matches the release asset digest.
-sha256sum openrig_matrix_bridge-0.11.0-py3-none-any.whl
-# Compare with the published release asset checksum.
-
-/opt/openrig-matrix/venv/bin/pip show openrig-matrix-bridge
+uv pip show --python /opt/openrig-matrix/venv/bin/python openrig-matrix-bridge
 # Record Version and Location for evidence.
 ```
 
+Record the expected source SHA separately — the wheel hash proves artifact
+identity; the source SHA proves provenance. These are different things:
+`pip show` and `--version` alone do not prove the exact candidate source.
+
 ## 5 — Run doctor
 
+Inject the token from the secret manager and run doctor:
+
 ```bash
-MATRIX_ACCESS_TOKEN="$(sed -n 's/^MATRIX_ACCESS_TOKEN=//p' \
-  /etc/openrig-matrix-bridge/matrix.env)" \
-  /opt/openrig-matrix/venv/bin/openrig-matrix-bridge doctor \
-  --config /etc/openrig-matrix-bridge/config.yaml
+# Generic form — adapt to your secret manager:
+MATRIX_ACCESS_TOKEN="$(your-secret-manager-command)" \
+  openrig-matrix-bridge doctor --config /etc/openrig-matrix-bridge/config.yaml
+
+# On this host (Vaultwarden via bw-field):
+MATRIX_ACCESS_TOKEN="$(/usr/local/bin/bw-field matrix-bridge password)" \
+  openrig-matrix-bridge doctor --config /etc/openrig-matrix-bridge/config.yaml
 ```
 
 All checks must pass. Stop and investigate any failure before starting the
@@ -230,24 +255,23 @@ pgrep -af 'openrig-matrix-bridge'
 # Expected: no output.
 
 # 2. Move the current 0.11.0 state aside (do not delete yet).
-STATE_DIR="/root/.local/share/openrig-matrix-bridge"
+STATE_DIR="/var/lib/openrig-matrix-bridge"
 mv "$STATE_DIR" "${STATE_DIR}.0.11.0-aside"
 
 # 3. Restore the verified backup created in step 3.
 cp -a "$BACKUP_DIR/state" "$STATE_DIR"
 cp -a "$BACKUP_DIR/config.yaml" /etc/openrig-matrix-bridge/config.yaml
 
-# 4. Reinstall 0.10.0.
-/opt/openrig-matrix/venv/bin/pip install openrig_matrix_bridge-0.10.0-py3-none-any.whl
+# 4. Reinstall 0.10.0 from the rollback wheel prepared in step 0.
+ROLLBACK_WHEEL="/root/openrig-matrix-rollback-7719795/openrig_matrix_bridge-0.10.0-py3-none-any.whl"
+uv pip install --python /opt/openrig-matrix/venv/bin/python "$ROLLBACK_WHEEL"
 
-/opt/openrig-matrix/venv/bin/openrig-matrix-bridge --version
+openrig-matrix-bridge --version
 # Expected: 0.10.0
 
 # 5. Run doctor and start.
-MATRIX_ACCESS_TOKEN="$(sed -n 's/^MATRIX_ACCESS_TOKEN=//p' \
-  /etc/openrig-matrix-bridge/matrix.env)" \
-  /opt/openrig-matrix/venv/bin/openrig-matrix-bridge doctor \
-  --config /etc/openrig-matrix-bridge/config.yaml
+MATRIX_ACCESS_TOKEN="$(your-secret-manager-command)" \
+  openrig-matrix-bridge doctor --config /etc/openrig-matrix-bridge/config.yaml
 
 sudo systemctl start openrig-matrix-bridge.service
 sudo systemctl status openrig-matrix-bridge.service
@@ -270,10 +294,11 @@ Before handing off, the operator records:
 | Item | Value |
 |---|---|
 | Candidate SHA | |
-| Release asset wheel digest (sha256) | |
-| Installed wheel hash matches asset | |
+| Wheel file sha256 (hashed before install) | |
+| Published release asset digest matches | |
+| Expected source SHA | |
 | Installed version (`--version`) | |
-| `pip show` output (version, location) | |
+| `uv pip show` output (version, location) | |
 | Doctor result | |
 | 7a plain prompt: event IDs, qitem ID, state | |
 | 7b multi-line prompt: event IDs, qitem ID, state | |
@@ -283,6 +308,7 @@ Before handing off, the operator records:
 | 7f Element X thread: event IDs, thread root, qitem | |
 | Restart: post-restart prompt result | |
 | Single-instance check (one PID before and after) | |
+| Rollback wheel sha256 (prepared in step 0) | |
 
 No tokens, MXC URIs, bearer headers, homeserver URLs, credentials, or
 non-synthetic user IDs in recorded evidence.
