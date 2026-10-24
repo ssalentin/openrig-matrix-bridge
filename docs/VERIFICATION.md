@@ -98,14 +98,14 @@ preservation.
 ### Issue #11 restart-idempotency evidence
 
 The issue #11 source commit
-`b09f18cdb11b5a7a40285d6a98ebc7240f4602cc` passed:
+`5b70d345b6598f2ca50faf86216f6ba353166ead` passed:
 
 | Check | Exact command | Observed result |
 |---|---|---|
-| Full tests | `.venv/bin/python -m pytest -q` | 153 passed |
-| Focused restart tests | `.venv/bin/python -m pytest -q tests/test_restart_idempotency.py` | 17 passed |
+| Full tests | `.venv/bin/python -m pytest -q` | 154 passed |
+| Focused restart tests | `.venv/bin/python -m pytest -q tests/test_restart_idempotency.py` | 18 passed |
 | Python lint | `.venv/bin/ruff check .` | All checks passed |
-| Matrix integration | `.venv/bin/python tools/matrix_integration.py --timeout 60 --source-commit b09f18cdb11b5a7a40285d6a98ebc7240f4602cc` | `evidence_valid: true`, 19/19 checks in 55.4s |
+| Matrix integration | `.venv/bin/python tools/matrix_integration.py --timeout 60 --source-commit 5b70d345b6598f2ca50faf86216f6ba353166ead` | `evidence_valid: true`, 19/19 checks in 46.6s |
 
 The machine-readable result is
 [`issue-11-integration-report.json`](artifacts/issue-11-integration-report.json).
