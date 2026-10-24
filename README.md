@@ -38,6 +38,12 @@ because the bridge already delivers the prompt directly. The bridge claims the
 row when work starts and closes it after the Matrix answer is delivered, so
 Matrix requests are visible and prioritized without duplicate turns.
 
+Emoji reactions from the owner to messages sent by the bridge are also passed
+to the responsible agent as silent feedback, including the emoji and a preview
+of the referenced message. These feedback prompts do not create queue items or
+visible bot replies. Disable them with
+`openrig.reaction_feedback_enabled: false`.
+
 Visible Codex progress is mirrored into one Matrix status message per request.
 As new `commentary` messages arrive, the bridge edits that message in place
 instead of creating another thread reply. Hidden reasoning and raw tool output
@@ -72,6 +78,7 @@ represented per room. OpenRig can use one bot for any number of agents.
 - Replies are posted in a Matrix thread under the original prompt.
 - Per-agent FIFO: a second prompt waits until the current answer is complete.
 - Priority-aware durable qitems for incoming Matrix requests.
+- Silent feedback delivery when the owner reacts to an agent message.
 - No secrets in the repository or configuration file.
 - Systemd-ready, with persisted Matrix sync and E2EE state.
 

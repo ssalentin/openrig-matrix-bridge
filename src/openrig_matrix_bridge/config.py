@@ -56,6 +56,7 @@ class BridgeConfig:
     queue_inbound_messages: bool
     inbound_message_priority: str
     inbound_queue_source: str
+    reaction_feedback_enabled: bool
     mirror_commentary: bool
     poll_interval_seconds: float
     human_queue_poll_seconds: float
@@ -160,6 +161,9 @@ def load_config(path: str | Path) -> BridgeConfig:
     ).strip()
     if not inbound_queue_source:
         raise ConfigError("openrig.inbound_queue_source must not be empty")
+    reaction_feedback_enabled = bool(
+        transport.get("reaction_feedback_enabled", True)
+    )
     mirror_commentary = bool(transport.get("mirror_commentary", True))
     poll_interval = float(transport.get("poll_interval_seconds", 0.2))
     human_queue_poll = float(transport.get("human_queue_poll_seconds", 2.0))
@@ -195,6 +199,7 @@ def load_config(path: str | Path) -> BridgeConfig:
         queue_inbound_messages=queue_inbound_messages,
         inbound_message_priority=inbound_message_priority,
         inbound_queue_source=inbound_queue_source,
+        reaction_feedback_enabled=reaction_feedback_enabled,
         mirror_commentary=mirror_commentary,
         poll_interval_seconds=poll_interval,
         human_queue_poll_seconds=human_queue_poll,

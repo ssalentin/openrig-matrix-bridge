@@ -7,6 +7,7 @@ import pytest
 from nio import (
     ProfileSetAvatarResponse,
     RoomEncryptedImage,
+    RoomGetEventResponse,
     RoomSendResponse,
     UploadResponse,
 )
@@ -299,6 +300,117 @@ def test_poll_answer_delivery_uses_decision_brief_as_thread_root():
             "$brief",
         )
     ]
+    assert bridge.state.data["pending"]["advisor"] == []
+
+
+def test_reaction_to_bot_post_becomes_silent_feedback():
+    bridge = object.__new__(MatrixBridge)
+    agent = AgentConfig(
+        key="advisor",
+        display_name="Advisor",
+        session="advisor-lead@kernel",
+    )
+    bridge.config = SimpleNamespace(
+        reaction_feedback_enabled=True,
+        user_id="@bot:matrix.example.org",
+        allowed_users=("@owner:matrix.example.org",),
+        max_message_age_minutes=60,
+        agents={"advisor": agent},
+    )
+    bridge.room_agents = {"!advisor:matrix.example.org": "advisor"}
+    bridge.processed_events = set()
+    bridge.state = SimpleNamespace(
+        save=lambda: None,
+        data={"processed_events": []},
+    )
+
+    class Client:
+        async def room_get_event(self, room_id, event_id):
+            response = RoomGetEventResponse()
+            response.event = SimpleNamespace(
+                sender="@bot:matrix.example.org",
+                body="Die 32 Geister sind wieder da.",
+            )
+            return response
+
+    forwarded = []
+
+    async def enqueue_prompt(*args, **kwargs):
+        forwarded.append((args, kwargs))
+
+    bridge.client = Client()
+    bridge._enqueue_prompt = enqueue_prompt
+    room = SimpleNamespace(room_id="!advisor:matrix.example.org")
+    event = SimpleNamespace(
+        sender="@owner:matrix.example.org",
+        event_id="$reaction",
+        reacts_to="$bot-post",
+        key="❤️",
+        server_timestamp=int(time.time() * 1000),
+    )
+
+    asyncio.run(bridge._handle_reaction(room, event))
+
+    args, kwargs = forwarded[0]
+    assert args[5] == "reaction"
+    assert kwargs == {"suppress_reply": True, "queue_tracked": False}
+    assert "❤️" in args[4]
+    assert "Die 32 Geister sind wieder da." in args[4]
+
+
+def test_silent_feedback_does_not_post_agent_answer():
+    bridge = object.__new__(MatrixBridge)
+    agent = AgentConfig(
+        key="advisor",
+        display_name="Advisor",
+        session="advisor-lead@kernel",
+    )
+    bridge.locks = {"advisor": asyncio.Lock()}
+    bridge.state = SimpleNamespace(
+        save=lambda: None,
+        data={
+            "pending": {
+                "advisor": [
+                    {
+                        "event_id": "$reaction",
+                        "reply_to_event_id": "$bot-post",
+                        "answer_text": "Verstanden.",
+                        "started_at": time.time(),
+                        "session_id": "session",
+                        "transcript_path": "/tmp/transcript.jsonl",
+                        "offset": 0,
+                        "suppress_reply": True,
+                    }
+                ]
+            },
+            "rooms": {
+                "advisor": {
+                    "room_id": "!advisor:matrix.example.org",
+                }
+            },
+        },
+    )
+    sent = []
+    notices = []
+
+    async def send(room_id, text, reply_to=None):
+        sent.append((room_id, text, reply_to))
+        return RoomSendResponse("$answer", room_id)
+
+    async def finish_qitem(agent_arg, request):
+        return None
+
+    async def update_notice(agent_arg, room_id, waiting):
+        notices.append(waiting)
+
+    bridge._send = send
+    bridge._finish_inbound_qitem = finish_qitem
+    bridge._update_queue_notice = update_notice
+
+    asyncio.run(bridge._poll_agent(agent))
+
+    assert sent == []
+    assert notices == [0]
     assert bridge.state.data["pending"]["advisor"] == []
 
 

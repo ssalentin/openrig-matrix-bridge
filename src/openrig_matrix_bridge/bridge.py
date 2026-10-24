@@ -22,9 +22,11 @@ from nio import (
     KeyVerificationStart,
     MatrixRoom,
     ProfileSetAvatarResponse,
+    ReactionEvent,
     RoomCreateResponse,
     RoomEncryptedAudio,
     RoomEncryptedImage,
+    RoomGetEventResponse,
     RoomGetStateEventResponse,
     RoomMemberEvent,
     RoomMessageAudio,
@@ -204,6 +206,7 @@ class MatrixBridge:
             access_token=access_token,
         )
         self.client.add_event_callback(self._on_room_message, RoomMessageText)
+        self.client.add_event_callback(self._on_reaction, ReactionEvent)
         self.client.add_event_callback(self._on_audio, (RoomMessageAudio, RoomEncryptedAudio))
         self.client.add_event_callback(self._on_image, (RoomMessageImage, RoomEncryptedImage))
         self.client.add_event_callback(self._on_invite, InviteMemberEvent)
@@ -999,6 +1002,84 @@ class MatrixBridge:
         agent_key = self.room_agents.get(room_id)
         return self.config.agents.get(agent_key) if agent_key else None
 
+    async def _on_reaction(
+        self,
+        room: MatrixRoom,
+        event: ReactionEvent,
+    ) -> None:
+        try:
+            await self._handle_reaction(room, event)
+        except Exception:
+            LOGGER.exception("Matrix reaction processing failed")
+
+    async def _handle_reaction(
+        self,
+        room: MatrixRoom,
+        event: ReactionEvent,
+    ) -> None:
+        if not getattr(self.config, "reaction_feedback_enabled", True):
+            return
+        if event.sender == self.config.user_id:
+            return
+        agent = self._agent_for_room(room.room_id)
+        if agent is None:
+            return
+        if event.sender not in self.config.allowed_users:
+            return
+        if event.event_id in self.processed_events:
+            return
+        if self.config.max_message_age_minutes >= 0:
+            age_ms = int(time.time() * 1000) - int(event.server_timestamp)
+            if age_ms > self.config.max_message_age_minutes * 60_000:
+                return
+
+        self.processed_events.add(event.event_id)
+        self.state.data["processed_events"] = list(self.processed_events)[-2000:]
+        self.state.save()
+
+        target_text = ""
+        try:
+            response = await self.client.room_get_event(
+                room.room_id,
+                event.reacts_to,
+            )
+        except Exception:
+            LOGGER.warning(
+                "could not load Matrix reaction target %s",
+                event.reacts_to,
+                exc_info=True,
+            )
+            response = None
+        if isinstance(response, RoomGetEventResponse):
+            target = response.event
+            if getattr(target, "sender", None) != self.config.user_id:
+                return
+            target_text = str(getattr(target, "body", "") or "").strip()
+
+        preview = " ".join(target_text.split())
+        if len(preview) > 600:
+            preview = preview[:597] + "..."
+        feedback = (
+            f"Matrix-Reaktion von {event.sender}: {event.key}\n"
+            f"Reagiertes Event: {event.reacts_to}\n"
+            f"Bezugstext: {preview or '(nicht verfügbar)'}\n\n"
+            "Nimm diese Reaktion als stilles Feedback wahr. Wenn sie für "
+            "Erinnerungen, Vorlieben oder eine spätere Entscheidung relevant "
+            "ist, berücksichtige sie. Erzeuge dafür keine sichtbare "
+            "Matrix-Antwort."
+        )
+        await self._enqueue_prompt(
+            agent,
+            room,
+            event.event_id,
+            event.server_timestamp,
+            feedback,
+            "reaction",
+            event.reacts_to,
+            suppress_reply=True,
+            queue_tracked=False,
+        )
+
     async def _handle_room_message(self, room: MatrixRoom, event: RoomMessageText) -> None:
         if event.sender == self.config.user_id:
             return
@@ -1133,23 +1214,30 @@ class MatrixBridge:
         text: str,
         source_label: str | None = None,
         reply_to_event_id: str | None = None,
+        *,
+        suppress_reply: bool = False,
+        queue_tracked: bool = True,
     ) -> None:
         async with self.locks[agent.key]:
             pending = self.state.data["pending"].setdefault(agent.key, [])
             self.processed_events.add(event_id)
             self.state.data["processed_events"] = list(self.processed_events)[-2000:]
-            qitem_id = await self._create_inbound_qitem(
-                agent,
-                event_id=event_id,
-                text=text,
-                source_label=source_label or "message",
-            )
+            qitem_id = None
+            if queue_tracked:
+                qitem_id = await self._create_inbound_qitem(
+                    agent,
+                    event_id=event_id,
+                    text=text,
+                    source_label=source_label or "message",
+                )
             request = {
                 "id": uuid.uuid4().hex,
                 "event_id": event_id,
                 "reply_to_event_id": reply_to_event_id or event_id,
                 "source_label": source_label or "message",
                 "qitem_id": qitem_id,
+                "queue_tracked": queue_tracked,
+                "suppress_reply": suppress_reply,
                 "priority": getattr(
                     self.config,
                     "inbound_message_priority",
@@ -1471,8 +1559,9 @@ class MatrixBridge:
             request["started_at"] = time.time()
             await self._claim_inbound_qitem(agent, request)
             await self.gateway.send_prompt(ref, request["text"])
-            await self._set_typing(room_id, True)
-            await self._update_agent_status(agent, "busy", "arbeitet")
+            if not request.get("suppress_reply"):
+                await self._set_typing(room_id, True)
+                await self._update_agent_status(agent, "busy", "arbeitet")
         except (AgentSessionNotFound, GatewayError, OSError) as exc:
             LOGGER.exception("prompt failed for %s", agent.session)
             await self._fail_inbound_qitem(
@@ -1579,7 +1668,7 @@ class MatrixBridge:
                     return
                 sent_commentary = request.setdefault("sent_commentary", [])
                 sent_ids = set(sent_commentary)
-                if self.config.mirror_commentary:
+                if self.config.mirror_commentary and not request.get("suppress_reply"):
                     pending_commentary = [
                         message
                         for message in commentary_messages(records)
@@ -1623,6 +1712,18 @@ class MatrixBridge:
                 return
 
             room_id = self._room_for_agent(agent.key)
+            if request.get("suppress_reply"):
+                await self._finish_inbound_qitem(agent, request)
+                pending.pop(0)
+                self.state.save()
+                await self._update_queue_notice(
+                    agent,
+                    room_id,
+                    max(0, len(pending) - 1),
+                )
+                if pending:
+                    await self._start_request(agent, pending[0], room_id)
+                return
             response = await self._send(
                 room_id,
                 request["answer_text"],

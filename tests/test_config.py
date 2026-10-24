@@ -45,6 +45,7 @@ def test_loads_minimal_config(tmp_path: Path):
     assert config.queue_inbound_messages is True
     assert config.inbound_message_priority == "urgent"
     assert config.inbound_queue_source == "owner@external"
+    assert config.reaction_feedback_enabled is True
     assert config.mirror_commentary is True
     assert config.avatars.enabled is True
     assert config.avatars.replace_existing is False
