@@ -1,6 +1,7 @@
 from openrig_matrix_bridge.avatar_pool import (
     assign_unique_avatar_ids,
     avatar_png,
+    avatar_pool_fingerprint,
     avatar_pool_ids,
     profile_png,
 )
@@ -13,6 +14,7 @@ def test_ships_a_large_unique_avatar_pool():
     assert len(set(ids)) == 32
     assert all(avatar_png(avatar_id).startswith(b"\x89PNG") for avatar_id in ids)
     assert profile_png().startswith(b"\x89PNG")
+    assert len(avatar_pool_fingerprint()) == 64
 
 
 def test_preserves_valid_assignments_and_never_duplicates():

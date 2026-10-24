@@ -1,162 +1,162 @@
 [
   {
     "id": "openrig-01",
-    "style": "round",
+    "style": "hood",
     "color": "coral"
   },
   {
     "id": "openrig-02",
-    "style": "round",
+    "style": "hood",
     "color": "amber"
   },
   {
     "id": "openrig-03",
-    "style": "round",
+    "style": "hood",
     "color": "lime"
   },
   {
     "id": "openrig-04",
-    "style": "round",
+    "style": "hood",
     "color": "green"
   },
   {
     "id": "openrig-05",
-    "style": "round",
+    "style": "hood",
     "color": "teal"
   },
   {
     "id": "openrig-06",
-    "style": "round",
+    "style": "hood",
     "color": "sky"
   },
   {
     "id": "openrig-07",
-    "style": "round",
+    "style": "hood",
     "color": "blue"
   },
   {
     "id": "openrig-08",
-    "style": "round",
+    "style": "hood",
     "color": "violet"
   },
   {
     "id": "openrig-09",
-    "style": "visor",
+    "style": "soft",
     "color": "coral"
   },
   {
     "id": "openrig-10",
-    "style": "visor",
+    "style": "soft",
     "color": "amber"
   },
   {
     "id": "openrig-11",
-    "style": "visor",
+    "style": "soft",
     "color": "lime"
   },
   {
     "id": "openrig-12",
-    "style": "visor",
+    "style": "soft",
     "color": "green"
   },
   {
     "id": "openrig-13",
-    "style": "visor",
+    "style": "soft",
     "color": "teal"
   },
   {
     "id": "openrig-14",
-    "style": "visor",
+    "style": "soft",
     "color": "sky"
   },
   {
     "id": "openrig-15",
-    "style": "visor",
+    "style": "soft",
     "color": "blue"
   },
   {
     "id": "openrig-16",
-    "style": "visor",
+    "style": "soft",
     "color": "violet"
   },
   {
     "id": "openrig-17",
-    "style": "antenna",
+    "style": "tall",
     "color": "coral"
   },
   {
     "id": "openrig-18",
-    "style": "antenna",
+    "style": "tall",
     "color": "amber"
   },
   {
     "id": "openrig-19",
-    "style": "antenna",
+    "style": "tall",
     "color": "lime"
   },
   {
     "id": "openrig-20",
-    "style": "antenna",
+    "style": "tall",
     "color": "green"
   },
   {
     "id": "openrig-21",
-    "style": "antenna",
+    "style": "tall",
     "color": "teal"
   },
   {
     "id": "openrig-22",
-    "style": "antenna",
+    "style": "tall",
     "color": "sky"
   },
   {
     "id": "openrig-23",
-    "style": "antenna",
+    "style": "tall",
     "color": "blue"
   },
   {
     "id": "openrig-24",
-    "style": "antenna",
+    "style": "tall",
     "color": "violet"
   },
   {
     "id": "openrig-25",
-    "style": "wide",
+    "style": "block",
     "color": "coral"
   },
   {
     "id": "openrig-26",
-    "style": "wide",
+    "style": "block",
     "color": "amber"
   },
   {
     "id": "openrig-27",
-    "style": "wide",
+    "style": "block",
     "color": "lime"
   },
   {
     "id": "openrig-28",
-    "style": "wide",
+    "style": "block",
     "color": "green"
   },
   {
     "id": "openrig-29",
-    "style": "wide",
+    "style": "block",
     "color": "teal"
   },
   {
     "id": "openrig-30",
-    "style": "wide",
+    "style": "block",
     "color": "sky"
   },
   {
     "id": "openrig-31",
-    "style": "wide",
+    "style": "block",
     "color": "blue"
   },
   {
     "id": "openrig-32",
-    "style": "wide",
+    "style": "block",
     "color": "violet"
   },
   {

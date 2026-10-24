@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import re
 from importlib import resources
 
@@ -33,6 +34,16 @@ def profile_png() -> bytes:
         .joinpath("openrig-profile.png")
     )
     return asset.read_bytes()
+
+
+def avatar_pool_fingerprint() -> str:
+    digest = hashlib.sha256()
+    for avatar_id in avatar_pool_ids():
+        digest.update(avatar_id.encode("ascii"))
+        digest.update(avatar_png(avatar_id))
+    digest.update(b"openrig-profile")
+    digest.update(profile_png())
+    return digest.hexdigest()
 
 
 def assign_unique_avatar_ids(

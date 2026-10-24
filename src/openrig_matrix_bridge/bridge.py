@@ -42,6 +42,7 @@ from nio.crypto import decrypt_attachment
 from .avatar_pool import (
     assign_unique_avatar_ids,
     avatar_png,
+    avatar_pool_fingerprint,
     profile_png,
 )
 from .config import AgentConfig, BridgeConfig
@@ -119,6 +120,7 @@ class StateStore:
             "queue_notices": {},
             "queue_mirror": {"initialized": False, "seen": {}},
             "avatar_pool": {
+                "asset_fingerprint": None,
                 "assignments": {},
                 "uploads": {},
                 "profile_mxc": None,
@@ -706,8 +708,18 @@ class MatrixBridge:
             return
         avatar_state = self.state.data.setdefault(
             "avatar_pool",
-            {"assignments": {}, "uploads": {}, "profile_mxc": None},
+            {
+                "asset_fingerprint": None,
+                "assignments": {},
+                "uploads": {},
+                "profile_mxc": None,
+            },
         )
+        fingerprint = avatar_pool_fingerprint()
+        if avatar_state.get("asset_fingerprint") != fingerprint:
+            avatar_state["asset_fingerprint"] = fingerprint
+            avatar_state["uploads"] = {}
+            avatar_state["profile_mxc"] = None
         assignments = avatar_state.setdefault("assignments", {})
         uploads = avatar_state.setdefault("uploads", {})
         candidates: list[str] = []

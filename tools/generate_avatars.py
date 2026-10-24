@@ -19,16 +19,16 @@ COLORS = [
     ("violet", "#9b6dff", "#c8afff"),
 ]
 
-STYLES = ["round", "visor", "antenna", "wide"]
+STYLES = ["hood", "soft", "tall", "block"]
 
 
 def background(color: str, secondary: str) -> str:
     return f"""
   <defs>
-    <radialGradient id="bg" cx="28%" cy="20%" r="95%">
-      <stop offset="0" stop-color="#25324a"/>
+    <radialGradient id="bg" cx="26%" cy="18%" r="96%">
+      <stop offset="0" stop-color="#273752"/>
       <stop offset="0.58" stop-color="#151d2d"/>
-      <stop offset="1" stop-color="#090d16"/>
+      <stop offset="1" stop-color="#080c14"/>
     </radialGradient>
     <linearGradient id="body" x1="0" y1="0" x2="1" y2="1">
       <stop offset="0" stop-color="{secondary}"/>
@@ -36,128 +36,77 @@ def background(color: str, secondary: str) -> str:
     </linearGradient>
   </defs>
   <rect x="12" y="12" width="488" height="488" rx="124" fill="url(#bg)"/>
-  <circle cx="256" cy="256" r="188" fill="{color}" opacity="0.07"/>
-  <circle cx="92" cy="100" r="10" fill="{secondary}" opacity="0.45"/>
-  <circle cx="420" cy="118" r="7" fill="{color}" opacity="0.35"/>
-  <circle cx="88" cy="410" r="6" fill="{color}" opacity="0.3"/>"""
+  <circle cx="256" cy="272" r="190" fill="{color}" opacity="0.07"/>
+  <circle cx="92" cy="96" r="9" fill="{secondary}" opacity="0.5"/>
+  <circle cx="420" cy="112" r="7" fill="{color}" opacity="0.4"/>
+  <circle cx="88" cy="414" r="6" fill="{color}" opacity="0.32"/>"""
 
 
-def friendly(color: str) -> str:
-    return f"""
-  <g>
-    <rect x="104" y="132" width="304" height="272" rx="116" fill="url(#body)"/>
-    <rect x="74" y="224" width="48" height="104" rx="24" fill="{color}"/>
-    <rect x="390" y="224" width="48" height="104" rx="24" fill="{color}"/>
-    <ellipse cx="196" cy="243" rx="31" ry="37" fill="#111827"/>
-    <ellipse cx="316" cy="243" rx="31" ry="37" fill="#111827"/>
-    <circle cx="205" cy="230" r="9" fill="#ffffff" opacity="0.85"/>
-    <circle cx="325" cy="230" r="9" fill="#ffffff" opacity="0.85"/>
-    <path d="M216 322c24 22 56 22 80 0" fill="none" stroke="#111827" stroke-width="18" stroke-linecap="round"/>
-  </g>"""
-
-
-def visor(color: str, secondary: str) -> str:
-    return f"""
-  <g>
-    <rect x="88" y="142" width="336" height="248" rx="78" fill="url(#body)"/>
-    <path d="M112 196h288" stroke="#ffffff" stroke-width="10" stroke-linecap="round" opacity="0.22"/>
-    <rect x="140" y="218" width="232" height="86" rx="43" fill="#101827"/>
-    <circle cx="212" cy="261" r="18" fill="{secondary}"/>
-    <circle cx="300" cy="261" r="18" fill="{secondary}"/>
-    <path d="M204 348h104" stroke="#101827" stroke-width="16" stroke-linecap="round"/>
-  </g>"""
-
-
-def antenna(color: str, secondary: str) -> str:
-    return f"""
-  <g>
-    <rect x="246" y="88" width="20" height="54" rx="10" fill="{color}"/>
-    <circle cx="256" cy="78" r="26" fill="{secondary}"/>
-    <circle cx="256" cy="78" r="11" fill="#ffffff" opacity="0.85"/>
-    <rect x="116" y="136" width="280" height="280" rx="140" fill="url(#body)"/>
-    <path d="M186 242c18-18 46-18 64 0" fill="none" stroke="#111827" stroke-width="18" stroke-linecap="round"/>
-    <path d="M262 242c18-18 46-18 64 0" fill="none" stroke="#111827" stroke-width="18" stroke-linecap="round"/>
-    <circle cx="184" cy="314" r="22" fill="#ffffff" opacity="0.22"/>
-    <path d="M216 338c24 18 56 18 80 0" fill="none" stroke="#111827" stroke-width="16" stroke-linecap="round"/>
-  </g>"""
-
-
-def wide(color: str) -> str:
-    return f"""
-  <g>
-    <path d="M86 198c0-38 31-69 69-69h202c38 0 69 31 69 69v122c0 38-31 69-69 69H155c-38 0-69-31-69-69Z" fill="url(#body)"/>
-    <rect x="54" y="210" width="50" height="96" rx="22" fill="{color}"/>
-    <rect x="408" y="210" width="50" height="96" rx="22" fill="{color}"/>
-    <rect x="158" y="226" width="196" height="64" rx="32" fill="#111827"/>
-    <circle cx="212" cy="258" r="13" fill="#ffffff"/>
-    <circle cx="300" cy="258" r="13" fill="#ffffff"/>
-    <circle cx="256" cy="348" r="21" fill="#111827"/>
-    <circle cx="256" cy="348" r="7" fill="#ffffff" opacity="0.75"/>
-  </g>"""
-
-
-def render_style(style: str, color: str, secondary: str) -> str:
-    if style == "round":
-        return friendly(color)
-    if style == "visor":
-        return visor(color, secondary)
-    if style == "antenna":
-        return antenna(color, secondary)
-    return wide(color)
-
-
-def main() -> None:
-    SVG_DIR.mkdir(parents=True, exist_ok=True)
-    PNG_DIR.mkdir(parents=True, exist_ok=True)
-    manifest = []
-    index = 1
-    for style in STYLES:
-        for name, color, secondary in COLORS:
-            avatar_id = f"openrig-{index:02d}"
-            svg = (
-                '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">\n'
-                + background(color, secondary)
-                + render_style(style, color, secondary)
-                + "\n</svg>\n"
-            )
-            svg_path = SVG_DIR / f"{avatar_id}.svg"
-            png_path = PNG_DIR / f"{avatar_id}.png"
-            svg_path.write_text(svg, encoding="utf-8")
-            subprocess.run(
-                [
-                    "rsvg-convert",
-                    "-w",
-                    "512",
-                    "-h",
-                    "512",
-                    str(svg_path),
-                    "-o",
-                    str(png_path),
-                ],
-                check=True,
-            )
-            manifest.append(
-                {
-                    "id": avatar_id,
-                    "style": style,
-                    "color": name,
-                }
-            )
-            index += 1
-    profile_svg = (
-        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">\n'
-        + background("#38bdf8", "#8ddcff")
-        + """
-  <ellipse cx="256" cy="250" rx="202" ry="76" fill="none" stroke="#8ddcff"
-           stroke-width="10" opacity="0.55" transform="rotate(-18 256 250)"/>
-  <circle cx="423" cy="176" r="18" fill="#8ddcff"/>
-"""
-        + friendly("#38bdf8")
-        + "\n</svg>\n"
+def body(style: str) -> str:
+    if style == "hood":
+        return (
+            'M116 420V252c0-96 58-156 140-156s140 60 140 156v168Z'
+        )
+    if style == "soft":
+        return (
+            "M102 420V264C102 158 168 100 252 100c76 0 136 46 150 126 "
+            "5 29-3 58 1 91 3 25-13 49-39 55-19 4-37-3-55-3-23 0-40 13-63 13-28 0-50-14-76-14-27 0-47 12-68 12Z"
+        )
+    if style == "tall":
+        return (
+            "M128 424V218c0-76 54-132 128-132s128 56 128 132v206Z"
+        )
+    return (
+        "M104 424V248c0-94 64-154 152-154s152 60 152 154v176Z"
     )
-    svg_path = SVG_DIR / "openrig-profile.svg"
-    png_path = PNG_DIR / "openrig-profile.png"
-    svg_path.write_text(profile_svg, encoding="utf-8")
+
+
+def face(style: str) -> str:
+    if style == "hood":
+        return """
+    <rect x="190" y="236" width="34" height="58" rx="17" fill="#111827"/>
+    <rect x="288" y="236" width="34" height="58" rx="17" fill="#111827"/>
+    <path d="M218 338c23 20 53 20 76 0" fill="none" stroke="#111827"
+          stroke-width="17" stroke-linecap="round"/>"""
+    if style == "soft":
+        return """
+    <ellipse cx="207" cy="266" rx="31" ry="39" fill="#111827"/>
+    <ellipse cx="305" cy="266" rx="31" ry="39" fill="#111827"/>
+    <circle cx="216" cy="253" r="9" fill="#ffffff" opacity="0.9"/>
+    <circle cx="314" cy="253" r="9" fill="#ffffff" opacity="0.9"/>
+    <circle cx="166" cy="326" r="21" fill="#ffffff" opacity="0.15"/>
+    <path d="M220 350c22 18 50 18 72 0" fill="none" stroke="#111827"
+          stroke-width="16" stroke-linecap="round"/>"""
+    if style == "tall":
+        return """
+    <path d="M177 270c17-20 43-20 60 0" fill="none" stroke="#111827"
+          stroke-width="18" stroke-linecap="round"/>
+    <path d="M275 270c17-20 43-20 60 0" fill="none" stroke="#111827"
+          stroke-width="18" stroke-linecap="round"/>
+    <path d="M218 343c24 24 52 24 76 0" fill="none" stroke="#111827"
+          stroke-width="17" stroke-linecap="round"/>"""
+    return """
+    <rect x="174" y="248" width="66" height="26" rx="13" fill="#111827"/>
+    <rect x="272" y="248" width="66" height="26" rx="13" fill="#111827"/>
+    <circle cx="213" cy="261" r="8" fill="#ffffff" opacity="0.78"/>
+    <circle cx="279" cy="261" r="8" fill="#ffffff" opacity="0.78"/>
+    <path d="M222 340h68" fill="none" stroke="#111827"
+          stroke-width="17" stroke-linecap="round"/>"""
+
+
+def render_avatar(style: str, color: str, secondary: str) -> str:
+    return f"""
+  <path d="{body(style)}" fill="url(#body)"/>
+  <ellipse cx="210" cy="176" rx="72" ry="34" fill="#ffffff" opacity="0.12"
+           transform="rotate(-14 210 176)"/>
+  {face(style).strip()}
+  <circle cx="256" cy="392" r="8" fill="#ffffff" opacity="0.46"/>"""
+
+
+def write_avatar(avatar_id: str, svg: str) -> None:
+    svg_path = SVG_DIR / f"{avatar_id}.svg"
+    png_path = PNG_DIR / f"{avatar_id}.png"
+    svg_path.write_text(svg, encoding="utf-8")
     subprocess.run(
         [
             "rsvg-convert",
@@ -171,6 +120,44 @@ def main() -> None:
         ],
         check=True,
     )
+
+
+def main() -> None:
+    SVG_DIR.mkdir(parents=True, exist_ok=True)
+    PNG_DIR.mkdir(parents=True, exist_ok=True)
+    manifest = []
+    index = 1
+    for style in STYLES:
+        for name, color, secondary in COLORS:
+            avatar_id = f"openrig-{index:02d}"
+            svg = (
+                '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">\n'
+                + background(color, secondary)
+                + render_avatar(style, color, secondary)
+                + "\n</svg>\n"
+            )
+            write_avatar(avatar_id, svg)
+            manifest.append(
+                {
+                    "id": avatar_id,
+                    "style": style,
+                    "color": name,
+                }
+            )
+            index += 1
+
+    profile_svg = (
+        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">\n'
+        + background("#38bdf8", "#b6efff")
+        + """
+  <ellipse cx="256" cy="270" rx="210" ry="82" fill="none" stroke="#b6efff"
+           stroke-width="9" opacity="0.42" transform="rotate(-16 256 270)"/>
+  <circle cx="436" cy="190" r="18" fill="#b6efff"/>
+"""
+        + render_avatar("hood", "#38bdf8", "#b6efff")
+        + "\n</svg>\n"
+    )
+    write_avatar("openrig-profile", profile_svg)
     manifest.append(
         {
             "id": "openrig-profile",
