@@ -14,6 +14,24 @@ path whenever a manual or integration check is performed.
 | Manual | A person or documented harness performed the check in a named environment. The result and limitations must be recorded in an artifact. |
 | Unverified | The repository does not currently prove the claim. It must not appear as a launch promise. |
 
+## Matrix client compatibility
+
+These rows keep three different claims separate: automated Matrix protocol
+behavior, owner-observed client behavior, and real device trust.
+
+| Scenario | Evidence level | Result | Remaining limit |
+|---|---|---|---|
+| Encrypted rooms, messages and thread relations | Automated integration | Disposable Synapse and a real `matrix-nio` client completed the committed protocol checks. | Does not prove Element rendering or JavaScript-client behavior. |
+| Element X threaded replies | Manual, owner-observed | The owner manually exercised Element X threaded replies successfully on 2026-10-24. | No screenshot is available, Element X version/device details are not recorded, and this is not screenshot-backed evidence. |
+| Nested thread-reply prompts | Automated regression gate | Tracked separately by issue #16. | The earlier owner observation does not cover a prompt that is itself already a thread reply. |
+| Element device SAS and removed unverified-device warnings | Manual, unverified | Pending issue #1. | A synthetic protocol client or mock must not be presented as owner-device trust. |
+| Element Web SAS | Manual, unverified | Pending issue #1. | Must be run against a real client session before claiming success. |
+
+The owner observation means only that the exercised Element X reply flow
+rendered and behaved correctly in that session. It does not establish SAS,
+cross-signing, warning removal, federation, or compatibility for every Element X
+version.
+
 ## Provenance
 
 The clean combined source under test is
@@ -137,6 +155,7 @@ Keep these rows open until evidence is actually committed:
 | Reaction feedback | Owner reaction reaches the agent but produces no visible bot answer. | Pass with fake transport on disposable Synapse |
 | Restart/recovery | Accepted state and room mapping survive restart; active queue behavior is reported honestly. | Pass on disposable Synapse; report |
 | Device SAS verification | Real Element device completes emoji comparison and `ja`. | Manual evidence; otherwise remains issue #1 |
+| Element X threaded reply | Owner observes the prompt and bridge answer in the same thread. | Manual owner report on 2026-10-24; screenshot pending; matrix protocol behavior covered separately |
 
 ## Unsupported or unverified claims
 
