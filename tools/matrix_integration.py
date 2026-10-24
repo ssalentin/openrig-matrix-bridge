@@ -293,11 +293,20 @@ class MatrixOwner:
             await asyncio.sleep(0.1)
         raise CheckFailure(f"timed out waiting for {description}")
 
-    async def send_text(self, room_id: str, body: str) -> str:
+    async def send_text(
+        self,
+        room_id: str,
+        body: str,
+        *,
+        relates_to: dict[str, Any] | None = None,
+    ) -> str:
+        content: dict[str, Any] = {"msgtype": "m.text", "body": body}
+        if relates_to:
+            content["m.relates_to"] = relates_to
         response = await self.client.room_send(
             room_id,
             "m.room.message",
-            {"msgtype": "m.text", "body": body},
+            content,
             ignore_unverified_devices=True,
         )
         if not isinstance(response, RoomSendResponse):
@@ -820,6 +829,131 @@ class IntegrationRun:
             ),
         )
 
+    async def check_threaded_reply(self, room_id: str) -> None:
+        assert self.owner is not None
+        owner = self.owner
+        root_event_id = await owner.send_text(room_id, "thread root request")
+        await owner.sync_until(
+            lambda: any(
+                message["sender"] == BRIDGE_USER
+                and "Fake integration answer: thread root request"
+                in str(message["body"])
+                for message in owner.messages
+            ),
+            self.args.timeout,
+            description="thread root answer",
+        )
+
+        before = len(owner.messages)
+        prompt = "hold first threaded restart request"
+        threaded_event_id = await owner.send_text(
+            room_id,
+            prompt,
+            relates_to={
+                "rel_type": "m.thread",
+                "event_id": root_event_id,
+                "is_falling_back": True,
+                "m.in_reply_to": {"event_id": root_event_id},
+            },
+        )
+
+        def prompt_started(value: dict[str, Any]) -> bool:
+            pending = value.get("pending", {}).get(AGENT_KEY, [])
+            return bool(
+                pending
+                and pending[0].get("event_id") == threaded_event_id
+                and pending[0].get("started_at")
+                and pending[0].get("thread_root_event_id") == root_event_id
+            )
+
+        wait_for_json_state(self.state_dir / "state.json", prompt_started, self.args.timeout)
+        await owner.sync_until(
+            lambda: any(
+                item["prompt"].startswith("hold first threaded restart request")
+                for item in json.loads(
+                    (self.fake_state / "fake-openrig.json").read_text()
+                )["prompts"]
+            ),
+            self.args.timeout,
+            description="threaded prompt at fake transport",
+        )
+        self.stop_bridge()
+        self.start_bridge()
+
+        await owner.sync_until(
+            lambda: any(
+                message["sender"] == BRIDGE_USER
+                and "Fake transport received: hold first threaded restart request"
+                in str(message["body"])
+                for message in owner.messages[before:]
+            )
+            and any(
+                message["sender"] == BRIDGE_USER
+                and "Fake integration answer: hold first threaded restart request"
+                in str(message["body"])
+                for message in owner.messages[before:]
+            ),
+            self.args.timeout,
+            description="threaded commentary and final answer after restart",
+        )
+        wait_for_json_state(
+            self.state_dir / "state.json",
+            lambda value: not value.get("pending", {}).get(AGENT_KEY),
+            self.args.timeout,
+        )
+        await asyncio.sleep(0.5)
+        await owner.sync_once()
+
+        threaded_messages = [
+            message
+            for message in owner.messages[before:]
+            if message["sender"] == BRIDGE_USER
+            and (
+                "Fake transport received: hold first threaded restart request"
+                in str(message["body"])
+                or "Fake integration answer: hold first threaded restart request"
+                in str(message["body"])
+            )
+        ]
+        if len(threaded_messages) != 2:
+            raise CheckFailure(
+                "threaded prompt did not produce exactly one commentary and one final answer"
+            )
+        for message in threaded_messages:
+            validate_answer_relation(
+                await owner.raw_event(room_id, message["event_id"]),
+                root_event_id,
+            )
+
+        fake = json.loads((self.fake_state / "fake-openrig.json").read_text())
+        prompt_records = [
+            item
+            for item in fake["prompts"]
+            if item["prompt"].startswith("hold first threaded restart request")
+        ]
+        if len(prompt_records) != 1:
+            raise CheckFailure("threaded prompt was delivered more than once across restart")
+        qitems = [
+            item
+            for item in fake["queue"].values()
+            if "hold first threaded restart request" in str(item.get("body") or "")
+        ]
+        if len(qitems) != 1:
+            raise CheckFailure("threaded prompt did not create exactly one qitem")
+        validate_qitem_history(qitems[0])
+        if qitems[0]["state"] != "done":
+            raise CheckFailure(f"threaded qitem did not close: {qitems[0]}")
+        self.record(
+            "threaded-prompt-restart",
+            "pass",
+            (
+                "An encrypted owner prompt already in m.thread survived a bridge "
+                "restart while the fake seat was busy. Commentary and final answer "
+                "were each delivered once under the canonical thread root, and the "
+                "single Matrix qitem completed pending -> in-progress -> done."
+            ),
+        )
+
     async def check_fifo(self, room_id: str) -> None:
         assert self.owner is not None
         owner = self.owner
@@ -1238,6 +1372,7 @@ class IntegrationRun:
         room_id = await self.join_agent_room()
         await self.check_room(room_id)
         await self.check_chat_and_queue(room_id)
+        await self.check_threaded_reply(room_id)
         await self.check_fifo(room_id)
         await self.check_reaction(room_id)
         await self.check_images(room_id)
