@@ -113,6 +113,11 @@ def print_json(value: Any) -> None:
     print(json.dumps(value, sort_keys=True))
 
 
+def response_copy(variable: str, default: str, prompt: str) -> str:
+    template = os.environ.get(variable, default)
+    return template.replace("{prompt}", prompt)
+
+
 def option(args: list[str], name: str) -> str | None:
     try:
         return args[args.index(name) + 1]
@@ -127,7 +132,15 @@ def complete_prompt(root: Path, prompt: str, prompt_id: str) -> None:
         else float(os.environ.get("OPENRIG_FAKE_RESPONSE_DELAY", "1.2"))
     )
     time.sleep(delay)
-    append_transcript(root, "commentary", f"Fake transport received: {prompt[:80]}")
+    append_transcript(
+        root,
+        "commentary",
+        response_copy(
+            "OPENRIG_FAKE_COMMENTARY",
+            "Fake transport received: {prompt}",
+            prompt[:80],
+        ),
+    )
     time.sleep(0.15)
 
     def ready(state: dict[str, Any]) -> None:
@@ -138,7 +151,11 @@ def complete_prompt(root: Path, prompt: str, prompt_id: str) -> None:
                 break
 
     update_state(root, ready)
-    answer = f"Fake integration answer: {prompt[:120]}"
+    answer = response_copy(
+        "OPENRIG_FAKE_ANSWER",
+        "Fake integration answer: {prompt}",
+        prompt[:120],
+    )
     append_transcript(root, "final_answer", answer)
 
 
