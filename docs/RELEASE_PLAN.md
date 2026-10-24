@@ -73,6 +73,36 @@ No implementation work may be folded into another issue's review boundary.
 Feature branches start from the release base, remain independently reviewable,
 and are integrated into `release/0.11.0` only after their focused tests pass.
 
+## Current integration checkpoint
+
+Integrated and independently accepted:
+
+- #9 at `87191ca`: documentation and release evidence gates.
+- #13 at `0833dfd`: endpoint and agent-path safety.
+- #7 at `c9afde5`: honest Element X manual-evidence boundary.
+- #16 at `ab92bd0`: canonical thread delivery and bounded delivery failures.
+- #5 at `75cc8bd`: crash-safe voice-note status editing and Matrix edit proof.
+- #3 at source `fe6f127`, evidence `81a4416`: encrypted arbitrary attachments,
+  audio classification, private admitted snapshots, restart recovery, and
+  canonical threaded file delivery.
+- #1 state-machine slice at source `539f8b9`, evidence `6c81780`: persisted
+  verification state, interruption notices, timeout handling, late-reply
+  protection, and bounded retention. Real-device SAS/cross-signing remains open.
+
+The combined release branch passes its unit, lint, documentation, and 18-check
+Matrix integration gates after resolving the voice/attachment callback overlap.
+
+Outstanding before release:
+
+- #4's steering-contract decision and implementation;
+- #11/#12 restart and qitem-lifecycle hardening;
+- #20 accessible setup documentation;
+- #22 owner naming disposition;
+- #23 owner symbol selection;
+- #24/#25 queue and activity presentation;
+- #1 real-client trust evidence or an explicit owner disposition;
+- final version, release notes, artifacts, and same-SHA QA/review.
+
 ## Work breakdown
 
 | Issue | Branch | Primary ownership | Principal files | Dependencies |
