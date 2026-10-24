@@ -36,7 +36,12 @@ dev = [
 where = ["src"]
 
 [tool.setuptools.package-data]
-openrig_matrix_bridge = ["assets/avatars/*.png", "assets/avatars/manifest.json"]
+openrig_matrix_bridge = [
+  "assets/avatars/*.png",
+  "assets/avatars/manifest.json",
+  "assets/branding/source/*.svg",
+  "assets/branding/export/*.png",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
