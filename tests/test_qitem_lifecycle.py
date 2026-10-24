@@ -112,6 +112,75 @@ def test_claim_failure_keeps_request_retryable():
     assert len(bridge.sent) == 1
 
 
+def test_claim_command_error_retries_after_restart():
+    bridge, agent = bridge_fixture()
+    request = {
+        "id": "request-one",
+        "event_id": "$prompt",
+        "reply_to_event_id": "$prompt",
+        "qitem_id": "qitem-one",
+        "qitem_phase": "pending",
+        "prompt_phase": "pending",
+        "text": "do work",
+        "started_at": None,
+    }
+    bridge.state.data["pending"]["advisor"] = [request]
+    transcript = SimpleNamespace(stat=lambda: SimpleNamespace(st_size=0))
+
+    class Resolver:
+        def resolve(self, session):
+            return SimpleNamespace(
+                session_id="session-one",
+                transcript_path=transcript,
+                busy=False,
+            )
+
+    class FailedGateway:
+        async def queue_claim(self, qitem_id, session):
+            raise GatewayError("claim command failed")
+
+    bridge.resolver = Resolver()
+    bridge.gateway = FailedGateway()
+    bridge.typing_tasks = {}
+
+    async def noop(*args, **kwargs):
+        return None
+
+    bridge._set_typing = noop
+    bridge._update_agent_status = noop
+    asyncio.run(
+        MatrixBridge._start_request(
+            bridge,
+            agent,
+            request,
+            "!advisor:example.org",
+        )
+    )
+    assert request["qitem_phase"] == "claiming"
+
+    prompts = []
+
+    class RecoveredGateway:
+        async def queue_show(self, qitem_id):
+            return {
+                "state": "in-progress",
+                "waiting": {"owner": agent.session},
+            }
+
+        async def queue_claim(self, qitem_id, session):
+            raise AssertionError("recovered claim was repeated")
+
+        async def send_prompt(self, ref, text):
+            prompts.append(text)
+
+    bridge.gateway = RecoveredGateway()
+    asyncio.run(bridge._reconcile_pending_operations())
+
+    assert prompts == ["do work"]
+    assert request["qitem_phase"] == "claimed"
+    assert request["prompt_phase"] == "sent"
+
+
 def test_prompt_failure_retains_request_when_qitem_fail_also_fails():
     bridge, agent = bridge_fixture()
     request = {
@@ -191,6 +260,45 @@ def test_timeout_retains_request_when_qitem_fail_also_fails():
     assert bridge.state.data["pending"]["advisor"] == [request]
     assert request["qitem_phase"] == "failing"
     assert request["answer_phase"] == "failed"
+
+
+def test_terminal_qitem_notice_failure_is_retried_with_stable_tx():
+    bridge, _agent = bridge_fixture()
+    request = {
+        "id": "request-one",
+        "event_id": "$prompt",
+        "reply_to_event_id": "$prompt",
+        "qitem_id": "qitem-one",
+        "qitem_phase": "failed",
+        "prompt_phase": "pending",
+        "text": "do work",
+    }
+    bridge.state.data["pending"]["advisor"] = [request]
+    attempts = []
+    fail_notice = {"value": True}
+
+    async def send(room_id, text, reply_to=None, **kwargs):
+        attempts.append(kwargs["tx_id"])
+        if fail_notice["value"]:
+            return SimpleNamespace(error="M_UNKNOWN")
+        return RoomSendResponse("$terminal-notice", room_id)
+
+    bridge._send = send
+
+    asyncio.run(bridge._reconcile_pending_operations())
+
+    assert bridge.state.data["pending"]["advisor"] == [request]
+    assert request.get("failure_notice_event_id") is None
+
+    fail_notice["value"] = False
+    asyncio.run(bridge._reconcile_pending_operations())
+
+    assert attempts == [
+        "failure-request-one",
+        "failure-request-one",
+    ]
+    assert request["failure_notice_event_id"] == "$terminal-notice"
+    assert bridge.state.data["pending"]["advisor"] == []
 
 
 def test_finish_failure_remains_pending_for_reconciliation():

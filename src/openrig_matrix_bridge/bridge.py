@@ -1838,6 +1838,18 @@ class MatrixBridge:
                             self._room_for_agent(agent.key),
                         )
                     continue
+                if request.get("qitem_phase") in {
+                    "done",
+                    "failed",
+                    "canceled",
+                    "denied",
+                }:
+                    await self._abandon_terminal_qitem(
+                        agent,
+                        request,
+                        self._room_for_agent(agent.key),
+                    )
+                    continue
                 if (
                     request.get("prompt_phase") is None
                     and request.get("started_at") is not None
@@ -1956,6 +1968,9 @@ class MatrixBridge:
         )
         if isinstance(response, RoomSendResponse):
             request["failure_notice_event_id"] = response.event_id
+        else:
+            self.state.save()
+            return
         pending = self.state.data["pending"][agent.key]
         if pending and pending[0].get("id") == request.get("id"):
             pending.pop(0)
