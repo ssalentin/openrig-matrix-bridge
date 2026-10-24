@@ -74,28 +74,7 @@ command above.
 Check every relative Markdown link from the repository root:
 
 ```bash
-python3 - <<'PY'
-from pathlib import Path
-import re
-from urllib.parse import unquote, urlsplit
-
-root = Path.cwd()
-files = [root / "README.md", *sorted((root / "docs").rglob("*.md"))]
-missing = []
-for path in files:
-    for target in re.findall(r"(?<!!)\[[^]]*\]\(([^)]+)\)", path.read_text()):
-        target = target.strip().strip("<>")
-        parts = urlsplit(target)
-        if parts.scheme or target.startswith("#"):
-            continue
-        candidate = (path.parent / unquote(parts.path)).resolve()
-        if not candidate.exists():
-            missing.append(f"{path.relative_to(root)}: {target}")
-print(f"checked={len(files)} missing={len(missing)}")
-for item in missing:
-    print(f"MISSING {item}")
-raise SystemExit(bool(missing))
-PY
+python3 tools/check_markdown_links.py
 ```
 
 Check Markdown structure with the repository's narrow lint policy:
