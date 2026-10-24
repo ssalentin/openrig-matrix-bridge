@@ -22,6 +22,8 @@ product claims, see [Verification and evidence](docs/VERIFICATION.md) and
 - A refreshed Matrix typing indicator while an answer is in progress.
 - FIFO prompts per agent, with a single editable pinned queue card.
 - Encrypted text, images, voice notes, decisions, and polls in encrypted rooms.
+- Canonical thread delivery for top-level prompts and prompts that are already
+  thread replies, with bounded commentary/final-delivery failure handling.
 - Local NVIDIA Parakeet transcription; audio is not sent to a transcription
   service.
 - Silent agent feedback when the owner reacts to a bridge-authored message.

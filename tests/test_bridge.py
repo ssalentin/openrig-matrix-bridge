@@ -668,6 +668,153 @@ def test_poll_delivers_commentary_then_final_answer(tmp_path):
     assert bridge.state.data["pending"]["advisor"] == []
 
 
+@pytest.mark.parametrize(
+    ("content", "expected_relation"),
+    [
+        (
+            {"msgtype": "m.text", "body": "top level"},
+            None,
+        ),
+        (
+            {
+                "msgtype": "m.text",
+                "body": "thread reply",
+                "m.relates_to": {
+                    "rel_type": "m.thread",
+                    "event_id": "$root",
+                    "m.in_reply_to": {"event_id": "$parent"},
+                },
+            },
+            {
+                "rel_type": "m.thread",
+                "event_id": "$root",
+                "m.in_reply_to": {"event_id": "$parent"},
+            },
+        ),
+        (
+            {
+                "msgtype": "m.text",
+                "body": "rich reply",
+                "m.relates_to": {
+                    "m.in_reply_to": {"event_id": "$parent"},
+                },
+            },
+            {
+                "m.in_reply_to": {"event_id": "$parent"},
+            },
+        ),
+    ],
+)
+def test_room_message_preserves_source_relation_for_reply_resolution(
+    content,
+    expected_relation,
+):
+    agent = AgentConfig(
+        key="advisor",
+        display_name="Advisor",
+        session="advisor-lead@kernel",
+    )
+    bridge = object.__new__(MatrixBridge)
+    bridge.config = SimpleNamespace(
+        user_id="@openrig:matrix.example.org",
+        allowed_users=("@owner:matrix.example.org",),
+        max_message_age_minutes=-1,
+        agents={"advisor": agent},
+    )
+    bridge.room_agents = {"!advisor:matrix.example.org": "advisor"}
+    bridge.processed_events = set()
+    captured = {}
+
+    async def enqueue(*args, **kwargs):
+        captured["args"] = args
+        captured["kwargs"] = kwargs
+
+    async def verification(*args):
+        return False
+
+    bridge._enqueue_prompt = enqueue
+    bridge._handle_verification_reply = verification
+    event = SimpleNamespace(
+        event_id="$prompt",
+        sender="@owner:matrix.example.org",
+        server_timestamp=1_700_000_000_000,
+        body=content["body"],
+        source={"content": content},
+    )
+    room = SimpleNamespace(room_id="!advisor:matrix.example.org")
+
+    asyncio.run(bridge._handle_room_message(room, event))
+
+    assert captured["kwargs"]["relates_to"] == expected_relation
+
+
+@pytest.mark.parametrize(
+    ("relates_to", "thread_root", "reply_to"),
+    [
+        (None, "$prompt", "$prompt"),
+        (
+            {
+                "rel_type": "m.thread",
+                "event_id": "$root",
+                "m.in_reply_to": {"event_id": "$parent"},
+            },
+            "$root",
+            "$root",
+        ),
+        (
+            {"m.in_reply_to": {"event_id": "$parent"}},
+            None,
+            "$prompt",
+        ),
+    ],
+)
+def test_enqueue_prompt_stores_canonical_delivery_target(
+    relates_to,
+    thread_root,
+    reply_to,
+):
+    agent = AgentConfig(
+        key="advisor",
+        display_name="Advisor",
+        session="advisor-lead@kernel",
+    )
+    bridge = object.__new__(MatrixBridge)
+    bridge.config = SimpleNamespace(inbound_message_priority="urgent")
+    bridge.locks = {"advisor": asyncio.Lock()}
+    bridge.processed_events = set()
+    bridge.state = SimpleNamespace(
+        save=lambda: None,
+        data={"pending": {}, "processed_events": []},
+    )
+
+    async def create_qitem(*args, **kwargs):
+        return "$qitem"
+
+    async def start_request(*args, **kwargs):
+        return None
+
+    bridge._create_inbound_qitem = create_qitem
+    bridge._start_request = start_request
+    room = SimpleNamespace(room_id="!advisor:matrix.example.org")
+
+    asyncio.run(
+        bridge._enqueue_prompt(
+            agent,
+            room,
+            "$prompt",
+            1_700_000_000_000,
+            "request",
+            relates_to=relates_to,
+        )
+    )
+
+    request = bridge.state.data["pending"]["advisor"][0]
+    assert request["thread_root_event_id"] == thread_root
+    assert request["reply_to_event_id"] == reply_to
+    assert request["source_event_ids"] == ["$prompt"]
+    assert request["source_relation"] == relates_to
+
+
 def test_failed_commentary_delivery_does_not_skip_transcript(tmp_path):
     transcript = tmp_path / "rollout.jsonl"
     transcript.write_text(
@@ -725,6 +872,185 @@ def test_failed_commentary_delivery_does_not_skip_transcript(tmp_path):
 
     assert request["offset"] == 0
     assert request.get("sent_commentary") == []
+
+
+def test_persistent_commentary_failure_falls_through_to_final_answer(tmp_path):
+    transcript = tmp_path / "rollout.jsonl"
+    transcript.write_text(
+        "".join(
+            json.dumps(
+                {
+                    "type": "event_msg",
+                    "payload": {
+                        "type": "item_completed",
+                        "item": {
+                            "type": "AgentMessage",
+                            "id": item_id,
+                            "phase": phase,
+                            "content": [{"type": "Text", "text": text}],
+                        },
+                    },
+                }
+            )
+            + "\n"
+            for item_id, phase, text in [
+                ("comment-1", "commentary", "Ich prüfe das."),
+                ("final-1", "final_answer", "Fertig."),
+            ]
+        ),
+        encoding="utf-8",
+    )
+    agent = AgentConfig(
+        key="advisor",
+        display_name="Advisor",
+        session="advisor-lead@kernel",
+    )
+    request = {
+        "event_id": "$prompt",
+        "thread_root_event_id": "$prompt",
+        "reply_to_event_id": "$prompt",
+        "answer_text": None,
+        "started_at": time.time(),
+        "session_id": "session",
+        "transcript_path": str(transcript),
+        "offset": 0,
+    }
+    bridge = object.__new__(MatrixBridge)
+    bridge.config = SimpleNamespace(
+        mirror_commentary=True,
+        response_timeout_minutes=30,
+    )
+    bridge.locks = {"advisor": asyncio.Lock()}
+    bridge.state = SimpleNamespace(
+        save=lambda: None,
+        data={
+            "pending": {"advisor": [request]},
+            "rooms": {"advisor": {"room_id": "!advisor:matrix.example.org"}},
+        },
+    )
+    sent = []
+    finished = []
+
+    async def send(room_id, text, reply_to=None, **kwargs):
+        if text == "Ich prüfe das.":
+            return SimpleNamespace(status_code="M_UNKNOWN")
+        sent.append((text, reply_to, kwargs))
+        return RoomSendResponse("$answer", room_id)
+
+    async def finish_qitem(agent_arg, request_arg):
+        finished.append(request_arg["event_id"])
+
+    async def noop(*args, **kwargs):
+        return None
+
+    bridge._send = send
+    bridge._finish_inbound_qitem = finish_qitem
+    bridge._set_typing = noop
+    bridge._update_agent_status = noop
+    bridge._update_queue_notice = noop
+
+    for _attempt in range(5):
+        if not bridge.state.data["pending"]["advisor"]:
+            break
+        asyncio.run(bridge._poll_agent(agent))
+
+    assert sent == [("Fertig.", "$prompt", {"thread_root": "$prompt"})]
+    assert finished == ["$prompt"]
+    assert bridge.state.data["pending"]["advisor"] == []
+    assert request["commentary_failure_count"] == 3
+    assert request["commentary_skipped"] is True
+
+
+def test_persistent_final_delivery_failure_fails_qitem_and_advances(tmp_path):
+    transcript = tmp_path / "rollout.jsonl"
+    transcript.write_text(
+        json.dumps(
+            {
+                "type": "event_msg",
+                "payload": {
+                    "type": "item_completed",
+                    "item": {
+                        "type": "AgentMessage",
+                        "id": "final-1",
+                        "phase": "final_answer",
+                        "content": [{"type": "Text", "text": "Fertig."}],
+                    },
+                },
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    agent = AgentConfig(
+        key="advisor",
+        display_name="Advisor",
+        session="advisor-lead@kernel",
+    )
+    first = {
+        "event_id": "$first",
+        "thread_root_event_id": "$root",
+        "reply_to_event_id": "$root",
+        "answer_text": None,
+        "started_at": time.time(),
+        "session_id": "session",
+        "transcript_path": str(transcript),
+        "offset": 0,
+    }
+    second = {
+        "event_id": "$second",
+        "started_at": None,
+    }
+    bridge = object.__new__(MatrixBridge)
+    bridge.config = SimpleNamespace(
+        mirror_commentary=False,
+        response_timeout_minutes=30,
+    )
+    bridge.locks = {"advisor": asyncio.Lock()}
+    bridge.state = SimpleNamespace(
+        save=lambda: None,
+        data={
+            "pending": {"advisor": [first, second]},
+            "rooms": {"advisor": {"room_id": "!advisor:matrix.example.org"}},
+        },
+    )
+    failed = []
+    started = []
+
+    async def send(*args, **kwargs):
+        return SimpleNamespace(status_code="M_UNKNOWN")
+
+    async def fail_qitem(agent_arg, request_arg, reason):
+        failed.append((request_arg["event_id"], reason))
+
+    async def start_request(agent_arg, request_arg, room_id):
+        started.append(request_arg["event_id"])
+
+    async def noop(*args, **kwargs):
+        return None
+
+    bridge._send = send
+    bridge._fail_inbound_qitem = fail_qitem
+    bridge._start_request = start_request
+    bridge._set_typing = noop
+    bridge._update_agent_status = noop
+    bridge._update_queue_notice = noop
+
+    for _attempt in range(5):
+        if first not in bridge.state.data["pending"]["advisor"]:
+            break
+        asyncio.run(bridge._poll_agent(agent))
+
+    assert failed == [
+        (
+            "$first",
+            "Matrix answer delivery failed after 3 attempts",
+        )
+    ]
+    assert started == ["$second"]
+    assert [
+        request["event_id"] for request in bridge.state.data["pending"]["advisor"]
+    ] == ["$second"]
+    assert first["delivery_failure_count"] == 3
 
 
 def test_commentary_updates_one_status_message_instead_of_reply_spam(tmp_path):
@@ -829,6 +1155,135 @@ def test_send_adds_matrix_formatted_body_for_markdown_table():
     assert content["format"] == "org.matrix.custom.html"
     assert "<table>" in content["formatted_body"]
     assert content["m.relates_to"]["event_id"] == "$prompt"
+
+
+@pytest.mark.parametrize(
+    ("reply_to", "thread_root", "expected"),
+    [
+        (
+            "$prompt",
+            "$prompt",
+            {
+                "rel_type": "m.thread",
+                "event_id": "$prompt",
+                "is_falling_back": True,
+                "m.in_reply_to": {"event_id": "$prompt"},
+            },
+        ),
+        (
+            "$root",
+            "$root",
+            {
+                "rel_type": "m.thread",
+                "event_id": "$root",
+                "is_falling_back": True,
+                "m.in_reply_to": {"event_id": "$root"},
+            },
+        ),
+        (
+            "$prompt",
+            None,
+            {"m.in_reply_to": {"event_id": "$prompt"}},
+        ),
+    ],
+)
+def test_send_uses_canonical_thread_target(reply_to, thread_root, expected):
+    class ResponseClient:
+        async def room_send(self, room_id, message_type, content, **kwargs):
+            self.content = content
+            return RoomSendResponse("$message", room_id)
+
+    bridge = object.__new__(MatrixBridge)
+    bridge.client = ResponseClient()
+
+    asyncio.run(
+        bridge._send(
+            "!advisor:matrix.example.org",
+            "answer",
+            reply_to,
+            thread_root=thread_root,
+        )
+    )
+
+    assert bridge.client.content["m.relates_to"] == expected
+
+
+def test_poll_agent_uses_persisted_canonical_thread_root(tmp_path):
+    transcript = tmp_path / "rollout.jsonl"
+    transcript.write_text(
+        "".join(
+            json.dumps(
+                {
+                    "type": "event_msg",
+                    "payload": {
+                        "type": "item_completed",
+                        "item": {
+                            "type": "AgentMessage",
+                            "id": item_id,
+                            "phase": phase,
+                            "content": [{"type": "Text", "text": text}],
+                        },
+                    },
+                }
+            )
+            + "\n"
+            for item_id, phase, text in [
+                ("comment-1", "commentary", "Ich prüfe das."),
+                ("final-1", "final_answer", "Fertig."),
+            ]
+        ),
+        encoding="utf-8",
+    )
+    agent = AgentConfig(
+        key="advisor",
+        display_name="Advisor",
+        session="advisor-lead@kernel",
+    )
+    request = {
+        "event_id": "$nested-reply",
+        "thread_root_event_id": "$root",
+        "reply_to_event_id": "$root",
+        "source_event_ids": ["$nested-reply"],
+        "answer_text": None,
+        "started_at": time.time(),
+        "session_id": "session",
+        "transcript_path": str(transcript),
+        "offset": 0,
+    }
+    bridge = object.__new__(MatrixBridge)
+    bridge.config = SimpleNamespace(
+        mirror_commentary=True,
+        response_timeout_minutes=30,
+    )
+    bridge.locks = {"advisor": asyncio.Lock()}
+    bridge.state = SimpleNamespace(
+        save=lambda: None,
+        data={
+            "pending": {"advisor": [request]},
+            "rooms": {"advisor": {"room_id": "!advisor:matrix.example.org"}},
+        },
+    )
+    sent = []
+
+    async def send(room_id, text, reply_to=None, **kwargs):
+        sent.append((text, reply_to, kwargs))
+        return RoomSendResponse("$answer", room_id)
+
+    async def noop(*args):
+        return None
+
+    bridge._send = send
+    bridge._finish_inbound_qitem = noop
+    bridge._set_typing = noop
+    bridge._update_agent_status = noop
+    bridge._update_queue_notice = noop
+
+    asyncio.run(bridge._poll_agent(agent))
+
+    assert sent == [
+        ("Ich prüfe das.", "$root", {"thread_root": "$root"}),
+        ("Fertig.", "$root", {"thread_root": "$root"}),
+    ]
 
 
 def test_message_edit_uses_matrix_replace_relation():
