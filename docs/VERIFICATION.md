@@ -24,8 +24,8 @@ behavior, owner-observed client behavior, and real device trust.
 | Encrypted rooms, messages and thread relations | Automated integration | Disposable Synapse and a real `matrix-nio` client completed the committed protocol checks. | Does not prove Element rendering or JavaScript-client behavior. |
 | Element X threaded replies | Manual, owner-observed | The owner manually exercised Element X threaded replies successfully on 2026-10-24. | No screenshot is available, Element X version/device details are not recorded, and this is not screenshot-backed evidence. |
 | Nested thread-reply prompts | Unverified; open bug | Issue #16 tracks the production failure. Automated nested-thread protocol coverage is pending. | The earlier owner observation does not cover a prompt that is itself already a thread reply. |
-| Element device SAS and removed unverified-device warnings | Manual, unverified | Pending issue #1. | A synthetic protocol client or mock must not be presented as owner-device trust. |
-| Element Web SAS | Manual, unverified | Pending issue #1. | Must be run against a real client session before claiming success. |
+| Element device SAS and removed unverified-device warnings | Manual, unverified | Pending issue #1. Persisted restart/timeout state is unit-tested, not live approved. | A synthetic protocol client or mock must not be presented as owner-device trust. |
+| Element Web SAS | Manual, unverified | A real Element Web session against disposable Synapse displayed `(User verification unavailable)` for the bridge account on 2026-10-24. | Cross-signing/device trust must be implemented and verified against a real client before claiming success. |
 
 The owner observation means only that the exercised Element X reply flow
 rendered and behaved correctly in that session. It does not establish SAS,
@@ -156,7 +156,7 @@ Keep these rows open until evidence is actually committed:
 | Decision/poll | Brief and poll are pinned; selection is returned; pinned event is cleared. | Pass on disposable Synapse; Element rendering remains manual |
 | Reaction feedback | Owner reaction reaches the agent but produces no visible bot answer. | Pass with fake transport on disposable Synapse |
 | Restart/recovery | Accepted state and room mapping survive restart; active queue behavior is reported honestly. | Pass on disposable Synapse; report |
-| Device SAS verification | Real Element device completes emoji comparison and `ja`. | Manual evidence; otherwise remains issue #1 |
+| Device SAS verification | Real Element device completes emoji comparison and `ja`. | Manual evidence absent; Element Web currently reports verification unavailable; remains issue #1 |
 | Element X threaded reply | Owner observes the prompt and bridge answer in the same thread. | Manual owner report on 2026-10-24; screenshot pending; matrix protocol behavior covered separately |
 
 ## Unsupported or unverified claims

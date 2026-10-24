@@ -74,9 +74,17 @@ from .openrig import (
 )
 from .transcript import commentary_messages, final_answer, read_complete_records
 from .transcription import Transcriber
+from .verification import (
+    begin_verification,
+    expire_active_verifications,
+    mark_verification,
+    pending_verification,
+    recover_interrupted_verifications,
+)
 
 LOGGER = logging.getLogger("openrig-matrix-bridge")
 AGENT_STATUS_EVENT = "dev.openrig.agent_status"
+VERIFICATION_TIMEOUT_SECONDS = 600
 _DEFAULT_THREAD_ROOT = object()
 MAX_DELIVERY_ATTEMPTS = 3
 STATUS_LABELS = {
@@ -197,7 +205,7 @@ class MatrixBridge:
         self.locks = {key: asyncio.Lock() for key in config.agents}
         self.room_agents: dict[str, str] = {}
         self.processed_events: set[str] = set(self.state.data.get("processed_events", []))
-        self.verification_rooms: dict[str, str] = {}
+        self.verification_records = self.state.data.setdefault("verifications", {})
         self.typing_tasks: dict[str, asyncio.Task[None]] = {}
         self.pin_locks = {
             str(room["room_id"]): asyncio.Lock()
@@ -251,6 +259,7 @@ class MatrixBridge:
 
     async def run(self) -> None:
         await self._initial_sync()
+        await self._recover_verifications()
         self._load_room_index()
         await self._reconcile_room_memberships()
         if any(key not in self.state.data["rooms"] for key in self.config.agents):
@@ -281,6 +290,10 @@ class MatrixBridge:
             self._poll_human_queue(),
             name="openrig-matrix-human-queue",
         )
+        verification_poller = asyncio.create_task(
+            self._poll_verification_timeouts(),
+            name="openrig-matrix-verification-timeouts",
+        )
         try:
             await self.client.sync_forever(
                 timeout=30000,
@@ -294,6 +307,7 @@ class MatrixBridge:
             media_poller.cancel()
             message_poller.cancel()
             human_queue_poller.cancel()
+            verification_poller.cancel()
             for room_id in list(self.typing_tasks):
                 await self._set_typing(room_id, False)
             await self.client.close()
@@ -1244,35 +1258,155 @@ class MatrixBridge:
         decision = verification_decision(text)
         if decision is None:
             return False
-        transaction_id = next(
-            (
-                tx_id
-                for tx_id, room_id in self.verification_rooms.items()
-                if room_id == room.room_id
-            ),
-            None,
+        now = time.time()
+        selected = pending_verification(
+            self.verification_records,
+            room.room_id,
+            now=now,
         )
-        if transaction_id is None:
+        if selected is None:
             return False
+        transaction_id, verification = selected
         self.processed_events.add(event.event_id)
+        self.state.data["processed_events"] = list(self.processed_events)[-2000:]
+        phase = str(verification.get("phase") or "")
+        if phase == "interrupted":
+            mark_verification(
+                self.verification_records,
+                transaction_id,
+                "stale_reply",
+                now=now,
+            )
+            self.state.save()
+            await self._send(
+                room.room_id,
+                "Für dieses Gerät läuft keine aktive Verifikation mehr. "
+                "Bitte starte die Verifikation erneut.",
+                event.event_id,
+            )
+            return True
+        if phase != "awaiting_confirmation":
+            await self._send(
+                room.room_id,
+                "Die Geräteverifikation ist noch nicht bereit für `ja` oder `nein`.",
+                event.event_id,
+            )
+            return True
         if decision:
+            mark_verification(
+                self.verification_records,
+                transaction_id,
+                "confirming",
+                now=now,
+            )
+            self.state.save()
             result = await self.client.confirm_short_auth_string(transaction_id)
             if isinstance(result, ToDeviceError):
+                mark_verification(
+                    self.verification_records,
+                    transaction_id,
+                    "failed",
+                    now=time.time(),
+                )
+                self.state.save()
                 await self._send(room.room_id, f"Bestätigung fehlgeschlagen: {result}", event.event_id)
             else:
+                mark_verification(
+                    self.verification_records,
+                    transaction_id,
+                    "awaiting_mac",
+                    now=time.time(),
+                )
+                self.state.save()
                 await self._send(
                     room.room_id,
                     "SAS bestätigt. Bestätige den Vorgang jetzt auch im Element-Dialog.",
                     event.event_id,
                 )
         else:
+            mark_verification(
+                self.verification_records,
+                transaction_id,
+                "cancelling",
+                now=now,
+            )
+            self.state.save()
             result = await self.client.cancel_key_verification(transaction_id, reject=True)
             if isinstance(result, ToDeviceError):
+                mark_verification(
+                    self.verification_records,
+                    transaction_id,
+                    "failed",
+                    now=time.time(),
+                )
+                self.state.save()
                 await self._send(room.room_id, f"Abbruch fehlgeschlagen: {result}", event.event_id)
             else:
-                self.verification_rooms.pop(transaction_id, None)
+                mark_verification(
+                    self.verification_records,
+                    transaction_id,
+                    "rejected",
+                    now=time.time(),
+                )
+                self.state.save()
                 await self._send(room.room_id, "Geräteverifikation abgelehnt.", event.event_id)
         return True
+
+    async def _recover_verifications(self) -> None:
+        interrupted = recover_interrupted_verifications(
+            self.verification_records,
+            now=time.time(),
+        )
+        if not interrupted:
+            return
+        self.state.save()
+        for _transaction_id, room_id in interrupted:
+            await self._send(
+                room_id,
+                "Die Geräteverifikation wurde durch einen Neustart unterbrochen. "
+                "Bitte starte sie im Matrix-Client erneut.",
+            )
+
+    async def _expire_verifications(self, *, now: float, timeout: float) -> None:
+        expired = expire_active_verifications(
+            self.verification_records,
+            now=now,
+            timeout=timeout,
+        )
+        if not expired:
+            return
+        self.state.save()
+        for transaction_id, room_id in expired:
+            sas = self.client.key_verifications.get(transaction_id)
+            if sas is not None:
+                try:
+                    await self.client.cancel_key_verification(transaction_id)
+                except Exception:
+                    LOGGER.warning(
+                        "could not cancel timed-out verification %s",
+                        transaction_id,
+                        exc_info=True,
+                    )
+            await self._send(
+                room_id,
+                "Zeitüberschreitung bei der Geräteverifikation. "
+                "Bitte starte sie erneut.",
+            )
+
+    async def _poll_verification_timeouts(self) -> None:
+        while True:
+            try:
+                await asyncio.sleep(
+                    min(30.0, max(1.0, float(self.config.status_refresh_seconds)))
+                )
+                await self._expire_verifications(
+                    now=time.time(),
+                    timeout=VERIFICATION_TIMEOUT_SECONDS,
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                LOGGER.exception("verification timeout polling failed")
 
     def _verification_room(self) -> str:
         advisor_room = self.state.data["rooms"].get("advisor", {}).get("room_id")
@@ -1287,17 +1421,44 @@ class MatrixBridge:
         if isinstance(event, KeyVerificationStart):
             if "emoji" not in event.short_authentication_string:
                 return
+            begin_verification(
+                self.verification_records,
+                event.transaction_id,
+                room_id,
+                now=time.time(),
+            )
+            self.state.save()
             response = await self.client.accept_key_verification(event.transaction_id)
             if isinstance(response, ToDeviceError):
+                mark_verification(
+                    self.verification_records,
+                    event.transaction_id,
+                    "failed",
+                    now=time.time(),
+                )
+                self.state.save()
                 await self._send(room_id, f"Matrix-Verifikation konnte nicht gestartet werden: {response}")
                 return
             sas = self.client.key_verifications.get(event.transaction_id)
             if sas is not None:
                 response = await self.client.to_device(sas.share_key())
                 if isinstance(response, ToDeviceError):
+                    mark_verification(
+                        self.verification_records,
+                        event.transaction_id,
+                        "failed",
+                        now=time.time(),
+                    )
+                    self.state.save()
                     await self._send(room_id, f"Schlüsselaustausch fehlgeschlagen: {response}")
                     return
-            self.verification_rooms[event.transaction_id] = room_id
+            mark_verification(
+                self.verification_records,
+                event.transaction_id,
+                "awaiting_key",
+                now=time.time(),
+            )
+            self.state.save()
             await self._send(
                 room_id,
                 "Matrix-Verifikationsanfrage empfangen. Die Emoji-Prüfung folgt gleich.",
@@ -1311,7 +1472,20 @@ class MatrixBridge:
             emojis = sas.get_emoji()
             rendered = " ".join(emoji for emoji, _name in emojis)
             named = ", ".join(f"{emoji} {name}" for emoji, name in emojis)
-            self.verification_rooms[event.transaction_id] = room_id
+            if event.transaction_id not in self.verification_records:
+                begin_verification(
+                    self.verification_records,
+                    event.transaction_id,
+                    room_id,
+                    now=time.time(),
+                )
+            mark_verification(
+                self.verification_records,
+                event.transaction_id,
+                "awaiting_confirmation",
+                now=time.time(),
+            )
+            self.state.save()
             await self._send(
                 room_id,
                 "Vergleiche diese sieben Emojis mit dem Element-Dialog:\n\n"
@@ -1323,7 +1497,14 @@ class MatrixBridge:
         if isinstance(event, KeyVerificationMac):
             sas = self.client.key_verifications.get(event.transaction_id)
             if sas is not None and sas.verified:
-                self.verification_rooms.pop(event.transaction_id, None)
+                if event.transaction_id in self.verification_records:
+                    mark_verification(
+                        self.verification_records,
+                        event.transaction_id,
+                        "verified",
+                        now=time.time(),
+                    )
+                    self.state.save()
                 await self._send(
                     room_id,
                     f"Gerät `{sas.other_olm_device.id}` wurde erfolgreich verifiziert.",
@@ -1331,7 +1512,14 @@ class MatrixBridge:
             return
 
         if isinstance(event, KeyVerificationCancel):
-            self.verification_rooms.pop(event.transaction_id, None)
+            if event.transaction_id in self.verification_records:
+                mark_verification(
+                    self.verification_records,
+                    event.transaction_id,
+                    "cancelled",
+                    now=time.time(),
+                )
+                self.state.save()
             await self._send(
                 room_id,
                 f"Geräteverifikation abgebrochen: {event.reason or event.code}",

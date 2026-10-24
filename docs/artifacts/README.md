@@ -26,6 +26,7 @@ path, the observed result, the tested commit, and the environment boundary.
 | `room-status.txt` | Real encrypted room, invite/join, topic status, structured status, and avatar | `88dccb3c92329918c62b68f871022d0972377cd8`; report `evidence_valid: true` |
 | `ordinary-chat.txt` | Encrypted text, typing, qitem history, thread relation, commentary, answer, and FIFO completion gating | `88dccb3c92329918c62b68f871022d0972377cd8`; report `evidence_valid: true` |
 | `test-path.txt` | Unit, lint, Markdown, link, release, and Matrix integration commands with explicit boundaries | `88dccb3c92329918c62b68f871022d0972377cd8` |
+| `element-web-verification.txt` | Real Element Web client behavior and the current verification-unavailable boundary | `issue-1-verification-state` manual investigation; no success claim |
 | `integration-report.json` | Machine-readable report for all 13 checks with clean source provenance | Source `88dccb3c92329918c62b68f871022d0972377cd8`; `worktree_clean: true` |
 
 Text artifacts are acceptable when they capture real command output. A
@@ -40,6 +41,7 @@ screenshot alone is insufficient if the room context is ambiguous.
 | `room-status.txt` | `2026-10-24T17:22:44Z` | `88dccb3c92329918c62b68f871022d0972377cd8` | Disposable Synapse; fake OpenRig CLI | Same harness run as `integration-report.json` | Synthetic localhost identities only |
 | `ordinary-chat.txt` | `2026-10-24T17:22:44Z` | `88dccb3c92329918c62b68f871022d0972377cd8` | Disposable Synapse; fake OpenRig CLI | Same harness run as `integration-report.json` | No IDs or tokens; boundary stated |
 | `test-path.txt` | `2026-10-24T17:22:44Z` | `88dccb3c92329918c62b68f871022d0972377cd8` | Repository docs/tests plus disposable Synapse | Commands listed inside artifact | No credentials or private infrastructure |
+| `element-web-verification.txt` | `2026-10-24` | `issue-1-verification-state` investigation | Real Element Web image plus disposable Synapse on loopback | Manual Chrome/agent-browser path recorded inside artifact | No token, room ID, private MXID, recovery data or device private key |
 
 The evidence-only commit follows the tested source commit and is named in the
 QA/review handoff. This avoids the impossible self-reference of a commit
