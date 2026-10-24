@@ -86,7 +86,7 @@ def inbound_file_bridge(tmp_path, download_body, *, max_file_bytes=1024):
         replies.append(text)
         return RoomSendResponse("$reply", room_id)
 
-    async def enqueue_prompt(*args):
+    async def enqueue_prompt(*args, **kwargs):
         forwarded.append(args)
 
     bridge._send = send
@@ -1968,7 +1968,12 @@ def test_threaded_audio_uses_canonical_root_for_status_and_prompt():
         event_id="$audio",
         sender="@owner:matrix.example.org",
         server_timestamp=1_700_000_000_000,
-        source={"content": {"m.relates_to": relation}},
+        source={
+            "content": {
+                "m.relates_to": relation,
+                "org.matrix.msc3245.voice": {},
+            }
+        },
         url="mxc://matrix.example.org/audio",
         body="voice.ogg",
     )
@@ -2435,7 +2440,7 @@ def test_encrypted_file_rejects_mismatched_declared_size(tmp_path):
     bridge.client = FileClient()
     replies = []
 
-    async def send(room_id, text, reply_to=None):
+    async def send(room_id, text, reply_to=None, **kwargs):
         replies.append(text)
         return RoomSendResponse("$reply", room_id)
 
@@ -2754,11 +2759,11 @@ def test_marked_voice_audio_is_transcribed_and_forwarded():
         async def download(self, mxc):
             return SimpleNamespace(body=b"OggS voice bytes")
 
-    async def send(room_id, text, reply_to=None):
+    async def send(room_id, text, reply_to=None, **kwargs):
         replies.append(text)
         return RoomSendResponse("$reply", room_id)
 
-    async def enqueue_prompt(*args):
+    async def enqueue_prompt(*args, **kwargs):
         forwarded.append(args)
 
     async def handle_file(room, event):
