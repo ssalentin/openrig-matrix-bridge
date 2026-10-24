@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "openrig-matrix-bridge"
-version = "0.1.0"
+version = "0.2.0"
 description = "Matrix rooms for specific OpenRig agent seats"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -12,7 +12,8 @@ license = { text = "MIT" }
 dependencies = [
   "matrix-nio[e2e]>=0.25,<0.26",
   "PyYAML>=6.0,<7",
-  "faster-whisper>=1.1,<2",
+  "sherpa-onnx>=1.13,<2",
+  "numpy>=1.24,<3",
 ]
 
 [project.scripts]

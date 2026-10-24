@@ -12,13 +12,13 @@ moshi:
   poll_interval_seconds: 1.0
   max_message_age_minutes: 60
   response_timeout_minutes: 360
+  status_refresh_seconds: 30
 
 transcription:
   enabled: true
-  model: base
-  language: de
-  download_root: /var/cache/openrig-matrix-bridge/whisper
+  download_root: /var/cache/openrig-matrix-bridge/parakeet
   max_audio_bytes: 26214400
+  num_threads: 4
 
 agents:
   advisor:

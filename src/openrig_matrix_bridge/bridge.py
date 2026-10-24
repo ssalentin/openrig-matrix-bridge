@@ -14,6 +14,11 @@ from nio import (
     AsyncClient,
     AsyncClientConfig,
     InviteMemberEvent,
+    KeyVerificationCancel,
+    KeyVerificationEvent,
+    KeyVerificationKey,
+    KeyVerificationMac,
+    KeyVerificationStart,
     MatrixRoom,
     RoomCreateResponse,
     RoomEncryptedAudio,
@@ -22,6 +27,7 @@ from nio import (
     RoomMessageText,
     RoomSendResponse,
     SyncResponse,
+    ToDeviceError,
 )
 from nio.api import RoomPreset, RoomVisibility
 from nio.crypto import decrypt_attachment
@@ -37,6 +43,22 @@ from .transcript import final_answer, read_complete_records
 from .transcription import Transcriber
 
 LOGGER = logging.getLogger("openrig-matrix-bridge")
+AGENT_STATUS_EVENT = "dev.openrig.agent_status"
+STATUS_LABELS = {
+    "ready": "🟢",
+    "busy": "🟡",
+    "offline": "⚫",
+    "error": "🟠",
+}
+
+
+def verification_decision(text: str) -> bool | None:
+    normalized = text.strip().lower().rstrip(".!")
+    if normalized in {"ja", "ja bitte", "bestätigen", "bestaetigen", "stimmt"}:
+        return True
+    if normalized in {"nein", "ablehnen", "stimmt nicht"}:
+        return False
+    return None
 
 
 class StateStore:
@@ -84,6 +106,9 @@ class MatrixBridge:
         self.locks = {key: asyncio.Lock() for key in config.agents}
         self.room_agents: dict[str, str] = {}
         self.processed_events: set[str] = set(self.state.data.get("processed_events", []))
+        self.verification_rooms: dict[str, str] = {}
+        self.typing_tasks: dict[str, asyncio.Task[None]] = {}
+        self.agent_statuses: dict[str, str] = {}
         self.client = AsyncClient(
             config.homeserver,
             config.user_id,
@@ -104,6 +129,7 @@ class MatrixBridge:
         self.client.add_event_callback(self._on_audio, (RoomMessageAudio, RoomEncryptedAudio))
         self.client.add_event_callback(self._on_invite, InviteMemberEvent)
         self.client.add_event_callback(self._on_member, RoomMemberEvent)
+        self.client.add_to_device_callback(self._on_verification, (KeyVerificationEvent,))
 
     async def run(self) -> None:
         await self._initial_sync()
@@ -111,7 +137,12 @@ class MatrixBridge:
         if any(key not in self.state.data["rooms"] for key in self.config.agents):
             await self._create_rooms()
         self._initialize_transcript_offsets()
+        await self._refresh_agent_statuses(force=True)
         poller = asyncio.create_task(self._poll_answers(), name="openrig-matrix-poller")
+        status_poller = asyncio.create_task(
+            self._poll_agent_statuses(),
+            name="openrig-matrix-status",
+        )
         try:
             await self.client.sync_forever(
                 timeout=30000,
@@ -120,6 +151,9 @@ class MatrixBridge:
             )
         finally:
             poller.cancel()
+            status_poller.cancel()
+            for room_id in list(self.typing_tasks):
+                await self._set_typing(room_id, False)
             await self.client.close()
 
     async def _initial_sync(self) -> None:
@@ -234,7 +268,111 @@ class MatrixBridge:
         text = event.body.strip()
         if not text:
             return
+        if await self._handle_verification_reply(room, event, text):
+            return
         await self._enqueue_prompt(agent, room, event.event_id, event.server_timestamp, text)
+
+    async def _handle_verification_reply(
+        self,
+        room: MatrixRoom,
+        event: RoomMessageText,
+        text: str,
+    ) -> bool:
+        decision = verification_decision(text)
+        if decision is None:
+            return False
+        transaction_id = next(
+            (
+                tx_id
+                for tx_id, room_id in self.verification_rooms.items()
+                if room_id == room.room_id
+            ),
+            None,
+        )
+        if transaction_id is None:
+            return False
+        self.processed_events.add(event.event_id)
+        if decision:
+            result = await self.client.confirm_short_auth_string(transaction_id)
+            if isinstance(result, ToDeviceError):
+                await self._send(room.room_id, f"Bestätigung fehlgeschlagen: {result}", event.event_id)
+            else:
+                await self._send(
+                    room.room_id,
+                    "SAS bestätigt. Bestätige den Vorgang jetzt auch im Element-Dialog.",
+                    event.event_id,
+                )
+        else:
+            result = await self.client.cancel_key_verification(transaction_id, reject=True)
+            if isinstance(result, ToDeviceError):
+                await self._send(room.room_id, f"Abbruch fehlgeschlagen: {result}", event.event_id)
+            else:
+                self.verification_rooms.pop(transaction_id, None)
+                await self._send(room.room_id, "Geräteverifikation abgelehnt.", event.event_id)
+        return True
+
+    def _verification_room(self) -> str:
+        advisor_room = self.state.data["rooms"].get("advisor", {}).get("room_id")
+        if advisor_room:
+            return str(advisor_room)
+        return str(next(iter(self.state.data["rooms"].values()))["room_id"])
+
+    async def _on_verification(self, event: KeyVerificationEvent) -> None:
+        if getattr(event, "sender", None) not in self.config.allowed_users:
+            return
+        room_id = self._verification_room()
+        if isinstance(event, KeyVerificationStart):
+            if "emoji" not in event.short_authentication_string:
+                return
+            response = await self.client.accept_key_verification(event.transaction_id)
+            if isinstance(response, ToDeviceError):
+                await self._send(room_id, f"Matrix-Verifikation konnte nicht gestartet werden: {response}")
+                return
+            sas = self.client.key_verifications.get(event.transaction_id)
+            if sas is not None:
+                response = await self.client.to_device(sas.share_key())
+                if isinstance(response, ToDeviceError):
+                    await self._send(room_id, f"Schlüsselaustausch fehlgeschlagen: {response}")
+                    return
+            self.verification_rooms[event.transaction_id] = room_id
+            await self._send(
+                room_id,
+                "Matrix-Verifikationsanfrage empfangen. Die Emoji-Prüfung folgt gleich.",
+            )
+            return
+
+        if isinstance(event, KeyVerificationKey):
+            sas = self.client.key_verifications.get(event.transaction_id)
+            if sas is None:
+                return
+            emojis = sas.get_emoji()
+            rendered = " ".join(emoji for emoji, _name in emojis)
+            named = ", ".join(f"{emoji} {name}" for emoji, name in emojis)
+            self.verification_rooms[event.transaction_id] = room_id
+            await self._send(
+                room_id,
+                "Vergleiche diese sieben Emojis mit dem Element-Dialog:\n\n"
+                f"{rendered}\n\n{named}\n\n"
+                "Wenn sie übereinstimmen, schreibe hier `ja`. Sonst `nein`.",
+            )
+            return
+
+        if isinstance(event, KeyVerificationMac):
+            sas = self.client.key_verifications.get(event.transaction_id)
+            if sas is not None and sas.verified:
+                self.verification_rooms.pop(event.transaction_id, None)
+                await self._send(
+                    room_id,
+                    f"Gerät `{sas.other_olm_device.id}` wurde erfolgreich verifiziert.",
+                )
+            return
+
+        if isinstance(event, KeyVerificationCancel):
+            self.verification_rooms.pop(event.transaction_id, None)
+            await self._send(
+                room_id,
+                f"Geräteverifikation abgebrochen: {event.reason or event.code}",
+            )
 
     async def _enqueue_prompt(
         self,
@@ -356,8 +494,12 @@ class MatrixBridge:
             request["offset"] = ref.transcript_path.stat().st_size
             request["started_at"] = time.time()
             await self.gateway.send_prompt(ref, request["text"])
+            await self._set_typing(room_id, True)
+            await self._update_agent_status(agent, "busy", "arbeitet")
         except (AgentSessionNotFound, GatewayError, OSError) as exc:
             LOGGER.exception("prompt failed for %s", agent.session)
+            await self._set_typing(room_id, False)
+            await self._update_agent_status(agent, "error", "Prompt fehlgeschlagen")
             await self._send(room_id, f"Prompt fehlgeschlagen: {exc}", request["event_id"])
             pending = self.state.data["pending"][agent.key]
             pending.pop(0)
@@ -409,6 +551,8 @@ class MatrixBridge:
                         "Der Agent hat für diese Anfrage nicht rechtzeitig geantwortet.",
                         request["event_id"],
                     )
+                    await self._set_typing(self._room_for_agent(agent.key), False)
+                    await self._update_agent_status(agent, "error", "Zeitüberschreitung")
                     pending.pop(0)
                     self.state.save()
                     return
@@ -431,6 +575,8 @@ class MatrixBridge:
             if not isinstance(response, RoomSendResponse):
                 LOGGER.error("answer delivery failed for %s: %s", agent.key, response)
                 return
+            await self._set_typing(room_id, False)
+            await self._update_agent_status(agent, "ready", "bereit")
             pending.pop(0)
             self.state.save()
             if pending:
@@ -438,6 +584,94 @@ class MatrixBridge:
 
     def _room_for_agent(self, agent_key: str) -> str:
         return str(self.state.data["rooms"][agent_key]["room_id"])
+
+    async def _poll_agent_statuses(self) -> None:
+        while True:
+            try:
+                await asyncio.sleep(self.config.status_refresh_seconds)
+                await self._refresh_agent_statuses()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                LOGGER.exception("agent status refresh failed")
+
+    async def _refresh_agent_statuses(self, force: bool = False) -> None:
+        for agent in self.config.agents.values():
+            if not force and agent.key not in self.agent_statuses:
+                continue
+            if self.state.data["pending"].get(agent.key):
+                status, detail = "busy", "arbeitet"
+            else:
+                try:
+                    ref = self.resolver.resolve(agent.session)
+                except AgentSessionNotFound:
+                    status, detail = "offline", "offline"
+                else:
+                    status, detail = ("busy", "arbeitet") if ref.busy else ("ready", "bereit")
+            await self._update_agent_status(agent, status, detail)
+
+    async def _update_agent_status(
+        self,
+        agent: AgentConfig,
+        status: str,
+        detail: str,
+    ) -> None:
+        if self.agent_statuses.get(agent.key) == status:
+            return
+        room = self.state.data["rooms"].get(agent.key)
+        if not room:
+            return
+        room_id = str(room["room_id"])
+        base_name = str(room.get("name") or f"OpenRig · {agent.display_name}")
+        status_name = f"{STATUS_LABELS[status]} {base_name} · {detail}"
+        try:
+            await self.client.room_put_state(
+                room_id,
+                "m.room.name",
+                {"name": status_name},
+            )
+            await self.client.room_put_state(
+                room_id,
+                AGENT_STATUS_EVENT,
+                {
+                    "state": status,
+                    "detail": detail,
+                    "session": agent.session,
+                    "updated_at": int(time.time() * 1000),
+                },
+            )
+        except Exception:
+            LOGGER.warning("failed to update Matrix status for %s", agent.session, exc_info=True)
+            return
+        self.agent_statuses[agent.key] = status
+
+    async def _set_typing(self, room_id: str, typing: bool) -> None:
+        existing = self.typing_tasks.pop(room_id, None)
+        if existing:
+            existing.cancel()
+            await asyncio.gather(existing, return_exceptions=True)
+        if typing:
+            self.typing_tasks[room_id] = asyncio.create_task(
+                self._typing_loop(room_id),
+                name=f"typing:{room_id}",
+            )
+            return
+        try:
+            await self.client.room_typing(room_id, False)
+        except Exception:
+            LOGGER.debug("failed to clear Matrix typing state", exc_info=True)
+
+    async def _typing_loop(self, room_id: str) -> None:
+        while True:
+            try:
+                response = await self.client.room_typing(room_id, True, timeout=30000)
+                if hasattr(response, "status_code") and response.status_code >= 400:
+                    LOGGER.debug("Matrix typing update failed: %s", response)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                LOGGER.debug("Matrix typing update failed", exc_info=True)
+            await asyncio.sleep(20)
 
     async def _send(self, room_id: str, text: str, reply_to: str | None = None):
         content: dict[str, Any] = {"msgtype": "m.text", "body": text[:60000]}

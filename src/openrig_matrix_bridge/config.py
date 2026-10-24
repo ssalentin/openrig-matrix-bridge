@@ -21,10 +21,9 @@ class AgentConfig:
 @dataclass(frozen=True)
 class TranscriptionConfig:
     enabled: bool
-    model: str
-    language: str
     download_root: Path
     max_audio_bytes: int
+    num_threads: int
 
 
 @dataclass(frozen=True)
@@ -39,6 +38,7 @@ class BridgeConfig:
     poll_interval_seconds: float
     max_message_age_minutes: int
     response_timeout_minutes: int
+    status_refresh_seconds: float
     transcription: TranscriptionConfig
     agents: dict[str, AgentConfig]
 
@@ -108,8 +108,11 @@ def load_config(path: str | Path) -> BridgeConfig:
     poll_interval = float(moshi.get("poll_interval_seconds", 1.0))
     max_age = int(moshi.get("max_message_age_minutes", 60))
     timeout = int(moshi.get("response_timeout_minutes", 360))
+    status_refresh = float(moshi.get("status_refresh_seconds", 30))
     if poll_interval < 0.2:
         raise ConfigError("moshi.poll_interval_seconds must be at least 0.2")
+    if status_refresh < 1:
+        raise ConfigError("moshi.status_refresh_seconds must be at least 1")
     if max_age < 0 or timeout <= 0:
         raise ConfigError("message age must be non-negative and timeout positive")
     max_audio_bytes = int(transcription.get("max_audio_bytes", 25 * 1024 * 1024))
@@ -127,14 +130,14 @@ def load_config(path: str | Path) -> BridgeConfig:
         poll_interval_seconds=poll_interval,
         max_message_age_minutes=max_age,
         response_timeout_minutes=timeout,
+        status_refresh_seconds=status_refresh,
         transcription=TranscriptionConfig(
             enabled=bool(transcription.get("enabled", True)),
-            model=str(transcription.get("model", "base")),
-            language=str(transcription.get("language", "de")),
             download_root=Path(
-                str(transcription.get("download_root", "/var/cache/openrig-matrix-bridge/whisper"))
+                str(transcription.get("download_root", "/var/cache/openrig-matrix-bridge/parakeet"))
             ),
             max_audio_bytes=max_audio_bytes,
+            num_threads=max(1, int(transcription.get("num_threads", 4))),
         ),
         agents=agents,
     )

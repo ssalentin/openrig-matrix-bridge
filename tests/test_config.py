@@ -32,6 +32,7 @@ def test_loads_minimal_config(tmp_path: Path):
     config = load_config(write_config(tmp_path / "config.yaml"))
     assert config.homeserver == "https://matrix.example.org"
     assert config.agents["advisor"].session == "advisor-lead@kernel"
+    assert config.status_refresh_seconds == 30
 
 
 def test_rejects_duplicate_sessions(tmp_path: Path):
