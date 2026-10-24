@@ -80,6 +80,12 @@ the failure has appeared as a transient timing result. The handoff must cite
 both runs; a passing rerun does not erase the first failure from the evidence.
 Two consecutive failures at the same commit are a release blocker.
 
+The voice check waits for the transcript prompt to reach the fake OpenRig
+transport before treating an empty bridge pending list as idle. This separates
+the deliberate status-before-enqueue ordering from the exact-one prompt
+assertion and prevents the evidence reader from observing the gap as a missing
+forward.
+
 ### Automated integration coverage
 
 | Check | What is exercised |

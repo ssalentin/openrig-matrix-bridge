@@ -1858,6 +1858,21 @@ class IntegrationRun:
             self.args.timeout,
             description="voice status edited to transcript",
         )
+        # The status becomes done just before the prompt is enqueued. Wait for
+        # that transport boundary before treating an empty pending list as idle.
+        try:
+            wait_for_json_state(
+                self.fake_state / "fake-openrig.json",
+                lambda value: any(
+                    "Deterministic local transcript" in str(item.get("prompt"))
+                    for item in value.get("prompts", [])
+                ),
+                self.args.timeout,
+            )
+        except CheckFailure:
+            raise CheckFailure(
+                "voice transcript was not forwarded to the fake transport"
+            ) from None
         wait_for_json_state(
             self.state_dir / "state.json",
             lambda value: not value.get("pending", {}).get(AGENT_KEY),
