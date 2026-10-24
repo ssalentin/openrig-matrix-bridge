@@ -23,7 +23,7 @@ behavior, owner-observed client behavior, and real device trust.
 |---|---|---|---|
 | Encrypted rooms, messages and thread relations | Automated integration | Disposable Synapse and a real `matrix-nio` client completed the committed protocol checks. | Does not prove Element rendering or JavaScript-client behavior. |
 | Element X threaded replies | Manual, owner-observed | The owner manually exercised Element X threaded replies successfully on 2026-10-24. | No screenshot is available, Element X version/device details are not recorded, and this is not screenshot-backed evidence. |
-| Nested thread-reply prompts | Automated regression gate | Tracked separately by issue #16. | The earlier owner observation does not cover a prompt that is itself already a thread reply. |
+| Nested thread-reply prompts | Unverified; open bug | Issue #16 tracks the production failure. Automated nested-thread protocol coverage is pending. | The earlier owner observation does not cover a prompt that is itself already a thread reply. |
 | Element device SAS and removed unverified-device warnings | Manual, unverified | Pending issue #1. | A synthetic protocol client or mock must not be presented as owner-device trust. |
 | Element Web SAS | Manual, unverified | Pending issue #1. | Must be run against a real client session before claiming success. |
 
