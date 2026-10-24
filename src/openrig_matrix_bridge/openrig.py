@@ -15,6 +15,7 @@ class AgentSessionRef:
     transcript_path: Path
     tmux_session: str
     busy: bool
+    waiting_for_input: bool = False
 
 
 class AgentSessionNotFound(RuntimeError):
@@ -74,11 +75,21 @@ class OpenRigSessionResolver:
             activity_state = (
                 activity.get("state") if isinstance(activity, dict) else None
             )
+            runtime_activity = entry.get("activityState")
+            needs_input = (
+                runtime_activity.get("needsInput")
+                if isinstance(runtime_activity, dict)
+                else None
+            )
+            waiting_for_input = bool(
+                isinstance(needs_input, dict) and int(needs_input.get("count") or 0) > 0
+            )
             resolved[session_name] = AgentSessionRef(
                 session_id=session_id,
                 transcript_path=transcript,
                 tmux_session=session_name,
                 busy=activity_state == "running",
+                waiting_for_input=waiting_for_input,
             )
         return resolved
 

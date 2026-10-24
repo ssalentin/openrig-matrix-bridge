@@ -18,12 +18,19 @@ the generated room logo:
 |---|---|
 | `🟢 bereit · advisor-lead@kernel` | Online and idle |
 | `🟡 arbeitet · advisor-lead@kernel` | Working on a request |
+| `🟡 🧠 denkt · advisor-lead@kernel` | Reasoning before or between actions |
+| `🟡 🔎 sucht · advisor-lead@kernel` | Searching files, code, or queue data |
+| `🟡 🌐 Netzwerk · advisor-lead@kernel` | Explicit network or web tool activity |
+| `🟡 📝 bearbeitet Dateien · advisor-lead@kernel` | Editing files or applying patches |
+| `🟡 ✍️ schreibt · advisor-lead@kernel` | Composing an answer |
+| `🟡 ⏸️ wartet auf Freigabe · advisor-lead@kernel` | Waiting for required input |
 | `🟠 Prompt fehlgeschlagen · advisor-lead@kernel` | Actionable bridge/gateway error |
 | `⚫ offline · advisor-lead@kernel` | No live agent process |
 
 While an answer is being generated, Matrix also shows the bot typing. The same
 state is published as the `dev.openrig.agent_status` room event for clients and
-tooling that want structured data.
+tooling that want structured data. The status event includes the high-level
+state, activity detail, and activity icon.
 
 Because one Matrix bot account can only have one global presence, status is
 represented per room. OpenRig can use one bot for any number of agents.
