@@ -411,12 +411,12 @@ def run_setup(args: argparse.Namespace) -> None:
     """
     config_path = args.config
 
-    # Check for existing config
+    # Check for existing config - fail in non-interactive mode
     if config_path.exists():
-        print(f"warning: config file already exists: {config_path}")
-        response = input("Overwrite existing config? (yes/no): ").strip().lower()
-        if response not in ("yes", "y"):
-            raise SystemExit("setup aborted by user")
+        raise SystemExit(
+            f"config file already exists: {config_path}. "
+            "Pass --replace-config to overwrite it."
+        )
 
     # Check for already-running bridge
     state_dir = Path(args.state_dir or Path.home() / ".local" / "state" / "openrig-matrix-bridge")
@@ -455,17 +455,20 @@ def run_setup(args: argparse.Namespace) -> None:
     allowed_user = (args.allowed_user or input("Owner Matrix user ID: ")).strip()
 
     # Validate Matrix token BEFORE discovering agents or writing config
+    # Infer user_id and device_id from whoami when token is present
     token = os.environ.get("MATRIX_ACCESS_TOKEN", "")
     if token:
         print("validating Matrix access token...")
         try:
             whoami = asyncio.run(_validate_matrix_token(homeserver, token))
             print(f"✓ Matrix token valid for {whoami.get('user_id')}")
-            if whoami.get("user_id") != user_id:
-                print(
-                    f"warning: token is for {whoami.get('user_id')} "
-                    f"but --user-id specified {user_id}"
-                )
+            # Use whoami response to override args if provided
+            inferred_user_id = whoami.get("user_id")
+            inferred_device_id = whoami.get("device_id")
+            if inferred_user_id:
+                user_id = inferred_user_id
+            if inferred_device_id:
+                device_id = inferred_device_id
         except RuntimeError as exc:
             raise SystemExit(f"Matrix token validation failed: {exc}") from exc
     else:
@@ -491,15 +494,20 @@ def run_setup(args: argparse.Namespace) -> None:
     human_display_name = args.human_display_name or human_entity_id.title()
     human_result = None
     if not args.no_human_registration:
-        human_result = _ensure_human_registration(
-            command=args.rig_command,
-            entity_id=human_entity_id,
-            display_name=human_display_name,
-            delivery_class=args.human_delivery_class,
-            state_dir=state_dir,
-            actor=args.sender_session,
-            replace=args.replace_human,
-        )
+        try:
+            human_result = _ensure_human_registration(
+                command=args.rig_command,
+                entity_id=human_entity_id,
+                display_name=human_display_name,
+                delivery_class=args.human_delivery_class,
+                state_dir=state_dir,
+                actor=args.sender_session,
+                replace=args.replace_human,
+            )
+        except RuntimeError as exc:
+            raise SystemExit(
+                f"{exc}. Pass --no-human-registration to skip human registry setup."
+            ) from exc
     config = {
         "matrix": {
             "homeserver": homeserver,
@@ -543,6 +551,9 @@ def run_setup(args: argparse.Namespace) -> None:
         },
         "agents": agents,
     }
+    # Ensure state directory exists with correct permissions
+    state_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+
     _write_private_yaml(args.config, config)
     print(f"wrote {args.config} with {len(agents)} agent room(s)")
     if human_result:
@@ -558,8 +569,19 @@ def run_setup(args: argparse.Namespace) -> None:
     else:
         print("warning: MATRIX_ACCESS_TOKEN is not set; Matrix display name unchanged")
     if config["transcription"]["enabled"] and not args.skip_model:
-        model = ensure_model(download_root)
-        print(f"Parakeet ready: {model}")
+        try:
+            model = ensure_model(download_root)
+            print(f"Parakeet ready: {model}")
+        except (OSError, RuntimeError) as exc:
+            raise SystemExit(
+                f"Model download failed: {exc}. "
+                "Pass --skip-model to defer download and complete setup."
+            ) from exc
+
+    print("\nNext steps:")
+    print(f"  1. Run doctor: openrig-matrix-bridge doctor --config {args.config}")
+    print(f"  2. Start the bridge: openrig-matrix-bridge run --config {args.config}")
+    print("  3. Accept room invitations in your Matrix client")
 
 
 def _load_qitem(qitem_id: str, command: str = "rig") -> dict:

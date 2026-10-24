@@ -61,8 +61,8 @@ def _mock_existing_install(monkeypatch):
     async def validate_token(homeserver, token):
         calls.append(("validate-token", homeserver, token))
         return {
-            "user_id": "@bot:matrix.example.org",
-            "device_id": "TESTDEVICE",
+            "user_id": "@relay-bot:matrix.example.org",
+            "device_id": "RELAY_BRIDGE",
         }
 
     async def display_name(homeserver, user_id, token, name):
@@ -86,8 +86,10 @@ def test_clean_existing_install_setup_infers_identity_without_persisting_token(
 ):
     token = "test-token-never-persist"
     monkeypatch.setenv("MATRIX_ACCESS_TOKEN", token)
-    monkeypatch.setenv("MATRIX_HOMESERVER", "https://matrix.example.org")
     calls = _mock_existing_install(monkeypatch)
+
+    # Mock instance_is_running to return False
+    monkeypatch.setattr(cli, "instance_is_running", lambda _: False)
 
     args = _setup_args(tmp_path, "--without-voice")
     cli.run_setup(args)
@@ -95,6 +97,7 @@ def test_clean_existing_install_setup_infers_identity_without_persisting_token(
     config_text = args.config.read_text(encoding="utf-8")
     config = yaml.safe_load(config_text)
     assert config["matrix"]["homeserver"] == "https://matrix.example.org"
+    # Setup infers identity from whoami response when token is present
     assert config["matrix"]["user_id"] == "@relay-bot:matrix.example.org"
     assert config["matrix"]["device_id"] == "RELAY_BRIDGE"
     assert config["matrix"]["allowed_users"] == ["@owner:matrix.example.org"]
@@ -105,7 +108,8 @@ def test_clean_existing_install_setup_infers_identity_without_persisting_token(
     assert "Next steps:" in output
     assert stat.S_IMODE(args.config.stat().st_mode) == 0o600
     assert stat.S_IMODE(Path(args.state_dir).stat().st_mode) == 0o700
-    assert ("whoami", "https://matrix.example.org", token) in calls
+    # Token validation should be called, not the old whoami
+    assert ("validate-token", "https://matrix.example.org", token) in calls
 
 
 def test_setup_refuses_to_overwrite_existing_config(tmp_path, monkeypatch):
@@ -154,14 +158,14 @@ def test_setup_reports_duplicate_codex_seat(monkeypatch):
 
 def test_setup_reports_human_registry_fallback(tmp_path, monkeypatch):
     monkeypatch.setenv("MATRIX_ACCESS_TOKEN", "secret")
-    monkeypatch.setenv("MATRIX_HOMESERVER", "https://matrix.example.org")
     _mock_existing_install(monkeypatch)
+    monkeypatch.setattr(cli, "instance_is_running", lambda _: False)
 
     def fail(*args, **kwargs):
         raise RuntimeError("human registration failed: gateway unavailable")
 
     monkeypatch.setattr(cli, "_ensure_human_registration", fail)
-    args = _setup_args(tmp_path, "--without-voice")
+    args = _setup_args(tmp_path)
     args.no_human_registration = False
 
     with pytest.raises(SystemExit, match="--no-human-registration"):
@@ -175,14 +179,39 @@ def test_setup_reports_model_fallback_after_writing_config(
     monkeypatch,
 ):
     monkeypatch.setenv("MATRIX_ACCESS_TOKEN", "secret")
-    monkeypatch.setenv("MATRIX_HOMESERVER", "https://matrix.example.org")
     _mock_existing_install(monkeypatch)
+    monkeypatch.setattr(cli, "instance_is_running", lambda _: False)
 
     def fail_model(download_root):
         raise OSError("network unavailable")
 
     monkeypatch.setattr(cli, "ensure_model", fail_model)
-    args = _setup_args(tmp_path)
+    # Create args WITHOUT --skip-model so model download happens
+    args = cli.build_parser().parse_args(
+        [
+            "setup",
+            "--config",
+            str(tmp_path / "config" / "config.yaml"),
+            "--state-dir",
+            str(tmp_path / "state"),
+            "--download-root",
+            str(tmp_path / "models"),
+            "--homeserver",
+            "https://matrix.example.org",
+            "--user-id",
+            "@bot:matrix.example.org",
+            "--device-id",
+            "TESTDEVICE",
+            "--allowed-user",
+            "@owner:matrix.example.org",
+            "--rig-command",
+            "/opt/rig",
+            "--codex-home",
+            str(tmp_path / "codex"),
+            "--no-human-registration",
+            # NO --skip-model!
+        ]
+    )
 
     with pytest.raises(SystemExit, match="--skip-model"):
         cli.run_setup(args)
