@@ -678,10 +678,13 @@ class IntegrationRun:
         )
         await self.owner.start()
 
-    def start_bridge(self) -> None:
+    def start_bridge(self, *, crash_after: str | None = None) -> None:
         if self.bridge is not None and self.bridge.poll() is None:
             raise CheckFailure("bridge is already running")
         log = self.log_path.open("a", encoding="utf-8")
+        environment = self.env()
+        if crash_after:
+            environment["OPENRIG_BRIDGE_TEST_CRASH_AFTER"] = crash_after
         self.bridge = subprocess.Popen(
             [
                 sys.executable,
@@ -691,13 +694,27 @@ class IntegrationRun:
                 str(self.config_path),
             ],
             cwd=ROOT,
-            env=self.env(),
+            env=environment,
             stdin=subprocess.DEVNULL,
             stdout=log,
             stderr=subprocess.STDOUT,
             text=True,
             start_new_session=True,
         )
+
+    def wait_for_bridge_crash(self, expected_code: int = 86) -> None:
+        process = self.bridge
+        if process is None:
+            raise CheckFailure("bridge process was not started")
+        deadline = time.monotonic() + self.args.timeout
+        while time.monotonic() < deadline:
+            code = process.poll()
+            if code is not None:
+                if code != expected_code:
+                    raise CheckFailure(f"bridge crash exit code was {code}, expected {expected_code}")
+                return
+            time.sleep(0.1)
+        raise CheckFailure("bridge did not reach the injected crash point")
 
     def stop_bridge(self) -> None:
         process = self.bridge
@@ -970,6 +987,73 @@ class IntegrationRun:
                 "restart while the fake seat was busy. Commentary and final answer "
                 "were each delivered once under the canonical thread root, and the "
                 "single Matrix qitem completed pending -> in-progress -> done."
+            ),
+        )
+
+    async def check_answer_crash_recovery(self, room_id: str) -> None:
+        assert self.owner is not None
+        owner = self.owner
+        prompt = "crash after answer send"
+        self.stop_bridge()
+        self.start_bridge(crash_after="answer_send")
+        await owner.sync_until(
+            lambda: str(owner.client.rooms[room_id].topic).startswith("🟢 bereit"),
+            self.args.timeout,
+            description="ready status before answer crash probe",
+        )
+        before = len(owner.messages)
+        await owner.send_text(room_id, prompt)
+        self.wait_for_bridge_crash()
+        await owner.sync_until(
+            lambda: any(
+                message["sender"] == BRIDGE_USER
+                and f"Fake integration answer: {prompt}" in str(message["body"])
+                for message in owner.messages[before:]
+            ),
+            self.args.timeout,
+            description="answer sent before injected crash",
+        )
+        first_answers = [
+            message["event_id"]
+            for message in owner.messages[before:]
+            if message["sender"] == BRIDGE_USER
+            and f"Fake integration answer: {prompt}" in str(message["body"])
+        ]
+        if len(first_answers) != 1:
+            raise CheckFailure("answer crash probe did not observe exactly one first answer")
+
+        self.start_bridge()
+        wait_for_json_state(
+            self.state_dir / "state.json",
+            lambda value: not value.get("pending", {}).get(AGENT_KEY),
+            self.args.timeout,
+        )
+        await asyncio.sleep(1.0)
+        await owner.sync_once()
+        answers = [
+            message["event_id"]
+            for message in owner.messages[before:]
+            if message["sender"] == BRIDGE_USER
+            and f"Fake integration answer: {prompt}" in str(message["body"])
+        ]
+        if answers != first_answers:
+            raise CheckFailure(f"restart duplicated the Matrix answer: {answers}")
+        fake = json.loads((self.fake_state / "fake-openrig.json").read_text())
+        qitems = [
+            item
+            for item in fake["queue"].values()
+            if prompt in str(item.get("body") or "")
+        ]
+        if len(qitems) != 1 or qitems[0].get("state") != "done":
+            raise CheckFailure(f"answer crash qitem did not reconcile: {qitems}")
+        validate_qitem_history(qitems[0])
+        self.record(
+            "answer-crash-recovery",
+            "pass",
+            (
+                "The bridge process exited immediately after the final Matrix answer "
+                "send. Restart retried with the persisted transaction ID, Matrix "
+                "deduplicated to the same event, and the single qitem completed."
             ),
         )
 
@@ -1884,6 +1968,7 @@ class IntegrationRun:
         await self.check_room(room_id)
         await self.check_chat_and_queue(room_id)
         await self.check_threaded_reply(room_id)
+        await self.check_answer_crash_recovery(room_id)
         await self.check_fifo(room_id)
         await self.check_reaction(room_id)
         await self.check_images(room_id)

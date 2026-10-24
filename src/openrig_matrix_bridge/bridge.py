@@ -357,6 +357,7 @@ class MatrixBridge:
         await self._ensure_room_avatars()
         self._initialize_transcript_offsets()
         self._repair_decision_reply_targets()
+        await self._reconcile_pending_operations()
         await self._refresh_agent_statuses(force=True)
         poller = asyncio.create_task(self._poll_answers(), name="openrig-matrix-poller")
         status_poller = asyncio.create_task(
@@ -400,6 +401,12 @@ class MatrixBridge:
             for room_id in list(self.typing_tasks):
                 await self._set_typing(room_id, False)
             await self.client.close()
+
+    @staticmethod
+    def _crash_after_effect(point: str) -> None:
+        if os.environ.get("OPENRIG_BRIDGE_TEST_CRASH_AFTER") == point:
+            LOGGER.critical("test fault injection after %s", point)
+            os._exit(86)
 
     async def _initial_sync(self) -> None:
         response = await self.client.sync(timeout=0, full_state=True)
@@ -781,6 +788,7 @@ class MatrixBridge:
         )
         if not isinstance(response, RoomSendResponse):
             raise ConnectionError(f"encrypted image message failed: {response}")
+        self._crash_after_effect("image_send")
         self.state.data["media"][request_id] = {
             "agent": agent.key,
             "event_id": response.event_id,
@@ -870,6 +878,7 @@ class MatrixBridge:
         )
         if not isinstance(response, RoomSendResponse):
             raise ConnectionError(f"encrypted file message failed: {response}")
+        self._crash_after_effect("attachment_send")
         self.state.data["media"][request_id] = {
             "agent": agent.key,
             "event_id": response.event_id,
@@ -1858,6 +1867,9 @@ class MatrixBridge:
                 ),
                 "text": text,
                 "enqueued_at": time.time(),
+                "prompt_phase": "pending",
+                "answer_phase": None,
+                "qitem_phase": "pending" if qitem_id else "not_tracked",
                 "started_at": None,
                 "session_id": None,
                 "transcript_path": None,
@@ -1930,10 +1942,31 @@ class MatrixBridge:
         self,
         agent: AgentConfig,
         request: dict[str, Any],
-    ) -> None:
+    ) -> bool:
         qitem_id = str(request.get("qitem_id") or "").strip()
         if not qitem_id:
-            return
+            request["qitem_phase"] = "not_tracked"
+            return True
+        phase = str(request.get("qitem_phase") or "")
+        if phase == "claimed":
+            return True
+        if phase == "claiming":
+            try:
+                item = await self.gateway.queue_show(qitem_id)
+            except (GatewayError, OSError):
+                LOGGER.warning("could not inspect Matrix qitem %s", qitem_id, exc_info=True)
+                return False
+            state = str(item.get("state") or "")
+            if state == "in-progress" and item.get("claimed_by") == agent.session:
+                request["qitem_phase"] = "claimed"
+                self.state.save()
+                return True
+            if state in {"done", "failed", "canceled", "denied"}:
+                request["qitem_phase"] = state
+                self.state.save()
+                return False
+        request["qitem_phase"] = "claiming"
+        self.state.save()
         try:
             await self.gateway.queue_claim(qitem_id, agent.session)
         except (GatewayError, OSError):
@@ -1942,15 +1975,36 @@ class MatrixBridge:
                 qitem_id,
                 exc_info=True,
             )
+            return False
+        self._crash_after_effect("qitem_claim")
+        request["qitem_phase"] = "claimed"
+        self.state.save()
+        return True
 
     async def _finish_inbound_qitem(
         self,
         agent: AgentConfig,
         request: dict[str, Any],
-    ) -> None:
+    ) -> bool:
         qitem_id = str(request.get("qitem_id") or "").strip()
         if not qitem_id:
-            return
+            request["qitem_phase"] = "not_tracked"
+            return True
+        phase = str(request.get("qitem_phase") or "")
+        if phase == "done":
+            return True
+        if phase == "finishing":
+            try:
+                item = await self.gateway.queue_show(qitem_id)
+            except (GatewayError, OSError):
+                LOGGER.warning("could not inspect Matrix qitem %s", qitem_id, exc_info=True)
+                return False
+            if item.get("state") == "done":
+                request["qitem_phase"] = "done"
+                self.state.save()
+                return True
+        request["qitem_phase"] = "finishing"
+        self.state.save()
         try:
             await self.gateway.queue_finish(
                 qitem_id,
@@ -1963,16 +2017,37 @@ class MatrixBridge:
                 qitem_id,
                 exc_info=True,
             )
+            return False
+        self._crash_after_effect("qitem_finish")
+        request["qitem_phase"] = "done"
+        self.state.save()
+        return True
 
     async def _fail_inbound_qitem(
         self,
         agent: AgentConfig,
         request: dict[str, Any],
         resolution: str,
-    ) -> None:
+    ) -> bool:
         qitem_id = str(request.get("qitem_id") or "").strip()
         if not qitem_id:
-            return
+            request["qitem_phase"] = "not_tracked"
+            return True
+        phase = str(request.get("qitem_phase") or "")
+        if phase == "failed":
+            return True
+        if phase == "failing":
+            try:
+                item = await self.gateway.queue_show(qitem_id)
+            except (GatewayError, OSError):
+                LOGGER.warning("could not inspect Matrix qitem %s", qitem_id, exc_info=True)
+                return False
+            if item.get("state") == "failed":
+                request["qitem_phase"] = "failed"
+                self.state.save()
+                return True
+        request["qitem_phase"] = "failing"
+        self.state.save()
         try:
             await self.gateway.queue_fail(
                 qitem_id,
@@ -1985,6 +2060,58 @@ class MatrixBridge:
                 qitem_id,
                 exc_info=True,
             )
+            return False
+        self._crash_after_effect("qitem_fail")
+        request["qitem_phase"] = "failed"
+        self.state.save()
+        return True
+
+    async def _reconcile_pending_operations(self) -> None:
+        for agent in self.config.agents.values():
+            async with self.locks[agent.key]:
+                pending = self.state.data["pending"].get(agent.key, [])
+                if not pending:
+                    continue
+                request = pending[0]
+                if request.get("qitem_id") and request.get("qitem_phase") in {
+                    "pending",
+                    "claiming",
+                } and not await self._claim_inbound_qitem(agent, request):
+                    continue
+                if request.get("prompt_phase") == "sending":
+                    await self._fail_ambiguous_prompt(agent, request)
+                    continue
+                if (
+                    request.get("prompt_phase") == "sent"
+                    and request.get("answer_phase") == "sent"
+                ) and await self._finish_inbound_qitem(agent, request):
+                    pending.pop(0)
+                    self.state.save()
+
+    async def _fail_ambiguous_prompt(
+        self,
+        agent: AgentConfig,
+        request: dict[str, Any],
+    ) -> None:
+        resolution = "Prompt delivery outcome was uncertain after bridge restart"
+        if not await self._fail_inbound_qitem(agent, request, resolution):
+            return
+        response = await self._deliver_to_request(
+            self._room_for_agent(agent.key),
+            "Der Prompt-Versand ist nach dem Neustart nicht eindeutig. "
+            "Die Anfrage wurde als fehlgeschlagen markiert und wird nicht "
+            "erneut gesendet.",
+            request,
+            tx_id=f"failure-{request['id']}",
+        )
+        if not isinstance(response, RoomSendResponse):
+            return
+        request["terminal_error"] = resolution
+        request["failure_notice_event_id"] = response.event_id
+        pending = self.state.data["pending"][agent.key]
+        if pending and pending[0].get("id") == request["id"]:
+            pending.pop(0)
+        self.state.save()
 
     async def _handle_audio(
         self,
@@ -2598,8 +2725,14 @@ class MatrixBridge:
             request["transcript_path"] = str(ref.transcript_path)
             request["offset"] = ref.transcript_path.stat().st_size
             request["started_at"] = time.time()
-            await self._claim_inbound_qitem(agent, request)
+            if not await self._claim_inbound_qitem(agent, request):
+                raise GatewayError(f"could not claim Matrix qitem {request.get('qitem_id')}")
+            request["prompt_phase"] = "sending"
+            self.state.save()
             await self.gateway.send_prompt(ref, request["text"])
+            self._crash_after_effect("prompt_send")
+            request["prompt_phase"] = "sent"
+            self.state.save()
             if not request.get("suppress_reply"):
                 await self._set_typing(room_id, True)
                 await self._update_agent_status(agent, "busy", "arbeitet")
@@ -2786,7 +2919,10 @@ class MatrixBridge:
 
             room_id = self._room_for_agent(agent.key)
             if request.get("suppress_reply"):
-                await self._finish_inbound_qitem(agent, request)
+                request["answer_phase"] = "suppressed"
+                self.state.save()
+                if await self._finish_inbound_qitem(agent, request) is False:
+                    return
                 pending.pop(0)
                 self.state.save()
                 await self._update_queue_notice(
@@ -2797,11 +2933,23 @@ class MatrixBridge:
                 if pending:
                     await self._start_request(agent, pending[0], room_id)
                 return
-            response = await self._deliver_to_request(
-                room_id,
-                request["answer_text"],
-                request,
-            )
+            if request.get("answer_phase") != "sent":
+                request["answer_phase"] = "sending"
+                request["answer_tx_id"] = (
+                    f"answer-{request.get('id') or request['event_id']}"
+                )
+                self.state.save()
+                response = await self._deliver_to_request(
+                    room_id,
+                    request["answer_text"],
+                    request,
+                    tx_id=request["answer_tx_id"],
+                )
+            else:
+                response = RoomSendResponse(
+                    str(request.get("answer_event_id") or "$already-sent"),
+                    room_id,
+                )
             if not isinstance(response, RoomSendResponse):
                 attempts = request.get("delivery_failure_count", 0) + 1
                 request["delivery_failure_count"] = attempts
@@ -2815,11 +2963,17 @@ class MatrixBridge:
                 )
                 if attempts < MAX_DELIVERY_ATTEMPTS:
                     return
-                await self._fail_inbound_qitem(
+                request["answer_phase"] = "failed"
+                request["terminal_error"] = (
+                    f"Matrix answer delivery failed after {attempts} attempts"
+                )
+                if await self._fail_inbound_qitem(
                     agent,
                     request,
-                    f"Matrix answer delivery failed after {attempts} attempts",
-                )
+                    request["terminal_error"],
+                ) is False:
+                    self.state.save()
+                    return
                 await self._set_typing(room_id, False)
                 await self._update_agent_status(agent, "error", "Zustellung fehlgeschlagen")
                 pending.pop(0)
@@ -2832,7 +2986,12 @@ class MatrixBridge:
                 if pending:
                     await self._start_request(agent, pending[0], room_id)
                 return
-            await self._finish_inbound_qitem(agent, request)
+            self._crash_after_effect("answer_send")
+            request["answer_phase"] = "sent"
+            request["answer_event_id"] = response.event_id
+            self.state.save()
+            if await self._finish_inbound_qitem(agent, request) is False:
+                return
             await self._set_typing(room_id, False)
             await self._update_agent_status(agent, "ready", "bereit")
             pending.pop(0)
@@ -2863,13 +3022,18 @@ class MatrixBridge:
         room_id: str,
         text: str,
         request: dict[str, Any],
+        *,
+        tx_id: str | None = None,
     ):
         try:
+            kwargs = self._delivery_kwargs(request)
+            if tx_id is not None:
+                kwargs["tx_id"] = tx_id
             return await self._send(
                 room_id,
                 text,
                 self._reply_target(request),
-                **self._delivery_kwargs(request),
+                **kwargs,
             )
         except Exception:
             LOGGER.warning("Matrix delivery raised for %s", request["event_id"], exc_info=True)
