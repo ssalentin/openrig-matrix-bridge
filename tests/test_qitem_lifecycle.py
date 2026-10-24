@@ -1,4 +1,5 @@
 import asyncio
+import time
 from types import SimpleNamespace
 
 from nio import RoomSendResponse
@@ -109,6 +110,87 @@ def test_claim_failure_keeps_request_retryable():
     assert request["prompt_phase"] == "pending"
     assert request["started_at"] is None
     assert len(bridge.sent) == 1
+
+
+def test_prompt_failure_retains_request_when_qitem_fail_also_fails():
+    bridge, agent = bridge_fixture()
+    request = {
+        "id": "request-one",
+        "event_id": "$prompt",
+        "reply_to_event_id": "$prompt",
+        "qitem_id": "qitem-one",
+        "qitem_phase": "claimed",
+        "prompt_phase": "pending",
+        "text": "do work",
+        "started_at": None,
+    }
+    bridge.state.data["pending"]["advisor"] = [request]
+    transcript = SimpleNamespace(stat=lambda: SimpleNamespace(st_size=0))
+
+    class Resolver:
+        def resolve(self, session):
+            return SimpleNamespace(
+                session_id="session-one",
+                transcript_path=transcript,
+                busy=False,
+            )
+
+    class Gateway:
+        async def send_prompt(self, ref, text):
+            raise GatewayError("prompt send failed")
+
+        async def queue_fail(self, qitem_id, session, resolution):
+            raise GatewayError("qitem fail failed")
+
+    bridge.resolver = Resolver()
+    bridge.gateway = Gateway()
+
+    asyncio.run(
+        MatrixBridge._start_request(
+            bridge,
+            agent,
+            request,
+            "!advisor:example.org",
+        )
+    )
+
+    assert bridge.state.data["pending"]["advisor"] == [request]
+    assert request["qitem_phase"] == "failing"
+    assert request["terminal_error"] == "Prompt failed: prompt send failed"
+
+
+def test_timeout_retains_request_when_qitem_fail_also_fails():
+    bridge, agent = bridge_fixture()
+    bridge.config.response_timeout_minutes = 1
+    request = {
+        "id": "request-one",
+        "event_id": "$prompt",
+        "reply_to_event_id": "$prompt",
+        "qitem_id": "qitem-one",
+        "qitem_phase": "claimed",
+        "prompt_phase": "sent",
+        "answer_phase": None,
+        "answer_text": None,
+        "started_at": time.time() - 120,
+    }
+    bridge.state.data["pending"]["advisor"] = [request]
+
+    async def noop(*args, **kwargs):
+        return None
+
+    class Gateway:
+        async def queue_fail(self, qitem_id, session, resolution):
+            raise GatewayError("qitem fail failed")
+
+    bridge.gateway = Gateway()
+    bridge._set_typing = noop
+    bridge._update_agent_status = noop
+
+    asyncio.run(bridge._poll_agent(agent))
+
+    assert bridge.state.data["pending"]["advisor"] == [request]
+    assert request["qitem_phase"] == "failing"
+    assert request["answer_phase"] == "failed"
 
 
 def test_finish_failure_remains_pending_for_reconciliation():
