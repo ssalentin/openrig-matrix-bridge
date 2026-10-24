@@ -48,6 +48,7 @@ class BridgeConfig:
     human_destinations: tuple[str, ...]
     mirror_commentary: bool
     poll_interval_seconds: float
+    human_queue_poll_seconds: float
     max_message_age_minutes: int
     response_timeout_minutes: int
     status_refresh_seconds: float
@@ -134,12 +135,15 @@ def load_config(path: str | Path) -> BridgeConfig:
     ):
         raise ConfigError("openrig.human_destinations must be a list of seat addresses")
     mirror_commentary = bool(transport.get("mirror_commentary", True))
-    poll_interval = float(transport.get("poll_interval_seconds", 1.0))
+    poll_interval = float(transport.get("poll_interval_seconds", 0.2))
+    human_queue_poll = float(transport.get("human_queue_poll_seconds", 2.0))
     max_age = int(transport.get("max_message_age_minutes", 60))
     timeout = int(transport.get("response_timeout_minutes", 360))
     status_refresh = float(transport.get("status_refresh_seconds", 30))
     if poll_interval < 0.2:
         raise ConfigError("openrig.poll_interval_seconds must be at least 0.2")
+    if human_queue_poll < 0.5:
+        raise ConfigError("openrig.human_queue_poll_seconds must be at least 0.5")
     if status_refresh < 1:
         raise ConfigError("openrig.status_refresh_seconds must be at least 1")
     if max_age < 0 or timeout <= 0:
@@ -164,6 +168,7 @@ def load_config(path: str | Path) -> BridgeConfig:
         human_destinations=tuple(str(item).strip() for item in human_destinations_raw),
         mirror_commentary=mirror_commentary,
         poll_interval_seconds=poll_interval,
+        human_queue_poll_seconds=human_queue_poll,
         max_message_age_minutes=max_age,
         response_timeout_minutes=timeout,
         status_refresh_seconds=status_refresh,

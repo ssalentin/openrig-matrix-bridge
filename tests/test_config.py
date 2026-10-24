@@ -36,6 +36,8 @@ def test_loads_minimal_config(tmp_path: Path):
     assert config.homeserver == "https://matrix.example.org"
     assert config.agents["advisor"].session == "advisor-lead@kernel"
     assert config.status_refresh_seconds == 30
+    assert config.poll_interval_seconds == 0.2
+    assert config.human_queue_poll_seconds == 2.0
     assert config.rig_command == "/opt/rig"
     assert config.codex_home == Path("/tmp/codex")
     assert config.sender_session == "matrix-bridge@kernel"

@@ -13,7 +13,8 @@ openrig:
   human_destinations:
     - owner@external
   mirror_commentary: true
-  poll_interval_seconds: 1.0
+  poll_interval_seconds: 0.2
+  human_queue_poll_seconds: 2.0
   max_message_age_minutes: 60
   response_timeout_minutes: 360
   status_refresh_seconds: 30

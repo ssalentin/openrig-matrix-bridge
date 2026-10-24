@@ -33,6 +33,12 @@ reasoning or raw tool output. The final answer is still posted after the work is
 complete. Disable interim messages with `mirror_commentary: false` or run
 `setup --no-commentary`.
 
+While a request is active, the transcript is checked every
+`openrig.poll_interval_seconds` (default `0.2`). This bounds polling delay to
+roughly 200 ms. Matrix sync itself is event-driven. A prompt that arrives while
+the same agent is already working remains queued until the current turn ends;
+the polling interval does not interrupt that turn.
+
 Because one Matrix bot account can only have one global presence, status is
 represented per room. OpenRig can use one bot for any number of agents.
 

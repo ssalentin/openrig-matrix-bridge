@@ -8,6 +8,8 @@
 - Mirror new OpenRig human updates and decisions into the source agent's room.
 - Register the Matrix owner as an OpenRig human recipient during `setup`.
 - Mirror visible Codex commentary messages into the active Matrix thread.
+- Reduce active transcript and outbox polling latency to 200 ms.
+- Poll OpenRig human-queue handoffs every two seconds by default.
 
 ## 0.4.0
 

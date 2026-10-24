@@ -284,7 +284,7 @@ class MatrixBridge:
                 raise
             except Exception:
                 LOGGER.exception("decision processing failed")
-            await asyncio.sleep(1)
+            await asyncio.sleep(self.config.poll_interval_seconds)
 
     async def _process_decision_inbox(self) -> None:
         for path in sorted(self.decision_inbox.glob("*.json")):
@@ -368,7 +368,7 @@ class MatrixBridge:
                 raise
             except Exception:
                 LOGGER.exception("message processing failed")
-            await asyncio.sleep(1)
+            await asyncio.sleep(self.config.poll_interval_seconds)
 
     async def _poll_human_queue(self) -> None:
         while True:
@@ -378,7 +378,7 @@ class MatrixBridge:
                 raise
             except Exception:
                 LOGGER.exception("human queue mirror failed")
-            await asyncio.sleep(10)
+            await asyncio.sleep(self.config.human_queue_poll_seconds)
 
     async def _mirror_human_queue(self) -> None:
         if not self.config.human_destinations:
@@ -507,7 +507,7 @@ class MatrixBridge:
                 raise
             except Exception:
                 LOGGER.exception("media processing failed")
-            await asyncio.sleep(1)
+            await asyncio.sleep(self.config.poll_interval_seconds)
 
     async def _process_media_outbox(self) -> None:
         for path in sorted(self.media_outbox.glob("*.json")):
