@@ -2194,6 +2194,14 @@ class MatrixBridge:
             | RoomEncryptedAudio
         ),
     ) -> None:
+        content = event.source.get("content", {})
+        if (
+            isinstance(content, dict)
+            and content.get("msgtype") == "m.audio"
+            and is_voice_message_content(content)
+        ):
+            await self._handle_audio(room, event)
+            return
         if not self.config.media.enabled:
             return
         if event.sender == self.config.user_id:

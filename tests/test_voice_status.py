@@ -463,3 +463,27 @@ def test_encrypted_voice_status_keeps_thread_and_edit_relations():
     assert edit_call[3]["tx_id"] == voice_transaction_id("$voice", "edit-done")
 
 
+def test_file_handler_routes_marked_audio_to_voice_handler():
+    bridge = object.__new__(MatrixBridge)
+    bridge.config = SimpleNamespace(media=SimpleNamespace(enabled=True))
+    routed = []
+
+    async def handle_audio(room, event):
+        routed.append((room, event))
+
+    bridge._handle_audio = handle_audio
+    room = SimpleNamespace(room_id="!advisor:matrix.example.org")
+    event = SimpleNamespace(
+        source={
+            "content": {
+                "msgtype": "m.audio",
+                "org.matrix.msc3245.voice": {},
+            }
+        }
+    )
+
+    asyncio.run(bridge._handle_file(room, event))
+
+    assert routed == [(room, event)]
+
+
