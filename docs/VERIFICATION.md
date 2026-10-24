@@ -150,6 +150,15 @@ the request when fail-close fails, and terminal qitems advance FIFO.
 The report is
 [`issue-12-integration-report.json`](artifacts/issue-12-integration-report.json).
 
+### Matrix restart-observation stability
+
+Source `b1e8d17a1d758da3655deb6eb4aba237d2b0ebbc` uses five-second long polls,
+bounded backoff, timeout diagnostics, and a restart barrier requiring durable
+`prompt_phase=sent` plus claimed/finishing qitem state. Three consecutive
+exact-source runs passed 20/20 checks; the persisted run completed in 54.1s with
+`evidence_valid: true`. Report:
+[`matrix-stability-report.json`](artifacts/matrix-stability-report.json).
+
 ## Documentation checks
 
 Check every relative Markdown link from the repository root:
