@@ -45,6 +45,9 @@ def test_relative_link_checker_reports_missing_local_target(tmp_path: Path):
         "```text\n"
         "![fenced example](also-not-a-link.png)\n"
         "```\n"
+        "```text\n"
+        "![long-close example](long-close-not-a-link.png)\n"
+        "````\n"
         "[external](https://example.org/report)\n"
         "[fragment](#setup)\n",
         encoding="utf-8",

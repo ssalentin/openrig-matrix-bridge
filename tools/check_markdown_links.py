@@ -10,7 +10,8 @@ from urllib.parse import unquote, urlsplit
 
 INLINE_LINK = re.compile(r"!?\[[^]]*\]\(([^)\n]+)\)")
 ANGLE_DESTINATION = re.compile(r"<([^>]+)>")
-FENCED_CODE = re.compile(r"(?ms)^ {0,3}(```+|~~~+).*?^ {0,3}\1[ \t]*$")
+FENCE_START = re.compile(r"^ {0,3}(`{3,}|~{3,}).*$")
+FENCE_CLOSE = re.compile(r"^ {0,3}(`{3,}|~{3,})[ \t]*$")
 INLINE_CODE = re.compile(r"`+[^`\n]*`+")
 
 
@@ -18,11 +19,36 @@ def markdown_files(root: Path) -> list[Path]:
     return [root / "README.md", *sorted((root / "docs").rglob("*.md"))]
 
 
+def without_fenced_code(markdown: str) -> str:
+    lines: list[str] = []
+    fence_char = ""
+    fence_length = 0
+    for line in markdown.splitlines(keepends=True):
+        stripped = line.rstrip("\r\n")
+        if fence_char:
+            match = FENCE_CLOSE.match(stripped)
+            if (
+                match
+                and match.group(1)[0] == fence_char
+                and len(match.group(1)) >= fence_length
+            ):
+                fence_char = ""
+                fence_length = 0
+            continue
+        match = FENCE_START.match(stripped)
+        if match:
+            fence_char = match.group(1)[0]
+            fence_length = len(match.group(1))
+            continue
+        lines.append(line)
+    return "".join(lines)
+
+
 def find_missing_links(root: Path) -> list[str]:
     missing: list[str] = []
     for path in markdown_files(root):
         markdown = path.read_text(encoding="utf-8")
-        markdown = FENCED_CODE.sub("", markdown)
+        markdown = without_fenced_code(markdown)
         markdown = INLINE_CODE.sub("", markdown)
         for match in INLINE_LINK.finditer(markdown):
             destination = match.group(1).strip()
