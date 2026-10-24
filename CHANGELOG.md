@@ -7,7 +7,6 @@
 - Deliver Matrix prompts with `rig send --raw` and no separate chat gateway.
 - Mirror new OpenRig human updates and decisions into the source agent's room.
 - Register the Matrix owner as an OpenRig human recipient during `setup`.
-- Show detailed thinking, search, network, file-edit, writing, and waiting states.
 
 ## 0.4.0
 

@@ -52,9 +52,8 @@ def test_status_uses_topic_and_structured_event_instead_of_room_name():
         "dev.openrig.agent_status",
     ]
     assert bridge.client.calls[0][2] == {
-        "topic": "🟡 🛠️ arbeitet · advisor-lead@kernel"
+        "topic": "🟡 arbeitet · advisor-lead@kernel"
     }
-    assert bridge.client.calls[1][2]["activity_icon"] == "🛠️"
     assert "m.room.name" not in {call[1] for call in bridge.client.calls}
 
 

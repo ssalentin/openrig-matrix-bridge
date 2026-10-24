@@ -61,7 +61,7 @@ from .openrig import (
     OpenRigGateway,
     OpenRigSessionResolver,
 )
-from .transcript import final_answer, latest_activity, read_complete_records
+from .transcript import final_answer, read_complete_records
 from .transcription import Transcriber
 
 LOGGER = logging.getLogger("openrig-matrix-bridge")
@@ -72,29 +72,10 @@ STATUS_LABELS = {
     "offline": "⚫",
     "error": "🟠",
 }
-ACTIVITY_ICONS = {
-    "arbeitet": "🛠️",
-    "bearbeitet Dateien": "📝",
-    "denkt": "🧠",
-    "liest": "📖",
-    "Netzwerk": "🌐",
-    "prüft Bild": "🖼️",
-    "schreibt": "✍️",
-    "sucht": "🔎",
-    "wartet auf Freigabe": "⏸️",
-    "Websuche": "🌐",
-    "Werkzeug": "🛠️",
-}
 
 
 def room_name(agent: AgentConfig) -> str:
     return agent.display_name
-
-
-def status_topic(status: str, detail: str, session: str) -> str:
-    icon = ACTIVITY_ICONS.get(detail)
-    middle = f"{icon} {detail}" if icon else detail
-    return f"{STATUS_LABELS[status]} {middle} · {session}"
 
 
 def verification_decision(text: str) -> bool | None:
@@ -162,7 +143,7 @@ class MatrixBridge:
             for room in self.state.data["rooms"].values()
             if room.get("room_id")
         }
-        self.agent_statuses: dict[str, tuple[str, str]] = {}
+        self.agent_statuses: dict[str, str] = {}
         self.decision_inbox = config.state_dir / "decision-inbox"
         self.decision_sent = self.decision_inbox / "sent"
         self.decision_failed = self.decision_inbox / "failed"
@@ -1220,6 +1201,17 @@ class MatrixBridge:
         async with self.locks[agent.key]:
             pending = self.state.data["pending"].get(agent.key, [])
             if not pending:
+                try:
+                    ref = await asyncio.to_thread(
+                        self.resolver.resolve,
+                        agent.session,
+                    )
+                except AgentSessionNotFound:
+                    return
+                self.state.data["transcripts"][agent.key] = {
+                    "path": str(ref.transcript_path),
+                    "offset": ref.transcript_path.stat().st_size,
+                }
                 return
 
             request = pending[0]
@@ -1259,8 +1251,6 @@ class MatrixBridge:
                 if answers:
                     request["answer_text"] = answers[-1]
                     self.state.save()
-                elif activity := latest_activity(records):
-                    await self._update_agent_status(agent, activity[0], activity[1])
 
             if request.get("answer_text") is None:
                 return
@@ -1311,15 +1301,10 @@ class MatrixBridge:
                 continue
             if self.state.data["pending"].get(agent.key):
                 status, detail = "busy", "arbeitet"
-                current = self.agent_statuses.get(agent.key)
-                if current and current[0] == "busy":
-                    detail = current[1]
             else:
                 ref = resolved.get(agent.session)
                 if ref is None:
                     status, detail = "offline", "offline"
-                elif ref.waiting_for_input:
-                    status, detail = "busy", "wartet auf Freigabe"
                 else:
                     status, detail = ("busy", "arbeitet") if ref.busy else ("ready", "bereit")
             await self._update_agent_status(agent, status, detail)
@@ -1330,19 +1315,18 @@ class MatrixBridge:
         status: str,
         detail: str,
     ) -> None:
-        status_value = (status, detail)
-        if self.agent_statuses.get(agent.key) == status_value:
+        if self.agent_statuses.get(agent.key) == status:
             return
         room = self.state.data["rooms"].get(agent.key)
         if not room:
             return
         room_id = str(room["room_id"])
-        topic = status_topic(status, detail, agent.session)
+        status_topic = f"{STATUS_LABELS[status]} {detail} · {agent.session}"
         try:
             await self.client.room_put_state(
                 room_id,
                 "m.room.topic",
-                {"topic": topic},
+                {"topic": status_topic},
             )
             await self.client.room_put_state(
                 room_id,
@@ -1350,7 +1334,6 @@ class MatrixBridge:
                 {
                     "state": status,
                     "detail": detail,
-                    "activity_icon": ACTIVITY_ICONS.get(detail),
                     "session": agent.session,
                     "updated_at": int(time.time() * 1000),
                 },
@@ -1358,7 +1341,7 @@ class MatrixBridge:
         except Exception:
             LOGGER.warning("failed to update Matrix status for %s", agent.session, exc_info=True)
             return
-        self.agent_statuses[agent.key] = status_value
+        self.agent_statuses[agent.key] = status
 
     async def _set_typing(self, room_id: str, typing: bool) -> None:
         existing = self.typing_tasks.pop(room_id, None)
