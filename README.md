@@ -2,39 +2,150 @@
 
 [![test](https://github.com/ssalentin/openrig-matrix-bridge/actions/workflows/test.yml/badge.svg)](https://github.com/ssalentin/openrig-matrix-bridge/actions/workflows/test.yml)
 
-Give every live OpenRig Codex seat a private, encrypted Matrix room so you can
-continue the same agent conversation from Element without starting a second
-agent.
+Talk to your OpenRig agents from a normal chat app without starting another
+agent. Each live Codex seat gets its own private, encrypted Matrix room, so you
+can use Element on desktop or mobile while the agent keeps its existing
+terminal session, tools, and working context.
 
-The bridge resolves the seat through the OpenRig CLI, injects prompts into its
-existing terminal, and reads the seat's native Codex transcript for progress
-and the final answer. Matrix is the user interface; OpenRig remains the agent
-runtime.
+The result is simple: your familiar Matrix client becomes the interface, and
+OpenRig remains the runtime.
 
-This README is the first-time setup path. For the evidence behind individual
-product claims, see [Verification and evidence](docs/VERIFICATION.md) and
-[Product positioning](docs/POSITIONING.md).
+## What this gives you
 
-## What works
+Each configured agent appears as one private room:
 
-- One private Matrix room per configured Codex seat, with no second agent.
-- Per-room status in the room topic and `dev.openrig.agent_status` state.
-- A refreshed Matrix typing indicator while an answer is in progress.
-- FIFO prompts per agent, with a single editable pinned queue card.
-- Encrypted text, images, arbitrary files, voice notes, decisions, and polls in
-  encrypted rooms.
-- Canonical thread delivery for top-level prompts and prompts that are already
-  thread replies, with bounded commentary/final-delivery failure handling.
-- Local NVIDIA Parakeet transcription; audio is not sent to a transcription
-  service.
-- Silent agent feedback when the owner reacts to a bridge-authored message.
-- Durable OpenRig queue items for Matrix prompts, with configurable priority.
-- Markdown rendering, including tables, in Matrix-capable clients.
+```text
+Your Matrix account
+├── Advisor       live OpenRig Codex seat, private encrypted room
+├── Engineer      live OpenRig Codex seat, private encrypted room
+└── Operator      live OpenRig Codex seat, private encrypted room
+```
 
-The supported integration is Codex-only. See [Known limits](#known-limits)
-before treating a mocked unit test as proof of live Matrix behavior.
+Inside a room, you can:
 
-## Prerequisites
+- see whether the agent is ready or working;
+- send threaded follow-ups and watch visible progress;
+- receive the final answer in Matrix;
+- send encrypted images, generic files, and voice notes;
+- answer pinned decisions and polls; and
+- react to a bridge message as silent feedback.
+
+There is no second agent process. The bridge resolves the existing OpenRig seat,
+injects your message into that seat's terminal, and reads the seat's own Codex
+transcript. Matrix prompts also create durable OpenRig queue items. Voice
+transcription runs locally with NVIDIA Parakeet; audio is not sent to a
+transcription service. Rooms and message content use Matrix end-to-end
+encryption.
+
+## Contents
+
+- [What you need](#what-you-need)
+- [Copy-ready OpenRig setup brief](#copy-ready-openrig-setup-brief)
+- [What this does not do yet](#what-this-does-not-do-yet)
+- [Detailed prerequisites](#detailed-prerequisites)
+- [Install from this checkout](#install-from-this-checkout)
+- [OpenRig setup](#openrig-setup)
+- [Configure and start](#configure-and-start)
+- [Verify the product manually](#verify-the-product-manually)
+- [Matrix device verification](#matrix-device-verification)
+- [OpenRig behavior](#openrig-behavior)
+- [Security and E2EE](#security-and-e2ee)
+- [systemd](#systemd)
+- [Test setup](#test-setup)
+- [Troubleshooting](#troubleshooting)
+- [Known limits](#known-limits)
+
+## What you need
+
+- A Linux or equivalent host with Python 3.11+.
+- OpenRig installed, with one or more running Codex seats.
+- The `rig` command available to the bridge, plus the Codex home used by those
+  seats.
+- A dedicated Matrix bot account, its homeserver URL, its user ID, its device
+  ID, and a token for that one bot device.
+- The full Matrix user ID of the person who should own the rooms.
+- HTTPS access to the Matrix homeserver.
+- `ffmpeg` and about 465 MB of model storage if local voice transcription is
+  enabled.
+
+The bot access token belongs in an environment variable or secret manager.
+Never put it in this repository, a public issue, or a chat message.
+
+## Copy-ready OpenRig setup brief
+
+Copy the block below into OpenRig after replacing every angle-bracket
+placeholder. It tells OpenRig to inspect the existing installation, configure
+the bridge, run health checks, and verify the real Matrix rooms without asking
+for the token in chat.
+
+```text
+Set up the OpenRig Matrix bridge in <ABSOLUTE_REPOSITORY_PATH>.
+
+Goal: give every currently running Codex seat one private encrypted Matrix room
+without starting a second agent.
+
+Before changing anything:
+- run `rig whoami --json`;
+- run `rig ps --nodes -A --json`;
+- list the running Codex seats you intend to expose;
+- confirm the bridge's `rig` command and Codex home;
+- stop and ask me if any of those values are ambiguous.
+
+Use these non-secret Matrix values:
+- homeserver: <MATRIX_HOMESERVER_URL>
+- bot user ID: <BOT_MATRIX_USER_ID>
+- bot device ID: <BOT_MATRIX_DEVICE_ID>
+- owner Matrix user ID: <OWNER_MATRIX_USER_ID>
+
+The bot access token is already available to your process through
+MATRIX_ACCESS_TOKEN in the environment or secret manager. Do not ask me to paste
+the token into chat, write it into a repository file or YAML, print it, or add it
+to an issue. If the variable is absent, stop and tell me how to expose it to the
+process safely.
+
+Then:
+1. Create or reuse the repository virtual environment and install the package
+   from the checkout.
+2. Verify the Matrix token with the homeserver `whoami` endpoint without
+   printing it.
+3. Run `openrig-matrix-bridge setup` with the homeserver, bot user ID, bot
+   device ID, owner user ID, live `rig` command, Codex home, explicit config
+   path, and state directory. Use `--no-human-registration` only if the
+   installed OpenRig human registry is unavailable. Use `--skip-model` if you
+   want to defer the large voice model download.
+4. Inspect the generated YAML without printing credentials. It must not contain
+   an access token or private encryption state.
+5. Run `openrig-matrix-bridge doctor --config <CONFIG_PATH>` and stop on a hard
+   failure.
+6. Start the bridge in the foreground with
+   `openrig-matrix-bridge run --config <CONFIG_PATH>`, or install the adapted
+   systemd unit from this README, and wait for one private room per configured
+   agent.
+7. Verify that the owner was invited, each encrypted room exists once, the room
+   topic becomes ready, and the configured agent mapping is stable.
+8. Report the config path, exact commands, health result, seat-to-room mapping,
+   invite status, and any remaining Matrix device-verification steps.
+
+Do not claim success until room creation and owner invitations are observed.
+Do not describe device SAS verification or cross-signing as complete until a
+real trusted client confirms it.
+```
+
+## What this does not do yet
+
+- It supports Codex seats only, not every OpenRig runtime.
+- Matrix may still show an unverified-device warning. Verification is per
+  device; the bridge does not provide complete cross-signing for every owner
+  device.
+- Real Parakeet recognition quality and live Element rendering remain manual
+  evidence, not automated guarantees.
+- A stopped seat can remain configured, but it cannot accept prompts until it
+  is running again.
+
+See [Known limits](#known-limits) and
+[Verification and evidence](docs/VERIFICATION.md) for the precise boundaries.
+
+## Detailed prerequisites
 
 Before installing, arrange:
 
