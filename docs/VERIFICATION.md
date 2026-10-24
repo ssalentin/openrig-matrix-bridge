@@ -91,14 +91,14 @@ command above.
 
 ### Issue #3 attachment evidence
 
-The issue #3 source commit `cb8aa4a5c513ce73a901c369137fa8fba1942f3d`
+The issue #3 source commit `635a2856b137b4fda2998c5dd0439cbeddc8ff9f`
 passed:
 
 | Check | Exact command | Observed result |
 |---|---|---|
-| Unit tests | `.venv/bin/python -m pytest -q` | 117 passed |
+| Unit tests | `.venv/bin/python -m pytest -q` | 133 passed |
 | Python lint | `.venv/bin/ruff check .` | All checks passed |
-| Matrix integration | `.venv/bin/python tools/matrix_integration.py --timeout 60 --source-commit cb8aa4a5c513ce73a901c369137fa8fba1942f3d` | `status: pass`, `evidence_valid: true`, 15/15 checks in 35.9s |
+| Matrix integration | `.venv/bin/python tools/matrix_integration.py --timeout 60 --source-commit 635a2856b137b4fda2998c5dd0439cbeddc8ff9f` | `status: pass`, `evidence_valid: true`, 16/16 checks in 38.8s |
 
 The machine-readable result is
 [`issue-3-integration-report.json`](artifacts/issue-3-integration-report.json).
@@ -107,7 +107,9 @@ markerless-audio generic routing, generated safe inbox paths, `m.file` metadata,
 private admission snapshots, byte-preserving decryption, Megolm encryption on
 the wire, and a pending outbox attachment delivered exactly once from its
 snapshot after restart and source mutation. The OpenRig transport remains the
-deterministic fixture rather than a live Codex model.
+deterministic fixture rather than a live Codex model. The rebased run also
+preserves the merged #19 canonical-thread delivery behavior, including the
+threaded-prompt restart check.
 
 ## Documentation checks
 

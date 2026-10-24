@@ -1,10 +1,10 @@
 {
   "bridge_state_summary": {
-    "processed_matrix_events": 9,
+    "processed_matrix_events": 11,
     "rejected_rooms": 1,
     "rooms": 0
   },
-  "duration_seconds": 35.9,
+  "duration_seconds": 38.8,
   "environment": {
     "command": "python tools/matrix_integration.py",
     "element_sas": "not exercised; requires a human client action",
@@ -14,7 +14,7 @@
     "voice_model": "not downloaded or executed"
   },
   "evidence_valid": true,
-  "generated_at": "2026-10-24T18:21:01.807542+00:00",
+  "generated_at": "2026-10-24T18:26:50.091357+00:00",
   "known_gaps": [
     "Real Codex prompt delivery and native transcript completion are represented by the fake OpenRig subprocess transport.",
     "The Parakeet model and real voice transcription were not run.",
@@ -36,7 +36,7 @@
     },
     {
       "automated": true,
-      "evidence": "`setup` wrote one agent room; `doctor` exited 0 (wrote /tmp/openrig-matrix-integration.a9wm9af2/config.yaml with 1 agent room(s))",
+      "evidence": "`setup` wrote one agent room; `doctor` exited 0 (wrote /tmp/openrig-matrix-integration.g2gdugya/config.yaml with 1 agent room(s))",
       "id": "setup-and-doctor",
       "status": "pass"
     },
@@ -54,7 +54,13 @@
     },
     {
       "automated": true,
-      "evidence": "A second owner message arrived during a deliberately slow first turn; Matrix showed the pinned queue notice and the fake OpenRig transport received the second prompt only after recording completion of the first (1792866042.3137462 < 1792866042.704506).",
+      "evidence": "An encrypted owner prompt already in m.thread survived a bridge restart while the fake seat was busy. Commentary and final answer were each delivered once under the canonical thread root, and the single Matrix qitem completed pending -> in-progress -> done.",
+      "id": "threaded-prompt-restart",
+      "status": "pass"
+    },
+    {
+      "automated": true,
+      "evidence": "A second owner message arrived during a deliberately slow first turn; Matrix showed the pinned queue notice and the fake OpenRig transport received the second prompt only after recording completion of the first (1792866391.8762667 < 1792866392.2191358).",
       "id": "fifo-queue-notice",
       "status": "pass"
     },
@@ -124,7 +130,7 @@
   "target": {
     "package": "openrig-matrix-bridge",
     "source": {
-      "commit": "cb8aa4a5c513ce73a901c369137fa8fba1942f3d",
+      "commit": "635a2856b137b4fda2998c5dd0439cbeddc8ff9f",
       "source": "git",
       "worktree_clean": true
     },
