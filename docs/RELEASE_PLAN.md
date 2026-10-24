@@ -15,7 +15,10 @@ Ship `0.11.0` with:
 - thread-aware hybrid queue/steering with durable fallback and one active turn;
 - an honest resolution of Matrix device-verification and cross-signing work;
 - recorded Element X threaded-reply compatibility evidence;
+- canonical thread delivery for prompts that are already Matrix replies;
 - release validation and documentation improvements found by the audit.
+- accessible product onboarding, visible queue/activity cards and a reviewed
+  product identity without an unapproved public rename.
 
 Every milestone issue must be closed or have a written, evidence-backed owner
 disposition before handoff. No claim may exceed the committed unit, integration,
@@ -57,6 +60,15 @@ areas outside the original feature scopes:
 QA also confirmed that inbound thread roots must be preserved. That requirement
 belongs to #4 and has been added to its acceptance record.
 
+Engineering Lead audit and live use added:
+
+- #16 for the production failure on prompts that are already thread replies;
+- #20 for a plain-language README and copy-ready OpenRig setup brief;
+- #22 for a naming decision brief, with no rename before owner approval;
+- #23 for a symbol-first logo and reusable assets;
+- #24 for ordered message previews in the pinned queue card;
+- #25 for truthful, redacted activity in the editable commentary card.
+
 No implementation work may be folded into another issue's review boundary.
 Feature branches start from the release base, remain independently reviewable,
 and are integrated into `release/0.11.0` only after their focused tests pass.
@@ -70,7 +82,13 @@ and are integrated into `release/0.11.0` only after their focused tests pass.
 | #9 | `issue-9-release-validation` | Core + Interface | release verifier, CI, release tests, docs | plan |
 | #11 | TBD | Core | request state machine, outbox/state recovery, fault-injection harness | #3 and #5 integrated |
 | #12 | TBD | Core | qitem lifecycle and gateway error handling, fake transport faults | #3 and #5 integrated |
-| #13 | TBD | Interface | config URL/key validation and media path containment | base |
+| #13 | `issue-13-config-safety` | Interface | config URL/key validation and media path containment | base |
+| #16 | `issue-16-thread-delivery` | Interface | relation resolution, delivery failure, qitem advancement, harness | base |
+| #20 | `issue-20-accessible-readme` | Interface | README opening, setup brief | #16 and #5 |
+| #22 | `issue-22-name-evaluation` | Review | naming brief and availability checks | network research |
+| #23 | `issue-23-logo` | Interface | vector/PNG symbol set, avatar and README usage | #22 for wordmark only |
+| #24 | `issue-24-queue-card-previews` | Interface | queue card rendering and state recovery | #4/#16 |
+| #25 | `issue-25-live-activity-card` | Interface | commentary card activity state and redaction | #4/#16 |
 | #4 | `issue-4-hybrid-steering` | Core | queue/request lifecycle in `bridge.py`, transcript attribution, config and harness | #3 and #5 integrated |
 | #1 | `issue-1-device-verification` | Interface + QA | SAS state machine and setup/doctor guidance, tests and manual evidence | real-client availability |
 | #7 | `issue-7-element-x-evidence` | Interface + QA | `docs/VERIFICATION.md`, redacted manual artifacts | owner screenshot or honest gap |
@@ -139,7 +157,9 @@ Run these at the exact candidate SHA:
 ```bash
 .venv/bin/python -m pytest -q
 .venv/bin/ruff check .
-npx --yes markdownlint-cli2
+npm ci
+npx --no-install markdownlint-cli2
+.venv/bin/python tools/check_markdown_links.py
 .venv/bin/python -m build
 .venv/bin/python tools/verify_release.py
 .venv/bin/python tools/matrix_integration.py \
