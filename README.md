@@ -55,7 +55,7 @@ encryption.
 - [Copy-ready OpenRig setup brief](#copy-ready-openrig-setup-brief)
 - [What this does not do yet](#what-this-does-not-do-yet)
 - [Detailed prerequisites](#detailed-prerequisites)
-- [Install from this checkout](#install-from-this-checkout)
+- [Install 0.11.0 or this checkout](#install-0110-or-this-checkout)
 - [OpenRig setup](#openrig-setup)
 - [Configure and start](#configure-and-start)
 - [Verify the product manually](#verify-the-product-manually)
@@ -82,6 +82,13 @@ encryption.
 
 The bot access token belongs in an environment variable or secret manager.
 Never put it in this repository, a public issue, or a chat message.
+
+If you already have OpenRig and a Matrix account, you do not need to edit the
+configuration by hand. Install the 0.11.0 wheel, expose the bot token as
+`MATRIX_ACCESS_TOKEN`, and run the single `setup` command in
+[Configure and start](#configure-and-start). Setup discovers the live Codex
+seats, writes the private configuration, installs the Relay profile, and
+registers the owner binding.
 
 ## Copy-ready OpenRig setup brief
 
@@ -116,8 +123,9 @@ to an issue. If the variable is absent, stop and tell me how to expose it to the
 process safely.
 
 Then:
-1. Create or reuse the repository virtual environment and install the package
-   from the checkout.
+1. Create or reuse a virtual environment and install the 0.11.0 wheel from the
+   GitHub Release, or install the package from the checkout when evaluating
+   the repository.
 2. Verify the Matrix token with the homeserver `whoami` endpoint without
    printing it.
 3. Run `openrig-matrix-bridge setup` with the homeserver, bot user ID, bot
@@ -190,8 +198,16 @@ Create a dedicated bot session with your Matrix client or administrative
 tooling and retain its device ID. Put the access token in a process environment
 or secret manager; do not put it in YAML or commit it.
 
-For a foreground evaluation, prove that the token and homeserver match before
-creating the bridge configuration:
+To find the bot user ID and device ID from a normal Matrix client:
+
+1. Sign in to the dedicated bot account.
+2. Open the account/profile screen and copy the full user ID, such as
+   `@openrig-bot:matrix.example.org`.
+3. Open the session or device list and copy the bot device ID.
+4. Sign back in as your personal owner account and copy its full user ID.
+
+For a foreground evaluation, prove that the token, homeserver and bot identity
+match before creating the bridge configuration:
 
 ```bash
 read -rsp 'Matrix bot access token: ' MATRIX_ACCESS_TOKEN
@@ -211,10 +227,22 @@ token from your shell when the evaluation is finished:
 unset MATRIX_ACCESS_TOKEN MATRIX_HOMESERVER
 ```
 
-## Install from this checkout
+## Install 0.11.0 or this checkout
 
-No release is published as part of this documentation change. Until a packaged
-release is available, install from the repository:
+Download the wheel and source distribution attached to the GitHub 0.11.0
+release, verify their published SHA-256 digests, and install the wheel in a
+virtual environment:
+
+```bash
+python3 -m venv .venv
+. .venv/bin/activate
+python -m pip install --upgrade pip
+python -m pip install /path/to/openrig_matrix_bridge-0.11.0-py3-none-any.whl
+openrig-matrix-bridge --version
+```
+
+For repository development or an installation before the release assets are
+attached, install from a checkout:
 
 ```bash
 git clone https://github.com/ssalentin/openrig-matrix-bridge.git
@@ -229,7 +257,8 @@ openrig-matrix-bridge --version
 The console entry point, selected Relay identity, and bundled agent avatars are
 part of the installed package.
 The automated build/install smoke checks are documented in
-[Verification and evidence](docs/VERIFICATION.md).
+[Verification and evidence](docs/VERIFICATION.md). For an upgrade on an
+existing host, follow the [0.11.0 runbook](docs/RUNBOOK_0.11.0.md).
 
 ## OpenRig setup
 
@@ -293,6 +322,10 @@ This command:
 5. Downloads and checksum-verifies the Parakeet model unless `--skip-model` is
    present.
 
+The command above is the complete non-interactive setup path when OpenRig and
+Matrix are already working. If an argument is omitted, `setup` prompts for the
+missing value and prints where to find the corresponding Matrix ID.
+
 Use `--no-human-registration` if you do not want the setup command to modify the
 OpenRig human registry. Use `--without-voice` for a text-only bridge. Use
 `--skip-model` to finish setup now and download later:
@@ -333,6 +366,10 @@ the invitations in Matrix. A declined invitation, or the owner later leaving a
 room, is treated as a rejection: the bridge leaves that room and does not
 recreate it automatically. Remove the `rejected_rooms` entry from
 `state.json` before restarting if you want to opt the agent back in.
+
+For production upgrades, use [`docs/RUNBOOK_0.11.0.md`](docs/RUNBOOK_0.11.0.md)
+to verify the exact artifact, stop the old process, back up state, run live
+plain/multi-line/attachment/thread smoke tests, and roll back safely.
 
 ## Verify the product manually
 
@@ -697,7 +734,9 @@ verification](#matrix-device-verification) and Issue #1.
 - Only Codex seats are supported. Other OpenRig runtimes are out of scope.
 - Element X threaded replies were manually observed by the owner on 2026-10-24,
   but the repository does not have a redacted screenshot or versioned client
-  record. Nested thread-reply delivery remains tracked by issue #16.
+  record. The real Matrix harness verifies canonical roots, including a prompt
+  already inside a thread; it does not prove every Element X nested-reply UI
+  state.
 - Live Element SAS and the broader cross-signing strategy are not fully verified
   by the repository; Element Web currently reports verification unavailable
   for the bridge account. See Issue #1.
@@ -729,6 +768,8 @@ Do not delete the Matrix crypto store during an upgrade.
 - [Issues](https://github.com/ssalentin/openrig-matrix-bridge/issues)
 - [Evidence matrix](docs/VERIFICATION.md)
 - [Positioning and demo copy](docs/POSITIONING.md)
+- [0.11.0 release notes](docs/RELEASE_NOTES_0.11.0.md)
+- [0.11.0 install and rollback runbook](docs/RUNBOOK_0.11.0.md)
 - [Artifact manifest](docs/artifacts/README.md)
 - [Environment support issue #1](https://github.com/ssalentin/openrig-matrix-bridge/issues/1)
 - [Release-readiness issue #2](https://github.com/ssalentin/openrig-matrix-bridge/issues/2)

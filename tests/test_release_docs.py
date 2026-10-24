@@ -13,7 +13,9 @@ RELEASE_VERIFIER = ROOT / "tools" / "verify_release.py"
 
 PUBLISHED_DOCS = {
     "docs/POSITIONING.md",
+    "docs/RELEASE_NOTES_0.11.0.md",
     "docs/RELEASE_PLAN.md",
+    "docs/RUNBOOK_0.11.0.md",
     "docs/TESTING.md",
     "docs/VERIFICATION.md",
     "docs/artifacts/README.md",

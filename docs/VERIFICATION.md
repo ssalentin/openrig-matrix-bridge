@@ -23,7 +23,7 @@ behavior, owner-observed client behavior, and real device trust.
 |---|---|---|---|
 | Encrypted rooms, messages and thread relations | Automated integration | Disposable Synapse and a real `matrix-nio` client completed the committed protocol checks. | Does not prove Element rendering or JavaScript-client behavior. |
 | Element X threaded replies | Manual, owner-observed | The owner manually exercised Element X threaded replies successfully on 2026-10-24. | No screenshot is available, Element X version/device details are not recorded, and this is not screenshot-backed evidence. |
-| Nested thread-reply prompts | Unverified; open bug | Issue #16 tracks the production failure. Automated nested-thread protocol coverage is pending. | The earlier owner observation does not cover a prompt that is itself already a thread reply. |
+| Prompts already inside a thread | Automated integration and unit | The canonical input root is preserved, including across bridge restart; threaded text, image, file and voice replies keep the original root. Relation normalization also covers rich replies that do not declare `m.thread`. | A complete owner-screenshot matrix for every Element X nested-reply UI state is still absent. |
 | Element device SAS and removed unverified-device warnings | Manual, unverified | Pending issue #1. Persisted restart/timeout state is unit-tested, not live approved. | A synthetic protocol client or mock must not be presented as owner-device trust. |
 | Element Web SAS | Manual, unverified | A real Element Web session against disposable Synapse displayed `(User verification unavailable)` for the bridge account on 2026-10-24. | Cross-signing/device trust must be implemented and verified against a real client before claiming success. |
 

@@ -53,19 +53,15 @@ Do not proceed until a verified 0.10.0 rollback wheel exists.
 ```bash
 sudo systemctl stop openrig-matrix-bridge.service
 
-# Confirm the process is gone. If the release includes the single-instance
-# lock from issue #37, the bridge refuses to start while another instance
-# holds the state directory. If the lock is not yet present, this manual
-# check is the only guard against two instances racing state.json and the
-# crypto store.
+# Confirm the process is gone. 0.11.0 does not include the single-instance
+# lock planned for 0.12.0, so this manual check is required.
 pgrep -af 'openrig-matrix-bridge'
 # Expected: no output.
 ```
 
 > **Verify single-instance.** Do not start 0.11.0 until the old process has
-> fully exited. If a pid/lock guard is present, confirm it rejects a second
-> start. If not, the manual `pgrep` check is mandatory — skipping it risks
-> double-processing events and corrupting the crypto store.
+> fully exited. The manual `pgrep` check is mandatory in 0.11.0 — skipping it
+> risks double-processing events and corrupting the crypto store.
 
 ## 2 — Record the installed version and source artifact
 
@@ -245,8 +241,8 @@ pgrep -af 'openrig-matrix-bridge'
 ## 9 — Rollback
 
 If 0.11.0 is not acceptable, restore the pre-upgrade state. **Do not run
-0.10.0 against 0.11.0 state** — the 0.11.0 schema adds fields (steering
-groups) that 0.10.0 would misinterpret as plain prompts.
+0.10.0 against 0.11.0 state** — the state schema is not guaranteed to be
+backward-compatible.
 
 ```bash
 # 1. Stop the 0.11.0 bridge.
