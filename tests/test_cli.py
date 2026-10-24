@@ -8,7 +8,7 @@ from openrig_matrix_bridge.cli import (
 
 
 def test_human_entity_id_is_derived_from_matrix_user():
-    assert _human_entity_id("@sebastian:matrix.example.org") == "sebastian"
+    assert _human_entity_id("@owner:matrix.example.org") == "owner"
     assert _human_entity_id("@First.Last:matrix.example.org") == "first-last"
 
 
@@ -25,8 +25,8 @@ def test_setup_registers_missing_human_with_reusable_binding(monkeypatch):
 
     result = _ensure_human_registration(
         command="/opt/rig",
-        entity_id="sebastian",
-        display_name="Sebastian",
+        entity_id="owner",
+        display_name="Owner",
         delivery_class="B",
         state_dir=Path("/var/lib/openrig-matrix-bridge"),
         actor="matrix-bridge@kernel",
@@ -40,7 +40,7 @@ def test_setup_registers_missing_human_with_reusable_binding(monkeypatch):
         "gateway",
         "human",
         "add",
-        "sebastian",
+        "owner",
     ]
     assert (
         "slack:openrig-matrix:file:/var/lib/openrig-matrix-bridge/"
@@ -54,14 +54,14 @@ def test_setup_retains_existing_human(monkeypatch):
 
     def run(args, **kwargs):
         calls.append(args)
-        return subprocess.CompletedProcess(args, 0, stdout="sebastian", stderr="")
+        return subprocess.CompletedProcess(args, 0, stdout="owner", stderr="")
 
     monkeypatch.setattr(subprocess, "run", run)
 
     result = _ensure_human_registration(
         command="/opt/rig",
-        entity_id="sebastian",
-        display_name="Sebastian",
+        entity_id="owner",
+        display_name="Owner",
         delivery_class="B",
         state_dir=Path("/tmp/state"),
         actor="matrix-bridge@kernel",
@@ -83,8 +83,8 @@ def test_setup_replaces_existing_human_only_when_requested(monkeypatch):
 
     result = _ensure_human_registration(
         command="/opt/rig",
-        entity_id="sebastian",
-        display_name="Sebastian",
+        entity_id="owner",
+        display_name="Owner",
         delivery_class="B",
         state_dir=Path("/tmp/state"),
         actor="matrix-bridge@kernel",
@@ -92,5 +92,5 @@ def test_setup_replaces_existing_human_only_when_requested(monkeypatch):
     )
 
     assert result == "replaced"
-    assert calls[1][4] == "sebastian"
+    assert calls[1][4] == "owner"
     assert "--replace" in calls[1]

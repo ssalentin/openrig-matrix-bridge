@@ -20,6 +20,11 @@ dependencies = [
 [project.scripts]
 openrig-matrix-bridge = "openrig_matrix_bridge.cli:main"
 
+[project.urls]
+Homepage = "https://github.com/ssalentin/openrig-matrix-bridge"
+Repository = "https://github.com/ssalentin/openrig-matrix-bridge"
+Issues = "https://github.com/ssalentin/openrig-matrix-bridge/issues"
+
 [project.optional-dependencies]
 dev = ["pytest>=8,<9"]
 

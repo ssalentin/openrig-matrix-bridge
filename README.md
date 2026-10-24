@@ -1,5 +1,7 @@
 # OpenRig Matrix Bridge
 
+[![test](https://github.com/ssalentin/openrig-matrix-bridge/actions/workflows/test.yml/badge.svg)](https://github.com/ssalentin/openrig-matrix-bridge/actions/workflows/test.yml)
+
 **A private Matrix room for every OpenRig agent, with live status and local
 voice transcription.**
 
@@ -96,7 +98,7 @@ and invites the allow-listed owner.
 ## Verify the bot
 
 The first Matrix device may show an "unverified device" warning. Open the bot's
-device details in Element, select device `OpenRig` (`OPSNOTIFY01`), and start
+device details in Element, select the device named `OpenRig`, and start
 **Verify by emoji**. The bridge posts seven emojis in the `Advisor` room:
 
 1. Compare those emojis with the Element dialog.

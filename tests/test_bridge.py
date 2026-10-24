@@ -449,7 +449,7 @@ def test_human_queue_items_are_mirrored_to_the_source_agent_room():
     )
     bridge.config = SimpleNamespace(
         agents={"advisor": agent},
-        human_destinations=("sebastian@external",),
+        human_destinations=("owner@external",),
     )
     bridge.state = SimpleNamespace(
         save=lambda: None,
@@ -464,12 +464,12 @@ def test_human_queue_items_are_mirrored_to_the_source_agent_room():
             return [
                 {
                     "qitemId": "qitem-decision",
-                    "destinationSession": "sebastian@external",
+                    "destinationSession": "owner@external",
                     "sourceSession": "advisor-lead@kernel",
                 },
                 {
                     "qitemId": "qitem-update",
-                    "destinationSession": "sebastian@external",
+                    "destinationSession": "owner@external",
                     "sourceSession": "advisor-lead@kernel",
                 },
             ]
@@ -526,7 +526,7 @@ def test_first_human_queue_scan_only_sets_the_watermark():
     bridge = object.__new__(MatrixBridge)
     bridge.config = SimpleNamespace(
         agents={},
-        human_destinations=("sebastian@external",),
+        human_destinations=("owner@external",),
     )
     bridge.state = SimpleNamespace(
         save=lambda: None,

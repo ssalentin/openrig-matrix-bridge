@@ -18,7 +18,7 @@ openrig:
   command: /opt/rig
   codex_home: /tmp/codex
   sender_session: matrix-bridge@kernel
-  human_destinations: ["sebastian@external"]
+  human_destinations: ["owner@external"]
   mirror_commentary: true
 agents:
   advisor:
@@ -39,7 +39,7 @@ def test_loads_minimal_config(tmp_path: Path):
     assert config.rig_command == "/opt/rig"
     assert config.codex_home == Path("/tmp/codex")
     assert config.sender_session == "matrix-bridge@kernel"
-    assert config.human_destinations == ("sebastian@external",)
+    assert config.human_destinations == ("owner@external",)
     assert config.mirror_commentary is True
     assert config.media.enabled is True
     assert config.media.max_image_bytes == 25 * 1024 * 1024
