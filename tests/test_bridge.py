@@ -316,6 +316,65 @@ def test_poll_delivers_commentary_then_final_answer(tmp_path):
     assert bridge.state.data["pending"]["advisor"] == []
 
 
+def test_failed_commentary_delivery_does_not_skip_transcript(tmp_path):
+    transcript = tmp_path / "rollout.jsonl"
+    transcript.write_text(
+        json.dumps(
+            {
+                "type": "event_msg",
+                "payload": {
+                    "type": "item_completed",
+                    "item": {
+                        "type": "AgentMessage",
+                        "id": "comment-1",
+                        "phase": "commentary",
+                        "content": [{"type": "Text", "text": "Ich prüfe das."}],
+                    },
+                },
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    bridge = object.__new__(MatrixBridge)
+    agent = AgentConfig(
+        key="advisor",
+        display_name="Advisor",
+        session="advisor-lead@kernel",
+    )
+    request = {
+        "event_id": "$prompt",
+        "reply_to_event_id": "$prompt",
+        "answer_text": None,
+        "started_at": time.time(),
+        "session_id": "session",
+        "transcript_path": str(transcript),
+        "offset": 0,
+    }
+    bridge.config = SimpleNamespace(
+        mirror_commentary=True,
+        response_timeout_minutes=30,
+    )
+    bridge.locks = {"advisor": asyncio.Lock()}
+    bridge.state = SimpleNamespace(
+        save=lambda: None,
+        data={
+            "pending": {"advisor": [request]},
+            "rooms": {"advisor": {"room_id": "!advisor:matrix.example.org"}},
+        },
+    )
+
+    async def failed_send(*args, **kwargs):
+        return SimpleNamespace()
+
+    bridge._send = failed_send
+
+    asyncio.run(bridge._poll_agent(agent))
+
+    assert request["offset"] == 0
+    assert request.get("sent_commentary") == []
+
+
 def test_send_adds_matrix_formatted_body_for_markdown_table():
     class RichTextClient:
         async def room_send(self, room_id, message_type, content, **kwargs):

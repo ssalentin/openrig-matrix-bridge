@@ -1246,7 +1246,6 @@ class MatrixBridge:
                     records, offset = read_complete_records(path, int(request["offset"]))
                 except OSError:
                     return
-                request["offset"] = offset
                 sent_commentary = request.setdefault("sent_commentary", [])
                 sent_ids = set(sent_commentary)
                 if self.config.mirror_commentary:
@@ -1269,6 +1268,7 @@ class MatrixBridge:
                         sent_commentary.append(message_id)
                         sent_ids.add(message_id)
                         self.state.save()
+                request["offset"] = offset
                 answers = [text for record in records if (text := final_answer(record))]
                 if answers:
                     request["answer_text"] = answers[-1]
