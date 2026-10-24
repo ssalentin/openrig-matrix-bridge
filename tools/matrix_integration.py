@@ -25,6 +25,7 @@ from typing import Any
 from urllib.parse import quote
 
 import aiohttp
+import yaml
 from nio import (
     AsyncClient,
     AsyncClientConfig,
@@ -652,7 +653,6 @@ class IntegrationRun:
                 "owner@external",
                 "--human-id",
                 "owner",
-                "--without-voice",
                 "--skip-model",
             ],
             env=self.env(),
@@ -685,8 +685,7 @@ class IntegrationRun:
         self.bridge = subprocess.Popen(
             [
                 sys.executable,
-                "-m",
-                "openrig_matrix_bridge",
+                str(ROOT / "tools" / "deterministic_transcriber_bridge.py"),
                 "run",
                 "--config",
                 str(self.config_path),
@@ -1519,6 +1518,14 @@ class IntegrationRun:
     async def check_audio_gap(self, room_id: str) -> None:
         assert self.owner is not None
         owner = self.owner
+        config = yaml.safe_load(self.config_path.read_text(encoding="utf-8"))
+        config["transcription"]["enabled"] = False
+        self.stop_bridge()
+        self.config_path.write_text(
+            yaml.safe_dump(config, sort_keys=False),
+            encoding="utf-8",
+        )
+        self.start_bridge()
         before = len(owner.messages)
         await owner.send_encrypted_file(
             room_id,
@@ -1538,14 +1545,22 @@ class IntegrationRun:
             self.args.timeout,
             description="disabled voice response",
         )
+        self.stop_bridge()
+        config["transcription"]["enabled"] = True
+        self.config_path.write_text(
+            yaml.safe_dump(config, sort_keys=False),
+            encoding="utf-8",
+        )
+        self.start_bridge()
         self.record(
             "voice-disabled-path",
             "pass",
             (
                 "An encrypted Matrix audio event reached the bridge and received "
-                "the configured disabled-voice response. Real Parakeet model "
-                "execution remains an explicit gap because setup used "
-                "`--without-voice` and no 465 MB model was downloaded."
+                "the configured disabled-voice response after a controlled "
+                "configuration restart. Real Parakeet quality remains an explicit "
+                "gap; the successful voice path uses a deterministic local "
+                "transcriber."
             ),
         )
 
@@ -1560,6 +1575,7 @@ class IntegrationRun:
             filename="voice.ogg",
             mimetype="audio/ogg",
             body="voice.ogg",
+            extra_content={"org.matrix.msc3245.voice": {}},
         )
         await owner.sync_until(
             lambda: any(
