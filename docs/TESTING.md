@@ -38,6 +38,10 @@ CI runs the unit, lint, documentation, artifact, and Matrix integration jobs on
 every push and pull request. The Markdown linter is installed from the pinned
 `package-lock.json`, so the job does not resolve a moving latest release.
 
+Fast tests also drive the fake OpenRig transport’s deterministic create, claim,
+finish, and fail error injection. These prove bridge command-error handling and
+restart state, but they are not counted as Matrix integration checks.
+
 ## Executable Matrix integration
 
 The integration harness requires Docker. It starts a disposable, digest-pinned
@@ -76,7 +80,6 @@ is recorded in the report.
 | `encrypted-chat-queue-typing` | Owner text, typing indicator, visible commentary, thread-related final answer, recorded pending -> in-progress -> done qitem history, raw `m.room.encrypted` event |
 | `threaded-prompt-restart` | Encrypted owner prompt already in `m.thread`; commentary and final answer under the canonical root; single qitem closure; bridge restart without duplicate prompt or response |
 | `answer-crash-recovery` | Test-only process exit immediately after final answer send; stable transaction retry produces no duplicate Matrix event and reconciles one qitem |
-| `qitem-lifecycle-faults` | Fake transport injects create/claim/finish/fail errors; bridge tests verify no untracked prompt, retryable claim state, and pending finish/fail reconciliation |
 | `threaded-files` | Threaded PDF and markerless audio status/final messages use the canonical root and each creates one completed qitem |
 | `fifo-queue-notice` | Per-agent FIFO ordering with second-send timestamp after first completion, plus the pinned queue notice |
 | `silent-reaction-feedback` | Reaction forwarding without a visible reply |
