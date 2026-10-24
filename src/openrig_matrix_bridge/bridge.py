@@ -2248,7 +2248,7 @@ class MatrixBridge:
                     continue
                 if request.get("answer_phase") == "failed":
                     if (
-                        self.config.mirror_commentary
+                        getattr(self.config, "mirror_commentary", False)
                         and request.get("commentary_event_id")
                         and not request.get("suppress_reply")
                     ):
@@ -2269,7 +2269,7 @@ class MatrixBridge:
                     and request.get("answer_phase") == "sent"
                 ):
                     if (
-                        self.config.mirror_commentary
+                        getattr(self.config, "mirror_commentary", False)
                         and request.get("commentary_event_id")
                         and not request.get("suppress_reply")
                     ):
@@ -3013,11 +3013,17 @@ class MatrixBridge:
             request["transcript_path"] = str(ref.transcript_path)
             request["offset"] = ref.transcript_path.stat().st_size
             request["started_at"] = time.time()
-            request["activity_state"] = ref.activity_state
-            request["needs_input_count"] = ref.needs_input_count
+            activity_state = str(
+                getattr(ref, "activity_state", "unknown") or "unknown"
+            )
+            needs_input_count = int(
+                getattr(ref, "needs_input_count", 0) or 0
+            )
+            request["activity_state"] = activity_state
+            request["needs_input_count"] = needs_input_count
             request["activity_label"] = activity_card_label(
-                ref.activity_state,
-                ref.needs_input_count,
+                activity_state,
+                needs_input_count,
             )
             if not await self._claim_inbound_qitem(agent, request):
                 if request.get("qitem_phase") in {
@@ -3071,7 +3077,11 @@ class MatrixBridge:
             )
             if isinstance(response, RoomSendResponse):
                 request["failure_notice_event_id"] = response.event_id
-            if self.config.mirror_commentary and not request.get("suppress_reply"):
+            if getattr(
+                self.config,
+                "mirror_commentary",
+                False,
+            ) and not request.get("suppress_reply"):
                 acknowledged = await self._finalize_activity_card(
                     agent,
                     request,
@@ -3179,7 +3189,7 @@ class MatrixBridge:
                     )
                     request["answer_phase"] = "failed"
                     if (
-                        self.config.mirror_commentary
+                        getattr(self.config, "mirror_commentary", False)
                         and request.get("commentary_event_id")
                         and not request.get("suppress_reply")
                     ):
@@ -3209,7 +3219,7 @@ class MatrixBridge:
                 sent_commentary = request.setdefault("sent_commentary", [])
                 sent_ids = set(sent_commentary)
                 if (
-                    self.config.mirror_commentary
+                    getattr(self.config, "mirror_commentary", False)
                     and not request.get("suppress_reply")
                     and not request.get("commentary_skipped")
                 ):
@@ -3315,7 +3325,7 @@ class MatrixBridge:
                     f"Matrix answer delivery failed after {attempts} attempts"
                 )
                 if (
-                    self.config.mirror_commentary
+                    getattr(self.config, "mirror_commentary", False)
                     and request.get("commentary_event_id")
                     and not request.get("suppress_reply")
                 ):
@@ -3579,48 +3589,53 @@ class MatrixBridge:
         except AgentSessionNotFound:
             resolved = {}
         for agent in self.config.agents.values():
-            pending = self.state.data["pending"].get(agent.key, [])
-            ref = resolved.get(agent.session)
-            if (
-                pending
-                and ref is not None
-                and pending[0].get("started_at") is not None
-                and getattr(self.config, "mirror_commentary", False)
-                and not pending[0].get("suppress_reply")
-                and not pending[0].get("activity_terminal_intent")
-                and pending[0].get("commentary_event_id")
-            ):
-                request = pending[0]
-                request["activity_state"] = ref.activity_state
-                request["needs_input_count"] = ref.needs_input_count
-                request["activity_label"] = activity_card_label(
-                    ref.activity_state,
-                    ref.needs_input_count,
-                )
-                self.state.save()
-                response = await self._deliver_activity_card(
-                    self._room_for_agent(agent.key),
-                    request,
-                )
-                if response is not True and not isinstance(
-                    response,
-                    RoomSendResponse,
+            async with self.locks[agent.key]:
+                pending = self.state.data["pending"].get(agent.key, [])
+                ref = resolved.get(agent.session)
+                if (
+                    pending
+                    and ref is not None
+                    and pending[0].get("started_at") is not None
+                    and getattr(self.config, "mirror_commentary", False)
+                    and not pending[0].get("suppress_reply")
+                    and not pending[0].get("activity_terminal_intent")
+                    and pending[0].get("commentary_event_id")
                 ):
-                    LOGGER.warning(
-                        "failed to refresh activity card for %s: %s",
-                        agent.key,
-                        response,
+                    request = pending[0]
+                    request["activity_state"] = ref.activity_state
+                    request["needs_input_count"] = ref.needs_input_count
+                    request["activity_label"] = activity_card_label(
+                        ref.activity_state,
+                        ref.needs_input_count,
                     )
-            if not force and agent.key not in self.agent_statuses:
-                continue
-            if pending:
-                status, detail = "busy", "arbeitet"
-            else:
-                if ref is None:
-                    status, detail = "offline", "offline"
+                    self.state.save()
+                    response = await self._deliver_activity_card(
+                        self._room_for_agent(agent.key),
+                        request,
+                    )
+                    if response is not True and not isinstance(
+                        response,
+                        RoomSendResponse,
+                    ):
+                        LOGGER.warning(
+                            "failed to refresh activity card for %s: %s",
+                            agent.key,
+                            response,
+                        )
+                if not force and agent.key not in self.agent_statuses:
+                    continue
+                if pending:
+                    status, detail = "busy", "arbeitet"
                 else:
-                    status, detail = ("busy", "arbeitet") if ref.busy else ("ready", "bereit")
-            await self._update_agent_status(agent, status, detail)
+                    if ref is None:
+                        status, detail = "offline", "offline"
+                    else:
+                        status, detail = (
+                            ("busy", "arbeitet")
+                            if ref.busy
+                            else ("ready", "bereit")
+                        )
+                await self._update_agent_status(agent, status, detail)
 
     async def _update_agent_status(
         self,
@@ -3628,6 +3643,8 @@ class MatrixBridge:
         status: str,
         detail: str,
     ) -> None:
+        if not hasattr(self, "agent_statuses"):
+            self.agent_statuses = {}
         if self.agent_statuses.get(agent.key) == status:
             return
         room = self.state.data["rooms"].get(agent.key)
@@ -3657,6 +3674,8 @@ class MatrixBridge:
         self.agent_statuses[agent.key] = status
 
     async def _set_typing(self, room_id: str, typing: bool) -> None:
+        if not hasattr(self, "typing_tasks"):
+            self.typing_tasks = {}
         existing = self.typing_tasks.pop(room_id, None)
         if existing:
             existing.cancel()
