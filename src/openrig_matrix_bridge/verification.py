@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 TERMINAL_REPLY_GRACE_SECONDS = 600
+VERIFICATION_RECORD_RETENTION_SECONDS = 24 * 60 * 60
 ACTIVE_PHASES = frozenset(
     {
         "starting",
@@ -114,7 +115,11 @@ def pending_verification(
             matches.append((transaction_id, record))
             continue
         if phase == "interrupted":
-            matches.append((transaction_id, record))
+            interrupted_at = float(
+                record.get("interrupted_at") or record.get("updated_at") or 0
+            )
+            if now - interrupted_at <= TERMINAL_REPLY_GRACE_SECONDS:
+                matches.append((transaction_id, record))
             continue
         if phase in TERMINAL_PHASES:
             terminal_at = float(record.get("terminal_at") or record.get("updated_at") or 0)
@@ -208,7 +213,7 @@ def prune_terminal_verifications(
     records: dict[str, dict[str, Any]],
     *,
     now: float,
-    retention: float,
+    retention: float = VERIFICATION_RECORD_RETENTION_SECONDS,
 ) -> list[str]:
     pruned: list[str] = []
     for transaction_id, record in list(records.items()):
