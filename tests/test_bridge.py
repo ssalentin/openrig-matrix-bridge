@@ -624,6 +624,52 @@ def test_silent_feedback_does_not_post_agent_answer():
     assert bridge.state.data["pending"]["advisor"] == []
 
 
+def test_silent_feedback_does_not_create_queue_notice_card():
+    agent = AgentConfig(
+        key="advisor",
+        display_name="Advisor",
+        session="advisor-lead@kernel",
+    )
+    bridge = object.__new__(MatrixBridge)
+    bridge.config = SimpleNamespace(inbound_message_priority="urgent")
+    bridge.locks = {"advisor": asyncio.Lock()}
+    bridge.processed_events = set()
+    bridge.state = SimpleNamespace(
+        save=lambda: None,
+        data={"pending": {}, "processed_events": []},
+    )
+    notices = []
+
+    async def create_qitem(*args, **kwargs):
+        return None
+
+    async def start_request(*args, **kwargs):
+        return None
+
+    async def update_notice(*args, **kwargs):
+        notices.append((args, kwargs))
+
+    bridge._create_inbound_qitem = create_qitem
+    bridge._start_request = start_request
+    bridge._update_queue_notice = update_notice
+    room = SimpleNamespace(room_id="!advisor:matrix.example.org")
+
+    asyncio.run(
+        bridge._enqueue_prompt(
+            agent,
+            room,
+            "$reaction",
+            1_700_000_000_000,
+            "Silent reaction feedback",
+            "reaction",
+            suppress_reply=True,
+            queue_tracked=False,
+        )
+    )
+
+    assert notices == []
+
+
 def test_poll_delivers_commentary_then_final_answer(tmp_path):
     transcript = tmp_path / "rollout.jsonl"
     records = [
@@ -1678,6 +1724,197 @@ def test_queue_notice_is_one_updated_and_pinned_message():
     assert pinned == [["$queue"], ["$queue"]]
     assert unpinned == [["$queue"]]
     assert bridge.state.data["queue_notices"]["advisor"]["pinned"] is False
+
+
+def queue_notice_bridge(pending, *, notice=None):
+    bridge = object.__new__(MatrixBridge)
+    bridge.config = SimpleNamespace(inbound_message_priority="urgent")
+    bridge.state = SimpleNamespace(
+        save=lambda: None,
+        data={
+            "pending": {"advisor": pending},
+            "queue_notices": {"advisor": notice} if notice else {},
+        },
+    )
+    sent = []
+    edited = []
+    pinned = []
+    unpinned = []
+
+    async def send(room_id, text):
+        sent.append(text)
+        return RoomSendResponse("$queue", room_id)
+
+    async def edit(room_id, event_id, text):
+        edited.append((event_id, text))
+        return RoomSendResponse("$edit", room_id)
+
+    async def add_pinned(room_id, event_ids):
+        pinned.append(event_ids)
+
+    async def remove_pinned(room_id, event_ids):
+        unpinned.append(event_ids)
+
+    bridge._send = send
+    bridge._edit_message = edit
+    bridge._add_pinned = add_pinned
+    bridge._remove_pinned = remove_pinned
+    return bridge, sent, edited, pinned, unpinned
+
+
+def queued_request(
+    event_id,
+    text,
+    *,
+    source_label="message",
+    thread_root_event_id=None,
+    source_event_ids=None,
+):
+    return {
+        "id": f"request-{event_id}",
+        "event_id": event_id,
+        "reply_to_event_id": thread_root_event_id or event_id,
+        "thread_root_event_id": thread_root_event_id or event_id,
+        "source_event_ids": source_event_ids or [event_id],
+        "source_label": source_label,
+        "text": text,
+        "started_at": None,
+    }
+
+
+def test_queue_notice_lists_active_and_ordered_waiting_previews():
+    pending = [
+        queued_request("$one", "First active prompt"),
+        queued_request("$two", "Second queued prompt", source_label="audio"),
+        queued_request(
+            "$three",
+            "Third queued prompt",
+            thread_root_event_id="$root",
+        ),
+    ]
+    bridge, sent, edited, pinned, _unpinned = queue_notice_bridge(pending)
+    agent = AgentConfig(
+        key="advisor",
+        display_name="Advisor",
+        session="advisor-lead@kernel",
+    )
+
+    asyncio.run(bridge._update_queue_notice(agent, "!advisor", 2))
+
+    card = sent[0]
+    assert "2 Nachrichten warten" in card
+    assert '**Aktiv:** Text · "First active prompt"' in card
+    assert '1. Audio · "Second queued prompt"' in card
+    assert '2. Text · Thread · "Third queued prompt"' in card
+    assert card.index("Second queued") < card.index("Third queued")
+    assert edited == []
+    assert pinned == [["$queue"]]
+
+
+def test_queue_notice_edits_in_place_reconstructs_and_unpins_on_drain():
+    pending = [
+        queued_request("$one", "Active prompt"),
+        queued_request("$two", "Waiting prompt"),
+    ]
+    bridge, sent, edited, _pinned, unpinned = queue_notice_bridge(
+        pending,
+        notice={"event_id": "$queue", "pinned": True},
+    )
+    agent = AgentConfig(
+        key="advisor",
+        display_name="Advisor",
+        session="advisor-lead@kernel",
+    )
+
+    asyncio.run(bridge._update_queue_notice(agent, "!advisor", 1))
+    pending.pop()
+    asyncio.run(bridge._update_queue_notice(agent, "!advisor", 0))
+    pending.clear()
+    asyncio.run(bridge._update_queue_notice(agent, "!advisor", 0))
+
+    assert sent == []
+    assert [event_id for event_id, _text in edited] == ["$queue", "$queue"]
+    assert "Waiting prompt" not in edited[1][1]
+    assert "Keine weiteren Nachrichten warten" in edited[1][1]
+    assert unpinned == [["$queue"]]
+
+
+def test_queue_notice_redacts_and_truncates_previews():
+    pending = [
+        queued_request(
+            "$one",
+            "API_KEY=super-secret-value /home/alice/private/secret.txt "
+            + "long detail " * 30,
+        ),
+        queued_request("$two", "Cookie: session=abcdef1234567890"),
+    ]
+    bridge, sent, _edited, _pinned, _unpinned = queue_notice_bridge(pending)
+    agent = AgentConfig(
+        key="advisor",
+        display_name="Advisor",
+        session="advisor-lead@kernel",
+    )
+
+    asyncio.run(bridge._update_queue_notice(agent, "!advisor", 1))
+
+    card = sent[0]
+    assert "super-secret-value" not in card
+    assert "/home/alice/private" not in card
+    assert "abcdef1234567890" not in card
+    assert card.count("[redacted unsafe commentary]") == 2
+    assert len(card) < 800
+
+
+def test_queue_notice_traces_steered_batch_without_waiting_duplicate():
+    pending = [
+        queued_request(
+            "$one",
+            "Combined active request",
+            source_event_ids=["$one", "$steered"],
+        )
+    ]
+    bridge, sent, _edited, _pinned, _unpinned = queue_notice_bridge(pending)
+    agent = AgentConfig(
+        key="advisor",
+        display_name="Advisor",
+        session="advisor-lead@kernel",
+    )
+
+    asyncio.run(bridge._update_queue_notice(agent, "!advisor", 0))
+
+    card = sent[0]
+    assert "0 Nachrichten warten" in card
+    assert "Aktiv (2 Eingaben)" in card
+    assert "1. " not in card
+    assert "Keine weiteren Nachrichten warten" in card
+
+
+def test_queue_notice_reconstructs_pending_previews_after_restart():
+    pending = [
+        queued_request("$one", "Active survived restart"),
+        queued_request("$two", "Waiting survived restart"),
+    ]
+    bridge, sent, edited, pinned, _unpinned = queue_notice_bridge(
+        pending,
+        notice={"event_id": "$queue", "pinned": True},
+    )
+    agent = AgentConfig(
+        key="advisor",
+        display_name="Advisor",
+        session="advisor-lead@kernel",
+    )
+    bridge.config.agents = {"advisor": agent}
+    bridge.state.data["rooms"] = {"advisor": {"room_id": "!advisor"}}
+
+    asyncio.run(bridge._restore_queue_notices())
+
+    assert sent == []
+    assert len(edited) == 1
+    assert edited[0][0] == "$queue"
+    assert "Active survived restart" in edited[0][1]
+    assert "1. Text" in edited[0][1]
+    assert "Waiting survived restart" in edited[0][1]
+    assert pinned == [["$queue"]]
 
 
 def test_matrix_message_creates_priority_qitem():

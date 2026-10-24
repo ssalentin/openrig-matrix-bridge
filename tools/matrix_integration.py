@@ -1559,10 +1559,17 @@ class IntegrationRun:
         await owner.send_text(room_id, "second queued request")
         await owner.sync_until(
             lambda: any(
-                "Warteschlange" in str(message["body"]) for message in owner.messages
+                "Warteschlange" in str(message["body"])
+                and '**Aktiv:** Text · "hold first request"' in str(
+                    message["body"]
+                )
+                and '1. Text · "second queued request"' in str(
+                    message["body"]
+                )
+                for message in owner.messages
             ),
             self.args.timeout,
-            description="pinned queue notice",
+            description="pinned active and waiting queue previews",
         )
         await owner.sync_until(
             lambda: any(
@@ -3145,6 +3152,12 @@ class IntegrationRun:
             ]
             if not delivered:
                 raise CheckFailure(f"threaded {filename} produced no bridge messages")
+            queue_notice_event_id = (
+                self.bridge_state()
+                .get("queue_notices", {})
+                .get(AGENT_KEY, {})
+                .get("event_id")
+            )
             thread_sends = set()
             card_edits = set()
             for message in delivered:
@@ -3156,6 +3169,12 @@ class IntegrationRun:
                         f"threaded {filename} escaped its canonical root: "
                         f"{delivered_relation}"
                     )
+                if (
+                    delivered_relation.get("rel_type") == "m.replace"
+                    and delivered_relation.get("event_id")
+                    == queue_notice_event_id
+                ):
+                    continue
                 if delivered_relation.get("rel_type") == "m.thread":
                     if delivered_relation.get("event_id") != root_event_id:
                         raise CheckFailure(
