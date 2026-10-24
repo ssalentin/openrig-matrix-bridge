@@ -118,11 +118,15 @@ CREDENTIAL_VALUE = re.compile(
     r"\s*[:=]\s*(?:\"[^\"]*\"|'[^']*'|\S+)"
 )
 URI_USERINFO = re.compile(
-    r"(?i)\b[a-z][a-z0-9+.-]*://[^\s/@:]+:[^\s/@]+@"
+    r"(?i)\b[a-z][a-z0-9+.-]*://(?:[^\s/@:]*):[^\s/@]+@"
 )
 AUTHORIZATION_SCHEME = re.compile(
     r"(?i)\b(?:proxy-)?authorization\b[^\r\n]{0,40}"
     r"\b(?:basic|bearer|digest|token)\s+\S+"
+)
+COOKIE_VALUE = re.compile(
+    r"(?i)\b(?:set-)?cookie\b(?:\s*[:=]\s*|\s+)"
+    r"(?:[a-z0-9_-]+\s*=\s*)?\S+"
 )
 BARE_TOKEN = re.compile(
     r"(?i)\b(?:"
@@ -166,6 +170,7 @@ def sanitize_activity_summary(text: str) -> str:
             CREDENTIAL_VALUE,
             URI_USERINFO,
             AUTHORIZATION_SCHEME,
+            COOKIE_VALUE,
             BARE_TOKEN,
             LABELED_SECRET,
             LONG_SECRET,
