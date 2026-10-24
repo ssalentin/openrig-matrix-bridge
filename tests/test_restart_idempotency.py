@@ -2,6 +2,7 @@ import asyncio
 import time
 from types import SimpleNamespace
 
+import pytest
 from nio import RoomSendResponse
 
 from openrig_matrix_bridge.bridge import MatrixBridge
@@ -74,13 +75,22 @@ def request(**values):
     return base
 
 
-def test_claim_reconciliation_accepts_already_claimed_qitem(tmp_path):
+@pytest.mark.parametrize("real_queue_shape", [False, True])
+def test_claim_reconciliation_accepts_already_claimed_qitem(
+    tmp_path,
+    real_queue_shape,
+):
     item = request(qitem_phase="claiming")
     bridge, agent = operation_bridge(tmp_path, item)
     calls = []
 
     class Gateway:
         async def queue_show(self, qitem_id):
+            if real_queue_shape:
+                return {
+                    "state": "in-progress",
+                    "waiting": {"owner": agent.session},
+                }
             return {"state": "in-progress", "claimed_by": agent.session}
 
         async def queue_claim(self, qitem_id, session):
@@ -271,6 +281,35 @@ def test_restart_completes_already_sent_answer_without_resend(tmp_path):
     ]
     assert bridge.state.data["pending"]["advisor"] == []
     assert bridge.sent == []
+
+
+def test_restart_reconciles_failed_answer_without_resend(tmp_path):
+    item = request(
+        prompt_phase="sent",
+        answer_phase="failed",
+        answer_text="answer",
+        qitem_phase="failing",
+        terminal_error="Matrix answer delivery failed after 3 attempts",
+    )
+    bridge, _agent = operation_bridge(tmp_path, item)
+    failed = []
+
+    class Gateway:
+        async def queue_show(self, qitem_id):
+            return {"state": "failed"}
+
+        async def queue_fail(self, qitem_id, session, resolution):
+            failed.append((qitem_id, session, resolution))
+
+    bridge.gateway = Gateway()
+
+    asyncio.run(bridge._reconcile_pending_operations())
+
+    assert item["qitem_phase"] == "failed"
+    assert failed == []
+    assert bridge.state.data["pending"]["advisor"] == []
+    assert len(bridge.sent) == 1
+    assert bridge.sent[0][3]["tx_id"] == "failure-request-one"
 
 
 def test_crash_after_prompt_send_fails_closed_without_second_prompt(tmp_path):

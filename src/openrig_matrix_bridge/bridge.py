@@ -1692,7 +1692,12 @@ class MatrixBridge:
                 LOGGER.warning("could not inspect Matrix qitem %s", qitem_id, exc_info=True)
                 return False
             state = str(item.get("state") or "")
-            if state == "in-progress" and item.get("claimed_by") == agent.session:
+            waiting = item.get("waiting", {})
+            owner = waiting.get("owner") if isinstance(waiting, dict) else None
+            if state == "in-progress" and agent.session in {
+                item.get("claimed_by"),
+                owner,
+            }:
                 request["qitem_phase"] = "claimed"
                 self.state.save()
                 return True
@@ -1816,6 +1821,9 @@ class MatrixBridge:
                 if request.get("prompt_phase") == "sending":
                     await self._fail_ambiguous_prompt(agent, request)
                     continue
+                if request.get("answer_phase") == "failed":
+                    await self._complete_failed_answer(agent, request, pending)
+                    continue
                 if (
                     request.get("prompt_phase") == "sent"
                     and request.get("answer_phase") == "sent"
@@ -1847,6 +1855,33 @@ class MatrixBridge:
         if pending and pending[0].get("id") == request["id"]:
             pending.pop(0)
         self.state.save()
+
+    async def _complete_failed_answer(
+        self,
+        agent: AgentConfig,
+        request: dict[str, Any],
+        pending: list[dict[str, Any]],
+    ) -> bool:
+        resolution = str(
+            request.get("terminal_error")
+            or "Matrix answer delivery failed before restart"
+        )
+        if await self._fail_inbound_qitem(agent, request, resolution) is False:
+            return False
+        if not request.get("failure_notice_event_id"):
+            response = await self._deliver_to_request(
+                self._room_for_agent(agent.key),
+                f"Die Matrix-Antwort konnte nicht zugestellt werden: {resolution}",
+                request,
+                tx_id=f"failure-{request['id']}",
+            )
+            if not isinstance(response, RoomSendResponse):
+                return False
+            request["failure_notice_event_id"] = response.event_id
+        if pending and pending[0].get("id") == request["id"]:
+            pending.pop(0)
+        self.state.save()
+        return True
 
     async def _handle_audio(
         self,
@@ -2374,6 +2409,9 @@ class MatrixBridge:
                 return
 
             room_id = self._room_for_agent(agent.key)
+            if request.get("answer_phase") == "failed":
+                await self._complete_failed_answer(agent, request, pending)
+                return
             if request.get("suppress_reply"):
                 request["answer_phase"] = "suppressed"
                 self.state.save()
