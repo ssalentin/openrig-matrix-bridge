@@ -961,6 +961,99 @@ def test_persistent_commentary_failure_falls_through_to_final_answer(tmp_path):
     assert request["commentary_skipped"] is True
 
 
+def test_persistent_commentary_edit_exception_falls_through_to_final_answer(
+    tmp_path,
+):
+    transcript = tmp_path / "rollout.jsonl"
+    transcript.write_text(
+        "".join(
+            json.dumps(
+                {
+                    "type": "event_msg",
+                    "payload": {
+                        "type": "item_completed",
+                        "item": {
+                            "type": "AgentMessage",
+                            "id": item_id,
+                            "phase": phase,
+                            "content": [{"type": "Text", "text": text}],
+                        },
+                    },
+                }
+            )
+            + "\n"
+            for item_id, phase, text in [
+                ("comment-1", "commentary", "Ich prüfe das."),
+                ("final-1", "final_answer", "Fertig."),
+            ]
+        ),
+        encoding="utf-8",
+    )
+    agent = AgentConfig(
+        key="advisor",
+        display_name="Advisor",
+        session="advisor-lead@kernel",
+    )
+    request = {
+        "event_id": "$prompt",
+        "thread_root_event_id": "$prompt",
+        "reply_to_event_id": "$prompt",
+        "commentary_event_id": "$status",
+        "answer_text": None,
+        "started_at": time.time(),
+        "session_id": "session",
+        "transcript_path": str(transcript),
+        "offset": 0,
+    }
+    bridge = object.__new__(MatrixBridge)
+    bridge.config = SimpleNamespace(
+        mirror_commentary=True,
+        response_timeout_minutes=30,
+    )
+    bridge.locks = {"advisor": asyncio.Lock()}
+    bridge.state = SimpleNamespace(
+        save=lambda: None,
+        data={
+            "pending": {"advisor": [request]},
+            "rooms": {"advisor": {"room_id": "!advisor:matrix.example.org"}},
+        },
+    )
+    edits = []
+    sent = []
+    finished = []
+
+    async def edit(room_id, event_id, text):
+        edits.append((event_id, text))
+        raise ConnectionError("edit transport failed")
+
+    async def send(room_id, text, reply_to=None, **kwargs):
+        sent.append((text, reply_to, kwargs))
+        return RoomSendResponse("$answer", room_id)
+
+    async def finish_qitem(agent_arg, request_arg):
+        finished.append(request_arg["event_id"])
+
+    async def noop(*args, **kwargs):
+        return None
+
+    bridge._edit_message = edit
+    bridge._send = send
+    bridge._finish_inbound_qitem = finish_qitem
+    bridge._set_typing = noop
+    bridge._update_agent_status = noop
+    bridge._update_queue_notice = noop
+
+    for _attempt in range(5):
+        if not bridge.state.data["pending"]["advisor"]:
+            break
+        asyncio.run(bridge._poll_agent(agent))
+
+    assert edits == [("$status", "Ich prüfe das.")] * 3
+    assert sent == [("Fertig.", "$prompt", {"thread_root": "$prompt"})]
+    assert finished == ["$prompt"]
+    assert bridge.state.data["pending"]["advisor"] == []
+
+
 def test_persistent_final_delivery_failure_fails_qitem_and_advances(tmp_path):
     transcript = tmp_path / "rollout.jsonl"
     transcript.write_text(

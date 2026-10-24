@@ -1814,11 +1814,19 @@ class MatrixBridge:
                         room_id = self._room_for_agent(agent.key)
                         commentary_event_id = request.get("commentary_event_id")
                         if commentary_event_id:
-                            response = await self._edit_message(
-                                room_id,
-                                str(commentary_event_id),
-                                pending_commentary[-1][1],
-                            )
+                            try:
+                                response = await self._edit_message(
+                                    room_id,
+                                    str(commentary_event_id),
+                                    pending_commentary[-1][1],
+                                )
+                            except Exception:
+                                response = None
+                                LOGGER.warning(
+                                    "commentary edit raised for %s",
+                                    agent.key,
+                                    exc_info=True,
+                                )
                         else:
                             response = await self._deliver_to_request(
                                 room_id,
