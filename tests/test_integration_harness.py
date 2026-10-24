@@ -30,10 +30,11 @@ def fake(
     root: Path,
     *args: str,
     fail: str | None = None,
+    delay: str = "0.2",
 ) -> subprocess.CompletedProcess[str]:
     environment = {
         **os.environ,
-        "OPENRIG_FAKE_RESPONSE_DELAY": "0.2",
+        "OPENRIG_FAKE_RESPONSE_DELAY": delay,
         "OPENRIG_FAKE_STATE": str(root),
     }
     if fail:
@@ -204,6 +205,7 @@ def test_fake_transport_rejects_send_while_agent_is_busy(tmp_path: Path):
         "ordinary prompt",
         "--raw",
         "--json",
+        delay="5.0",
     )
     assert first.returncode == 0
 
