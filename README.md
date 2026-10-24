@@ -11,6 +11,7 @@ not require an OpenRig-native Matrix connector.
 
 - One private Matrix room per configured agent seat.
 - End-to-end encrypted Matrix rooms by default.
+- Local German speech-to-text for encrypted Matrix voice messages.
 - One allow-listed Matrix user; messages from everybody else are ignored.
 - Replies are posted in a Matrix thread under the original prompt.
 - Per-agent FIFO: a second prompt waits until the current answer is complete.
@@ -27,6 +28,10 @@ the gateway and transcript adapters.
 Direct messages from the owner to configured agents are supported. Proactive
 OpenRig human queue items and interactive approval buttons are a later adapter;
 they are not silently conflated with an agent chat.
+
+Voice messages are transcribed locally with `faster-whisper`; the default model
+is `base` and the default language is German. Audio is never uploaded to an
+external transcription service.
 
 ## Configuration
 

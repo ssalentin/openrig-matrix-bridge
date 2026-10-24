@@ -16,12 +16,15 @@ from nio import (
     InviteMemberEvent,
     MatrixRoom,
     RoomCreateResponse,
+    RoomEncryptedAudio,
     RoomMemberEvent,
+    RoomMessageAudio,
     RoomMessageText,
     RoomSendResponse,
     SyncResponse,
 )
 from nio.api import RoomPreset, RoomVisibility
+from nio.crypto import decrypt_attachment
 
 from .config import AgentConfig, BridgeConfig
 from .gateway import (
@@ -31,6 +34,7 @@ from .gateway import (
     MoshiGateway,
 )
 from .transcript import final_answer, read_complete_records
+from .transcription import Transcriber
 
 LOGGER = logging.getLogger("openrig-matrix-bridge")
 
@@ -76,6 +80,7 @@ class MatrixBridge:
         self.state = StateStore(config.state_dir / "state.json")
         self.resolver = AgentSessionResolver(config.codex_sessions_dir)
         self.gateway = MoshiGateway(config.gateway_url)
+        self.transcriber = Transcriber(config.transcription)
         self.locks = {key: asyncio.Lock() for key in config.agents}
         self.room_agents: dict[str, str] = {}
         self.processed_events: set[str] = set(self.state.data.get("processed_events", []))
@@ -96,6 +101,7 @@ class MatrixBridge:
             access_token=access_token,
         )
         self.client.add_event_callback(self._on_room_message, RoomMessageText)
+        self.client.add_event_callback(self._on_audio, (RoomMessageAudio, RoomEncryptedAudio))
         self.client.add_event_callback(self._on_invite, InviteMemberEvent)
         self.client.add_event_callback(self._on_member, RoomMemberEvent)
 
@@ -202,6 +208,9 @@ class MatrixBridge:
     def _on_room_message(self, room: MatrixRoom, event: RoomMessageText) -> None:
         asyncio.create_task(self._handle_room_message(room, event))
 
+    def _on_audio(self, room: MatrixRoom, event: RoomMessageAudio) -> None:
+        asyncio.create_task(self._handle_audio(room, event))
+
     def _agent_for_room(self, room_id: str) -> AgentConfig | None:
         agent_key = self.room_agents.get(room_id)
         return self.config.agents.get(agent_key) if agent_key else None
@@ -225,12 +234,22 @@ class MatrixBridge:
         text = event.body.strip()
         if not text:
             return
+        await self._enqueue_prompt(agent, room, event.event_id, event.server_timestamp, text)
 
+    async def _enqueue_prompt(
+        self,
+        agent: AgentConfig,
+        room: MatrixRoom,
+        event_id: str,
+        event_timestamp: int,
+        text: str,
+        source_label: str | None = None,
+    ) -> None:
         async with self.locks[agent.key]:
             pending = self.state.data["pending"].setdefault(agent.key, [])
             request = {
                 "id": uuid.uuid4().hex,
-                "event_id": event.event_id,
+                "event_id": event_id,
                 "text": text,
                 "enqueued_at": time.time(),
                 "started_at": None,
@@ -240,7 +259,7 @@ class MatrixBridge:
                 "answer_text": None,
             }
             pending.append(request)
-            self.processed_events.add(event.event_id)
+            self.processed_events.add(event_id)
             self.state.data["processed_events"] = list(self.processed_events)[-2000:]
             self.state.save()
             if len(pending) == 1:
@@ -249,8 +268,85 @@ class MatrixBridge:
                 await self._send(
                     room.room_id,
                     f"Warteschlange: {len(pending) - 1} weitere Nachricht(en) vor dir.",
+                    event_id,
+                )
+
+    async def _handle_audio(
+        self,
+        room: MatrixRoom,
+        event: RoomMessageAudio | RoomEncryptedAudio,
+    ) -> None:
+        if event.sender == self.config.user_id:
+            return
+        agent = self._agent_for_room(room.room_id)
+        if not agent:
+            return
+        if event.sender not in self.config.allowed_users:
+            LOGGER.warning("ignoring Matrix sender %s in %s", event.sender, room.room_id)
+            return
+        if event.event_id in self.processed_events:
+            return
+        if self.config.max_message_age_minutes >= 0:
+            age_ms = int(time.time() * 1000) - int(event.server_timestamp)
+            if age_ms > self.config.max_message_age_minutes * 60_000:
+                await self._send(
+                    room.room_id,
+                    "Sprachnachricht ist zu alt und wurde nicht verarbeitet.",
                     event.event_id,
                 )
+                return
+        if not self.config.transcription.enabled:
+            await self._send(
+                room.room_id,
+                "Sprachnachrichten sind auf dieser Bridge deaktiviert.",
+                event.event_id,
+            )
+            return
+
+        self.processed_events.add(event.event_id)
+        self.state.data["processed_events"] = list(self.processed_events)[-2000:]
+        self.state.save()
+        await self._send(room.room_id, "Sprachnachricht empfangen, transkribiere …", event.event_id)
+        try:
+            download = await self.client.download(mxc=event.url)
+            body = getattr(download, "body", None)
+            if not isinstance(body, bytes):
+                raise ConnectionError(str(download))
+            if len(body) > self.config.transcription.max_audio_bytes:
+                raise RuntimeError("Sprachnachricht überschreitet das Größenlimit")
+            audio = body
+            if isinstance(event, RoomEncryptedAudio):
+                audio = decrypt_attachment(
+                    body,
+                    event.key["k"],
+                    event.hashes["sha256"],
+                    event.iv,
+                )
+            text = await asyncio.to_thread(self.transcriber.transcribe, audio, event.body)
+        except Exception as exc:
+            LOGGER.exception("audio transcription failed")
+            await self._send(
+                room.room_id,
+                f"Sprachnachricht konnte nicht transkribiert werden: {exc}",
+                event.event_id,
+            )
+            return
+        if not text:
+            await self._send(
+                room.room_id,
+                "In der Sprachnachricht wurde kein Text erkannt.",
+                event.event_id,
+            )
+            return
+        await self._send(room.room_id, f"Transkript:\n{text}", event.event_id)
+        await self._enqueue_prompt(
+            agent,
+            room,
+            event.event_id,
+            event.server_timestamp,
+            f"Sprachnachricht von {event.sender} via Matrix (lokal transkribiert):\n\n{text}",
+            "audio",
+        )
 
     async def _start_request(self, agent: AgentConfig, request: dict[str, Any], room_id: str) -> None:
         try:

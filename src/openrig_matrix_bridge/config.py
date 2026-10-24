@@ -19,6 +19,15 @@ class AgentConfig:
 
 
 @dataclass(frozen=True)
+class TranscriptionConfig:
+    enabled: bool
+    model: str
+    language: str
+    download_root: Path
+    max_audio_bytes: int
+
+
+@dataclass(frozen=True)
 class BridgeConfig:
     homeserver: str
     user_id: str
@@ -30,6 +39,7 @@ class BridgeConfig:
     poll_interval_seconds: float
     max_message_age_minutes: int
     response_timeout_minutes: int
+    transcription: TranscriptionConfig
     agents: dict[str, AgentConfig]
 
 
@@ -52,6 +62,7 @@ def load_config(path: str | Path) -> BridgeConfig:
     matrix = _mapping(root.get("matrix"), "matrix")
     moshi = _mapping(root.get("moshi", {}), "moshi")
     agents_raw = _mapping(root.get("agents"), "agents")
+    transcription = _mapping(root.get("transcription", {}), "transcription")
 
     homeserver = str(matrix.get("homeserver", "")).rstrip("/")
     user_id = str(matrix.get("user_id", ""))
@@ -101,6 +112,9 @@ def load_config(path: str | Path) -> BridgeConfig:
         raise ConfigError("moshi.poll_interval_seconds must be at least 0.2")
     if max_age < 0 or timeout <= 0:
         raise ConfigError("message age must be non-negative and timeout positive")
+    max_audio_bytes = int(transcription.get("max_audio_bytes", 25 * 1024 * 1024))
+    if max_audio_bytes <= 0:
+        raise ConfigError("transcription.max_audio_bytes must be positive")
 
     return BridgeConfig(
         homeserver=homeserver,
@@ -113,6 +127,15 @@ def load_config(path: str | Path) -> BridgeConfig:
         poll_interval_seconds=poll_interval,
         max_message_age_minutes=max_age,
         response_timeout_minutes=timeout,
+        transcription=TranscriptionConfig(
+            enabled=bool(transcription.get("enabled", True)),
+            model=str(transcription.get("model", "base")),
+            language=str(transcription.get("language", "de")),
+            download_root=Path(
+                str(transcription.get("download_root", "/var/cache/openrig-matrix-bridge/whisper"))
+            ),
+            max_audio_bytes=max_audio_bytes,
+        ),
         agents=agents,
     )
 

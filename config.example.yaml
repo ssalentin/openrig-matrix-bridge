@@ -13,6 +13,13 @@ moshi:
   max_message_age_minutes: 60
   response_timeout_minutes: 360
 
+transcription:
+  enabled: true
+  model: base
+  language: de
+  download_root: /var/cache/openrig-matrix-bridge/whisper
+  max_audio_bytes: 26214400
+
 agents:
   advisor:
     display_name: Advisor
