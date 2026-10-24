@@ -166,6 +166,7 @@ class MatrixBridge:
             await self._create_rooms()
         await self._restore_room_names()
         self._initialize_transcript_offsets()
+        self._repair_decision_reply_targets()
         await self._refresh_agent_statuses(force=True)
         poller = asyncio.create_task(self._poll_answers(), name="openrig-matrix-poller")
         status_poller = asyncio.create_task(
@@ -204,6 +205,33 @@ class MatrixBridge:
             room_id = value.get("room_id")
             if key in agents and room_id:
                 self.room_agents[room_id] = key
+
+    def _repair_decision_reply_targets(self) -> None:
+        changed = False
+        for agent_key, pending in self.state.data["pending"].items():
+            for request in pending:
+                if request.get("reply_to_event_id"):
+                    continue
+                if request.get("source_label") != "decision" and not str(
+                    request.get("text", "")
+                ).startswith("Matrix-Entscheidung beantwortet."):
+                    continue
+                text = str(request.get("text", ""))
+                candidates = [
+                    decision
+                    for decision in self.state.data["decisions"].values()
+                    if decision.get("agent") == agent_key
+                    and str(decision.get("title", "")) in text
+                    and decision.get("event_ids")
+                ]
+                if not candidates:
+                    continue
+                decision = max(candidates, key=lambda item: item.get("created_at", 0))
+                request["reply_to_event_id"] = str(decision["event_ids"][0])
+                request["source_label"] = "decision"
+                changed = True
+        if changed:
+            self.state.save()
 
     async def _poll_decisions(self) -> None:
         while True:
@@ -496,11 +524,13 @@ class MatrixBridge:
                 "Behandle diese Antwort als Entscheidung und aktualisiere das "
                 "zugehörige Queue-Item.",
                 "decision",
+                str(decision["event_ids"][0]),
             )
+            thread_root = str(decision["event_ids"][0])
             await self._send(
                 room.room_id,
                 f"Antwort an **{agent.display_name}** übergeben: {answer_text}",
-                event.event_id,
+                thread_root,
             )
             return
 
@@ -641,12 +671,15 @@ class MatrixBridge:
         event_timestamp: int,
         text: str,
         source_label: str | None = None,
+        reply_to_event_id: str | None = None,
     ) -> None:
         async with self.locks[agent.key]:
             pending = self.state.data["pending"].setdefault(agent.key, [])
             request = {
                 "id": uuid.uuid4().hex,
                 "event_id": event_id,
+                "reply_to_event_id": reply_to_event_id or event_id,
+                "source_label": source_label or "message",
                 "text": text,
                 "enqueued_at": time.time(),
                 "started_at": None,
@@ -665,7 +698,7 @@ class MatrixBridge:
                 await self._send(
                     room.room_id,
                     f"Warteschlange: {len(pending) - 1} weitere Nachricht(en) vor dir.",
-                    event_id,
+                    reply_to_event_id or event_id,
                 )
 
     async def _handle_audio(
@@ -759,7 +792,11 @@ class MatrixBridge:
             LOGGER.exception("prompt failed for %s", agent.session)
             await self._set_typing(room_id, False)
             await self._update_agent_status(agent, "error", "Prompt fehlgeschlagen")
-            await self._send(room_id, f"Prompt fehlgeschlagen: {exc}", request["event_id"])
+            await self._send(
+                room_id,
+                f"Prompt fehlgeschlagen: {exc}",
+                self._reply_target(request),
+            )
             pending = self.state.data["pending"][agent.key]
             pending.pop(0)
             self.state.save()
@@ -808,7 +845,7 @@ class MatrixBridge:
                     await self._send(
                         self._room_for_agent(agent.key),
                         "Der Agent hat für diese Anfrage nicht rechtzeitig geantwortet.",
-                        request["event_id"],
+                        self._reply_target(request),
                     )
                     await self._set_typing(self._room_for_agent(agent.key), False)
                     await self._update_agent_status(agent, "error", "Zeitüberschreitung")
@@ -830,7 +867,11 @@ class MatrixBridge:
                 return
 
             room_id = self._room_for_agent(agent.key)
-            response = await self._send(room_id, request["answer_text"], request["event_id"])
+            response = await self._send(
+                room_id,
+                request["answer_text"],
+                self._reply_target(request),
+            )
             if not isinstance(response, RoomSendResponse):
                 LOGGER.error("answer delivery failed for %s: %s", agent.key, response)
                 return
@@ -843,6 +884,10 @@ class MatrixBridge:
 
     def _room_for_agent(self, agent_key: str) -> str:
         return str(self.state.data["rooms"][agent_key]["room_id"])
+
+    @staticmethod
+    def _reply_target(request: dict[str, Any]) -> str:
+        return str(request.get("reply_to_event_id") or request["event_id"])
 
     async def _poll_agent_statuses(self) -> None:
         while True:

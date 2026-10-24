@@ -2,6 +2,7 @@ import asyncio
 from types import SimpleNamespace
 
 import pytest
+from nio import RoomSendResponse
 
 from openrig_matrix_bridge.bridge import MatrixBridge, verification_decision
 from openrig_matrix_bridge.config import AgentConfig
@@ -155,7 +156,69 @@ def test_poll_answer_is_forwarded_and_pinned_decision_is_cleared():
         ("!advisor:matrix.example.org", ["$brief", "$poll"])
     ]
     assert "Auswahl: Klein (small)" in forwarded[0][4]
+    assert forwarded[0][6] == "$brief"
     assert acknowledgements[0][1] == "Antwort an **Advisor** übergeben: Klein"
+    assert acknowledgements[0][2] == "$brief"
+
+
+def test_poll_answer_delivery_uses_decision_brief_as_thread_root():
+    bridge = object.__new__(MatrixBridge)
+    agent = AgentConfig(
+        key="advisor",
+        display_name="Advisor",
+        session="advisor-lead@kernel",
+    )
+    bridge.locks = {"advisor": asyncio.Lock()}
+    bridge.state = SimpleNamespace(
+        save=lambda: None,
+        data={
+            "pending": {
+                "advisor": [
+                    {
+                        "event_id": "$vote",
+                        "reply_to_event_id": "$brief",
+                        "answer_text": "Fertig.",
+                        "started_at": 1,
+                        "session_id": "session",
+                        "transcript_path": "/tmp/transcript.jsonl",
+                        "offset": 0,
+                    }
+                ]
+            },
+            "rooms": {
+                "advisor": {
+                    "room_id": "!advisor:matrix.example.org",
+                    "name": "Advisor",
+                }
+            },
+        },
+    )
+    sent = []
+
+    async def send(room_id, text, reply_to=None):
+        sent.append((room_id, text, reply_to))
+        return RoomSendResponse("$answer", room_id)
+
+    async def set_typing(room_id, typing):
+        return None
+
+    async def update_status(agent, status, detail):
+        return None
+
+    bridge._send = send
+    bridge._set_typing = set_typing
+    bridge._update_agent_status = update_status
+
+    asyncio.run(bridge._poll_agent(agent))
+
+    assert sent == [
+        (
+            "!advisor:matrix.example.org",
+            "Fertig.",
+            "$brief",
+        )
+    ]
+    assert bridge.state.data["pending"]["advisor"] == []
 
 
 @pytest.mark.parametrize("text", ["ja", "Ja", "JA!", "bestätigen", "stimmt"])
