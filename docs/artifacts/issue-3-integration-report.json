@@ -1,10 +1,10 @@
 {
   "bridge_state_summary": {
-    "processed_matrix_events": 11,
+    "processed_matrix_events": 13,
     "rejected_rooms": 1,
     "rooms": 0
   },
-  "duration_seconds": 38.8,
+  "duration_seconds": 43.3,
   "environment": {
     "command": "python tools/matrix_integration.py",
     "element_sas": "not exercised; requires a human client action",
@@ -14,7 +14,7 @@
     "voice_model": "not downloaded or executed"
   },
   "evidence_valid": true,
-  "generated_at": "2026-10-24T18:26:50.091357+00:00",
+  "generated_at": "2026-10-24T18:38:02.776199+00:00",
   "known_gaps": [
     "Real Codex prompt delivery and native transcript completion are represented by the fake OpenRig subprocess transport.",
     "The Parakeet model and real voice transcription were not run.",
@@ -36,7 +36,7 @@
     },
     {
       "automated": true,
-      "evidence": "`setup` wrote one agent room; `doctor` exited 0 (wrote /tmp/openrig-matrix-integration.g2gdugya/config.yaml with 1 agent room(s))",
+      "evidence": "`setup` wrote one agent room; `doctor` exited 0 (wrote /tmp/openrig-matrix-integration.06ywjo6n/config.yaml with 1 agent room(s))",
       "id": "setup-and-doctor",
       "status": "pass"
     },
@@ -60,7 +60,7 @@
     },
     {
       "automated": true,
-      "evidence": "A second owner message arrived during a deliberately slow first turn; Matrix showed the pinned queue notice and the fake OpenRig transport received the second prompt only after recording completion of the first (1792866391.8762667 < 1792866392.2191358).",
+      "evidence": "A second owner message arrived during a deliberately slow first turn; Matrix showed the pinned queue notice and the fake OpenRig transport received the second prompt only after recording completion of the first (1792867059.8382616 < 1792867060.0612373).",
       "id": "fifo-queue-notice",
       "status": "pass"
     },
@@ -86,6 +86,12 @@
       "automated": true,
       "evidence": "A generic-file request was durably queued while the bridge was stopped, then delivered exactly once after restart. The persisted success record names the same Matrix event ID observed by the owner; the delivered bytes came from the private snapshot even after the mutable source was replaced.",
       "id": "attachment-restart-recovery",
+      "status": "pass"
+    },
+    {
+      "automated": true,
+      "evidence": "A PDF and markerless audio sent from inside an existing m.thread were stored and forwarded. Every file status and final bridge message used the original canonical thread root, and each input created one completed qitem.",
+      "id": "threaded-files",
       "status": "pass"
     },
     {
@@ -130,7 +136,7 @@
   "target": {
     "package": "openrig-matrix-bridge",
     "source": {
-      "commit": "635a2856b137b4fda2998c5dd0439cbeddc8ff9f",
+      "commit": "fe6f1271758773dc90ac73975f03763515db7732",
       "source": "git",
       "worktree_clean": true
     },
