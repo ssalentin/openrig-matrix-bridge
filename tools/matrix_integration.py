@@ -31,9 +31,11 @@ from nio import (
     InviteMemberEvent,
     ReactionEvent,
     RoomEncryptedAudio,
+    RoomEncryptedFile,
     RoomEncryptedImage,
     RoomGetStateEventResponse,
     RoomMessageAudio,
+    RoomMessageFile,
     RoomMessageImage,
     RoomMessageText,
     RoomSendResponse,
@@ -208,6 +210,7 @@ class MatrixOwner:
         self.token = token
         self.messages: list[dict[str, Any]] = []
         self.images: list[RoomEncryptedImage | RoomMessageImage] = []
+        self.files: list[RoomEncryptedFile | RoomMessageFile] = []
         self.audio: list[RoomEncryptedAudio | RoomMessageAudio] = []
         self.reactions: list[ReactionEvent] = []
         self.typing: list[dict[str, Any]] = []
@@ -216,6 +219,10 @@ class MatrixOwner:
         self.client.add_event_callback(
             self._on_image,
             (RoomEncryptedImage, RoomMessageImage),
+        )
+        self.client.add_event_callback(
+            self._on_file,
+            (RoomEncryptedFile, RoomMessageFile),
         )
         self.client.add_event_callback(
             self._on_audio,
@@ -249,6 +256,13 @@ class MatrixOwner:
         event: RoomEncryptedImage | RoomMessageImage,
     ) -> None:
         self.images.append(event)
+
+    async def _on_file(
+        self,
+        room: Any,
+        event: RoomEncryptedFile | RoomMessageFile,
+    ) -> None:
+        self.files.append(event)
 
     async def _on_audio(
         self,
@@ -322,6 +336,7 @@ class MatrixOwner:
         filename: str,
         mimetype: str,
         body: str,
+        extra_content: dict[str, Any] | None = None,
     ) -> str:
         upload, encryption = await self.client.upload(
             io.BytesIO(data),
@@ -339,6 +354,8 @@ class MatrixOwner:
             "info": {"mimetype": mimetype, "size": len(data)},
             "file": {"url": upload.content_uri, **encryption},
         }
+        if extra_content:
+            content.update(extra_content)
         response = await self.client.room_send(
             room_id,
             "m.room.message",
@@ -354,7 +371,10 @@ class MatrixOwner:
         body = getattr(response, "body", None)
         if not isinstance(body, bytes):
             raise CheckFailure(f"owner media download failed: {response}")
-        if isinstance(event, (RoomEncryptedImage, RoomEncryptedAudio)):
+        if isinstance(
+            event,
+            (RoomEncryptedFile, RoomEncryptedImage, RoomEncryptedAudio),
+        ):
             return decrypt_attachment(
                 body,
                 event.key["k"],
@@ -632,6 +652,7 @@ class IntegrationRun:
                 "owner@external",
                 "--human-id",
                 "owner",
+                "--without-voice",
                 "--skip-model",
             ],
             env=self.env(),
@@ -664,7 +685,8 @@ class IntegrationRun:
         self.bridge = subprocess.Popen(
             [
                 sys.executable,
-                str(ROOT / "tools" / "deterministic_transcriber_bridge.py"),
+                "-m",
+                "openrig_matrix_bridge",
                 "run",
                 "--config",
                 str(self.config_path),
@@ -1126,6 +1148,407 @@ class IntegrationRun:
             ),
         )
 
+    async def check_files(self, room_id: str) -> None:
+        assert self.owner is not None
+        owner = self.owner
+        pdf = b"%PDF-1.7\nQuarterly integration report\n%%EOF\n"
+        unknown = b"\x00\xffopenrig unknown binary\x10"
+        ordinary_audio = b"OggS ordinary meeting recording"
+        prompts_path = self.fake_state / "fake-openrig.json"
+
+        await owner.send_encrypted_file(
+            room_id,
+            pdf,
+            msgtype="m.file",
+            filename="../../Quarterly report.pdf",
+            mimetype="application/pdf",
+            body="Quarterly report",
+        )
+        await owner.sync_until(
+            lambda: any(
+                "Originaldateiname: \"../../Quarterly report.pdf\"" in item["prompt"]
+                and "Medientyp: application/pdf" in item["prompt"]
+                and f"Größe: {len(pdf)} Bytes" in item["prompt"]
+                for item in json.loads(prompts_path.read_text())["prompts"]
+            ),
+            self.args.timeout,
+            description="inbound PDF attachment metadata",
+        )
+        pdf_files = list((self.state_dir / "media-inbox" / AGENT_KEY).glob("*.pdf"))
+        if len(pdf_files) != 1 or pdf_files[0].read_bytes() != pdf:
+            raise CheckFailure("inbound PDF was not stored intact")
+        if pdf_files[0].parent != self.state_dir / "media-inbox" / AGENT_KEY:
+            raise CheckFailure("inbound PDF escaped the generated agent inbox")
+
+        await owner.send_encrypted_file(
+            room_id,
+            unknown,
+            msgtype="m.file",
+            filename="../../payload.custom",
+            mimetype="application/x-openrig-unknown",
+            body="Unknown payload",
+        )
+        await owner.sync_until(
+            lambda: any(
+                "Originaldateiname: \"../../payload.custom\"" in item["prompt"]
+                and "Medientyp: application/x-openrig-unknown" in item["prompt"]
+                for item in json.loads(prompts_path.read_text())["prompts"]
+            ),
+            self.args.timeout,
+            description="inbound unknown attachment metadata",
+        )
+        unknown_files = list(
+            (self.state_dir / "media-inbox" / AGENT_KEY).glob("*.custom")
+        )
+        if len(unknown_files) != 1 or unknown_files[0].read_bytes() != unknown:
+            raise CheckFailure("inbound unknown file was not stored intact")
+
+        await owner.send_encrypted_file(
+            room_id,
+            ordinary_audio,
+            msgtype="m.audio",
+            filename="meeting.ogg",
+            mimetype="audio/ogg",
+            body="meeting.ogg",
+        )
+        await owner.sync_until(
+            lambda: any(
+                "Originaldateiname: \"meeting.ogg\"" in item["prompt"]
+                and "Medientyp: audio/ogg" in item["prompt"]
+                for item in json.loads(prompts_path.read_text())["prompts"]
+            ),
+            self.args.timeout,
+            description="markerless audio generic attachment",
+        )
+        audio_files = list((self.state_dir / "media-inbox" / AGENT_KEY).glob("*.ogg"))
+        if len(audio_files) != 1 or audio_files[0].read_bytes() != ordinary_audio:
+            raise CheckFailure("markerless audio was not stored as a generic file")
+
+        outbound_pdf = self.work / "outbound report.pdf"
+        outbound_pdf.write_bytes(pdf)
+        pdf_count = len(owner.files)
+        outbound = self.cli(
+            "send-file",
+            "--agent",
+            AGENT_KEY,
+            "--path",
+            str(outbound_pdf),
+            "--caption",
+            "Encrypted PDF from the agent",
+            "--wait-seconds",
+            "15",
+            check=False,
+        )
+        if outbound.returncode != 0:
+            raise CheckFailure(f"send-file PDF failed: {outbound.stdout}{outbound.stderr}")
+        await owner.sync_until(
+            lambda: len(owner.files) > pdf_count,
+            self.args.timeout,
+            description="outbound encrypted PDF",
+        )
+        pdf_event = owner.files[-1]
+        pdf_content = pdf_event.source.get("content", {})
+        if pdf_content.get("msgtype") != "m.file":
+            raise CheckFailure(f"outbound PDF was not a generic file: {pdf_content}")
+        if pdf_content.get("filename") != outbound_pdf.name:
+            raise CheckFailure(f"outbound PDF filename changed: {pdf_content}")
+        if pdf_content.get("info") != {
+            "mimetype": "application/pdf",
+            "size": len(pdf),
+        }:
+            raise CheckFailure(f"outbound PDF metadata changed: {pdf_content.get('info')}")
+        if await owner.download_media(pdf_event) != pdf:
+            raise CheckFailure("outbound PDF did not decrypt byte-for-byte")
+        pdf_request_id = str(outbound.stdout).split()[0]
+        pdf_record = self.bridge_state()["media"][pdf_request_id]
+        pdf_snapshot = Path(pdf_record["snapshot_path"])
+        if (
+            pdf_snapshot.parent != self.state_dir / "media-outbox" / "files"
+            or pdf_snapshot.stat().st_mode & 0o777 != 0o600
+            or pdf_snapshot.read_bytes() != pdf
+        ):
+            raise CheckFailure("outbound PDF did not use its private immutable snapshot")
+        raw_pdf = await owner.raw_event(room_id, pdf_event.event_id)
+        if (
+            raw_pdf.get("type") != "m.room.encrypted"
+            or not raw_pdf.get("content", {}).get("ciphertext")
+        ):
+            raise CheckFailure("outbound PDF was not encrypted on the Matrix wire")
+
+        outbound_unknown = self.work / "payload.custom"
+        outbound_unknown.write_bytes(unknown)
+        unknown_count = len(owner.files)
+        outbound = self.cli(
+            "send-file",
+            "--agent",
+            AGENT_KEY,
+            "--path",
+            str(outbound_unknown),
+            "--mime-type",
+            "application/x-openrig-unknown",
+            "--wait-seconds",
+            "15",
+            check=False,
+        )
+        if outbound.returncode != 0:
+            raise CheckFailure(
+                f"send-file unknown binary failed: {outbound.stdout}{outbound.stderr}"
+            )
+        await owner.sync_until(
+            lambda: len(owner.files) > unknown_count,
+            self.args.timeout,
+            description="outbound encrypted unknown binary",
+        )
+        unknown_event = owner.files[-1]
+        unknown_content = unknown_event.source.get("content", {})
+        if (
+            unknown_content.get("msgtype") != "m.file"
+            or unknown_content.get("filename") != outbound_unknown.name
+            or unknown_content.get("info", {}).get("mimetype")
+            != "application/x-openrig-unknown"
+        ):
+            raise CheckFailure(
+                f"outbound unknown binary metadata changed: {unknown_content}"
+            )
+        if await owner.download_media(unknown_event) != unknown:
+            raise CheckFailure("outbound unknown binary did not decrypt byte-for-byte")
+
+        self.record(
+            "encrypted-files",
+            "pass",
+            (
+                "Encrypted PDF and unknown binary attachments were transferred in "
+                "both directions through disposable Synapse, and markerless audio "
+                "used the generic attachment path. Inbound files were stored under "
+                "generated agent inbox paths with original metadata; outbound m.file "
+                "events used private snapshots with preserved filename, MIME type "
+                "and size, decrypted byte-for-byte, and were Megolm-encrypted on "
+                "the wire."
+            ),
+        )
+
+        recovery = self.work / "restart recovery.pdf"
+        recovery.write_bytes(pdf + b"restart\n")
+        self.stop_bridge()
+        queued = self.cli(
+            "send-file",
+            "--agent",
+            AGENT_KEY,
+            "--path",
+            str(recovery),
+            "--wait-seconds",
+            "0",
+            check=False,
+        )
+        if queued.returncode != 1 or "queued file-" not in queued.stdout:
+            raise CheckFailure(
+                f"pending attachment was not queued: {queued.stdout}{queued.stderr}"
+            )
+        pending_requests = list((self.state_dir / "media-outbox").glob("file-*.json"))
+        if len(pending_requests) != 1:
+            raise CheckFailure(
+                f"expected one pending attachment request, found {pending_requests}"
+            )
+        request_id = pending_requests[0].stem
+        pending_request = json.loads(pending_requests[0].read_text())
+        recovery_snapshot = Path(pending_request["snapshot_path"])
+        recovery_bytes = recovery_snapshot.read_bytes()
+        recovery.write_bytes(b"mutated source after admission")
+        recovery_count = len(owner.files)
+        self.start_bridge()
+        deadline = time.monotonic() + self.args.timeout
+        while time.monotonic() < deadline:
+            await owner.sync_once()
+            state = self.bridge_state()
+            failure = state.get("media_failures", {}).get(request_id)
+            if failure:
+                raise CheckFailure(
+                    f"restart attachment delivery failed explicitly: {failure['error']}"
+                )
+            if len(owner.files) > recovery_count:
+                break
+            await asyncio.sleep(0.1)
+        else:
+            raise CheckFailure(
+                "timed out waiting for outbound attachment after bridge restart"
+            )
+        await asyncio.sleep(1.5)
+        await owner.sync_once()
+        if len(owner.files) != recovery_count + 1:
+            raise CheckFailure(
+                "restart recovery delivered the pending attachment more than once"
+            )
+        recovery_event = owner.files[-1]
+        if await owner.download_media(recovery_event) != recovery_bytes:
+            raise CheckFailure(
+                "restart-recovered attachment did not use the admitted snapshot"
+            )
+        state = self.bridge_state()
+        delivered = state.get("media", {}).get(request_id)
+        if (
+            not delivered
+            or not str(delivered.get("event_id") or "").startswith("$")
+            or delivered.get("event_id") != recovery_event.event_id
+        ):
+            raise CheckFailure(
+                f"restart recovery lacks the delivered Matrix event ID: {delivered}"
+            )
+        self.record(
+            "attachment-restart-recovery",
+            "pass",
+            (
+                "A generic-file request was durably queued while the bridge was "
+                "stopped, then delivered exactly once after restart. The persisted "
+                "success record names the same Matrix event ID observed by the owner; "
+                "the delivered bytes came from the private snapshot even after the "
+                "mutable source was replaced."
+            ),
+        )
+
+    async def check_threaded_files(self, room_id: str) -> None:
+        assert self.owner is not None
+        owner = self.owner
+        root_event_id = next(
+            message["event_id"]
+            for message in owner.messages
+            if message["body"] == "thread root request"
+        )
+        relation = {
+            "rel_type": "m.thread",
+            "event_id": root_event_id,
+            "is_falling_back": True,
+            "m.in_reply_to": {"event_id": root_event_id},
+        }
+        cases = [
+            (
+                "threaded-report.pdf",
+                b"%PDF-1.7\nthreaded integration report\n",
+                "m.file",
+                "application/pdf",
+            ),
+            (
+                "threaded-meeting.ogg",
+                b"OggS threaded markerless audio",
+                "m.audio",
+                "audio/ogg",
+            ),
+        ]
+        for filename, payload, msgtype, mimetype in cases:
+            before = len(owner.messages)
+            await owner.send_encrypted_file(
+                room_id,
+                payload,
+                msgtype=msgtype,
+                filename=filename,
+                mimetype=mimetype,
+                body=filename,
+                extra_content={"m.relates_to": relation},
+            )
+
+            def threaded_file_delivered(
+                before_count=before,
+            ) -> bool:
+                new_messages = owner.messages[before_count:]
+                return any(
+                    message["sender"] == BRIDGE_USER
+                    and "Datei gespeichert" in str(message["body"])
+                    for message in new_messages
+                ) and any(
+                    message["sender"] == BRIDGE_USER
+                    and "Fake integration answer: Datei von" in str(message["body"])
+                    for message in new_messages
+                )
+
+            await owner.sync_until(
+                threaded_file_delivered,
+                self.args.timeout,
+                description=f"threaded {filename} delivery",
+            )
+            wait_for_json_state(
+                self.state_dir / "state.json",
+                lambda value: not value.get("pending", {}).get(AGENT_KEY),
+                self.args.timeout,
+            )
+            await asyncio.sleep(0.2)
+            await owner.sync_once()
+            delivered = [
+                message
+                for message in owner.messages[before:]
+                if message["sender"] == BRIDGE_USER
+            ]
+            if not delivered:
+                raise CheckFailure(f"threaded {filename} produced no bridge messages")
+            for message in delivered:
+                delivered_relation = message["source"].get("content", {}).get(
+                    "m.relates_to"
+                )
+                if (
+                    not isinstance(delivered_relation, dict)
+                    or delivered_relation.get("rel_type") != "m.thread"
+                    or delivered_relation.get("event_id") != root_event_id
+                ):
+                    raise CheckFailure(
+                        f"threaded {filename} escaped its canonical root: "
+                        f"{delivered_relation}"
+                    )
+            fake = json.loads((self.fake_state / "fake-openrig.json").read_text())
+            qitems = [
+                item
+                for item in fake["queue"].values()
+                if filename in str(item.get("body") or "")
+            ]
+            if len(qitems) != 1:
+                raise CheckFailure(
+                    f"threaded {filename} did not create exactly one qitem"
+                )
+            validate_qitem_history(qitems[0])
+            if qitems[0]["state"] != "done":
+                raise CheckFailure(f"threaded {filename} qitem did not close")
+
+        self.record(
+            "threaded-files",
+            "pass",
+            (
+                "A PDF and markerless audio sent from inside an existing m.thread "
+                "were stored and forwarded. Every file status and final bridge "
+                "message used the original canonical thread root, and each input "
+                "created one completed qitem."
+            ),
+        )
+
+    async def check_audio_gap(self, room_id: str) -> None:
+        assert self.owner is not None
+        owner = self.owner
+        before = len(owner.messages)
+        await owner.send_encrypted_file(
+            room_id,
+            b"OggS-integration-audio-placeholder",
+            msgtype="m.audio",
+            filename="voice.ogg",
+            mimetype="audio/ogg",
+            body="voice.ogg",
+            extra_content={"org.matrix.msc3245.voice": {}},
+        )
+        await owner.sync_until(
+            lambda: any(
+                "Sprachnachrichten sind auf dieser Bridge deaktiviert"
+                in str(message["body"])
+                for message in owner.messages[before:]
+            ),
+            self.args.timeout,
+            description="disabled voice response",
+        )
+        self.record(
+            "voice-disabled-path",
+            "pass",
+            (
+                "An encrypted Matrix audio event reached the bridge and received "
+                "the configured disabled-voice response. Real Parakeet model "
+                "execution remains an explicit gap because setup used "
+                "`--without-voice` and no 465 MB model was downloaded."
+            ),
+        )
+
     async def check_voice_status_edit(self, room_id: str) -> None:
         assert self.owner is not None
         owner = self.owner
@@ -1448,6 +1871,9 @@ class IntegrationRun:
         await self.check_fifo(room_id)
         await self.check_reaction(room_id)
         await self.check_images(room_id)
+        await self.check_files(room_id)
+        await self.check_threaded_files(room_id)
+        await self.check_audio_gap(room_id)
         await self.check_voice_status_edit(room_id)
         await self.check_decision_and_poll(room_id)
         await self.check_proactive_message(room_id)

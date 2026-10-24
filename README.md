@@ -21,7 +21,8 @@ product claims, see [Verification and evidence](docs/VERIFICATION.md) and
 - Per-room status in the room topic and `dev.openrig.agent_status` state.
 - A refreshed Matrix typing indicator while an answer is in progress.
 - FIFO prompts per agent, with a single editable pinned queue card.
-- Encrypted text, images, voice notes, decisions, and polls in encrypted rooms.
+- Encrypted text, images, arbitrary files, voice notes, decisions, and polls in
+  encrypted rooms.
 - Canonical thread delivery for top-level prompts and prompts that are already
   thread replies, with bounded commentary/final-delivery failure handling.
 - Local NVIDIA Parakeet transcription; audio is not sent to a transcription
@@ -222,14 +223,17 @@ status literals; the words mean “ready” and “working.”
    the pinned queue card should count it.
 4. Attach a PNG, JPEG, GIF, or WebP image. The agent receives a local file path
    under the configured media inbox.
-5. Send a short voice note when transcription is enabled. The bridge creates
+5. Attach a PDF, archive, office document, audio file, or other generic file.
+   The agent receives a generated local path plus the original filename, MIME
+   type, and byte count. The original name is metadata, not part of the path.
+6. Send a short voice note when transcription is enabled. The bridge creates
    one status reply in the voice-note thread, edits it to the local transcript,
    and forwards the prompt. A rejected edit produces a clearly labeled
    transcript fallback. A restart during processing replaces the stale status
    with an explicit terminal message instead of duplicating the transcript.
-6. React to a bridge-authored message. The reaction is forwarded as silent
+7. React to a bridge-authored message. The reaction is forwarded as silent
    feedback and is not mirrored as a visible answer.
-7. Publish a decision (see below) and select an option. The choice is returned
+8. Publish a decision (see below) and select an option. The choice is returned
    to the responsible agent.
 
 The automated integration harness and its observed limits are documented in
@@ -299,7 +303,7 @@ The command reads the queue item's summary, body, and optional
 four choices are published as Matrix polls; the brief and polls are removed
 from the pinned set after all structured questions are answered.
 
-## Images and explicit messages
+## Images, files, and explicit messages
 
 Send an encrypted image into an agent's room:
 
@@ -310,6 +314,21 @@ openrig-matrix-bridge send-image \
   --caption 'Screenshot of the current view'
 ```
 
+Send any other file as an encrypted downloadable attachment:
+
+```bash
+openrig-matrix-bridge send-file \
+  --agent advisor \
+  --path '/tmp/Quarterly report.pdf' \
+  --caption 'Reviewed quarterly report'
+```
+
+The bridge preserves the source basename and inferred MIME type. Use
+`--mime-type application/x-custom` only when the file extension is ambiguous.
+Unknown extensions use `application/octet-stream`. Non-image files use Matrix
+`m.file`, so clients show them as downloads rather than pretending they are
+images.
+
 Send an explicit, formatted message into the room:
 
 ```bash
@@ -319,7 +338,36 @@ openrig-matrix-bridge send-message \
 ```
 
 These commands use the running bridge's encrypted Matrix state. Plain terminal
-conversation is not mirrored automatically.
+conversation is not mirrored automatically. A command that queues work while
+the bridge is stopped exits non-zero with the durable request ID; the running
+bridge retries it after restart.
+
+### Attachment limits, storage, and recovery
+
+- `media.max_image_bytes` and `media.max_file_bytes` independently cap inbound
+  and outbound image and generic-file content. Both default to 26,214,400 bytes
+  (25 MiB), and rejection messages include the effective limit.
+- Inbound bytes are written atomically under
+  `<media.inbox_dir>/<agent-key>/<generated-id>.<safe-suffix>`. The
+  original filename is preserved as prompt metadata but is never used as a
+  filesystem path. Zero-byte, oversized, corrupt, interrupted, and
+  metadata-inconsistent transfers are rejected without publishing a successful
+  file.
+- Generic files are stored as `0600` files in `0700` directories. The bridge
+  does not automatically delete inbox files; apply your own retention policy.
+  Outbound request JSON and `state.json` retain local source paths, captions,
+  filenames, MIME types, sizes, and Matrix event IDs, so protect and redact the
+  state directory accordingly. File bytes are not copied into `state.json`.
+- Outbound requests in `<state_dir>/media-outbox` survive restart. A stable
+  Matrix transaction ID prevents a retried request from creating a second
+  event. Success is recorded only after a Matrix event ID is returned; terminal
+  failures move to `media-outbox/failed` and are recorded in
+  `media-failures` state.
+- Keep the source file available until delivery is confirmed. Removing or
+  resizing it before the bridge processes the request produces an explicit
+  failure.
+- Files are not malware-scanned and PDFs or office documents are not rendered
+  in preview. Only configured allow-listed owners can send into the room.
 
 ## Security and E2EE
 
@@ -327,8 +375,8 @@ conversation is not mirrored automatically.
 - Only one owner is invited when rooms are created. Messages from senders who
   are not listed in `matrix.allowed_users` are ignored.
 - The access token is read from `MATRIX_ACCESS_TOKEN`; it is not stored in YAML.
-- Encrypted image uploads are encrypted before upload. Remote Markdown images
-  are shown as references and are not embedded or fetched.
+- Encrypted image and generic-file uploads are encrypted before upload. Remote
+  Markdown images are shown as references and are not embedded or fetched.
 - Voice audio is processed locally after the model is downloaded. The model
   archive is verified against a pinned SHA-256 checksum.
 - State, the Matrix encryption store, and media inbox contain sensitive data.
@@ -404,9 +452,10 @@ ruff check .
 
 The current automated suite covers configuration validation, OpenRig
 resolution and queue commands, transcript parsing, room/status construction,
-queue notices, Markdown rendering, decisions, encrypted image content,
-voice status editing and fallback, transcription model state, avatars, and
-failure handling at the unit boundary.
+queue notices, Markdown rendering, decisions, encrypted image and generic-file
+content, safe attachment storage, outbox recovery, voice status editing and
+fallback, transcription model state, avatars, and failure handling at the unit
+boundary.
 With `uv` installed, the equivalent lint command is `uv tool run ruff check .`.
 
 The reproducible Matrix integration harness requires Docker:
@@ -497,8 +546,10 @@ verification](#matrix-device-verification) and Issue #1.
 - Ordinary terminal chat is not mirrored to Matrix.
 - The bridge supports one invited owner by default. Additional accounts must
   be intentionally added to the room and allowlist.
-- Image support is limited to PNG, JPEG, GIF, and WebP and the configured byte
-  limit.
+- Inline image support is limited to PNG, JPEG, GIF, and WebP. Other file types
+  use downloadable `m.file` attachments subject to `media.max_file_bytes`.
+- Arbitrary files are not malware-scanned, previewed, or fetched from remote
+  URLs. Inbox retention and redaction of local paths remain operator duties.
 - The default user-facing status and help strings are German.
 
 ## Upgrade and help

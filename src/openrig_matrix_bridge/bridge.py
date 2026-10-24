@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import tempfile
 import time
 import uuid
@@ -26,11 +27,13 @@ from nio import (
     ReactionEvent,
     RoomCreateResponse,
     RoomEncryptedAudio,
+    RoomEncryptedFile,
     RoomEncryptedImage,
     RoomGetEventResponse,
     RoomGetStateEventResponse,
     RoomMemberEvent,
     RoomMessageAudio,
+    RoomMessageFile,
     RoomMessageImage,
     RoomMessageText,
     RoomSendResponse,
@@ -63,7 +66,9 @@ from .media import (
     MediaError,
     detect_image_file,
     detect_image_type,
+    encrypted_file_content,
     encrypted_image_content,
+    normalize_mime_type,
 )
 from .openrig import (
     AgentSessionNotFound,
@@ -90,6 +95,23 @@ STATUS_LABELS = {
     "offline": "⚫",
     "error": "🟠",
 }
+
+
+def _has_complete_encryption_metadata(encryption: object) -> bool:
+    if not isinstance(encryption, dict):
+        return False
+    key = encryption.get("key")
+    hashes = encryption.get("hashes")
+    return (
+        isinstance(key, dict)
+        and isinstance(key.get("k"), str)
+        and bool(key["k"])
+        and isinstance(hashes, dict)
+        and isinstance(hashes.get("sha256"), str)
+        and bool(hashes["sha256"])
+        and isinstance(encryption.get("iv"), str)
+        and bool(encryption["iv"])
+    )
 
 
 def room_name(agent: AgentConfig) -> str:
@@ -167,6 +189,7 @@ class StateStore:
             "welcomed": {},
             "decisions": {},
             "media": {},
+            "media_failures": {},
             "messages": {},
             "queue_notices": {},
             "queue_mirror": {"initialized": False, "seen": {}},
@@ -259,6 +282,7 @@ class MatrixBridge:
         self.client.add_event_callback(self._on_reaction, ReactionEvent)
         self.client.add_event_callback(self._on_audio, (RoomMessageAudio, RoomEncryptedAudio))
         self.client.add_event_callback(self._on_image, (RoomMessageImage, RoomEncryptedImage))
+        self.client.add_event_callback(self._on_file, (RoomMessageFile, RoomEncryptedFile))
         self.client.add_event_callback(self._on_invite, InviteMemberEvent)
         self.client.add_event_callback(self._on_member, RoomMemberEvent)
         self.client.add_event_callback(self._on_unknown_event, UnknownEvent)
@@ -591,20 +615,56 @@ class MatrixBridge:
 
     async def _process_media_outbox(self) -> None:
         for path in sorted(self.media_outbox.glob("*.json")):
+            request_id = path.stem
+            if request_id in self.state.data.get("media", {}):
+                os.replace(path, self.media_sent / path.name)
+                continue
+            if request_id in self.state.data.get("media_failures", {}):
+                os.replace(path, self.media_failed / path.name)
+                continue
             try:
                 request = json.loads(path.read_text(encoding="utf-8"))
                 if not isinstance(request, dict):
                     raise MediaError("media request must be an object")
-                await self._publish_image(request)
-            except (MediaError, json.JSONDecodeError, OSError):
-                LOGGER.warning("invalid media request: %s", path, exc_info=True)
+                request_id = str(request.get("id") or path.stem)
+                if request.get("kind") == "file":
+                    await self._publish_file(request)
+                else:
+                    await self._publish_image(request)
+            except MediaError as exc:
+                LOGGER.warning("rejected media request: %s", path, exc_info=True)
+                self._record_media_failure(request_id, path, str(exc))
                 os.replace(path, self.media_failed / path.name)
                 continue
-            except Exception:
+            except (json.JSONDecodeError, OSError) as exc:
+                LOGGER.warning("invalid media request: %s", path, exc_info=True)
+                self._record_media_failure(
+                    request_id,
+                    path,
+                    f"invalid media request: {exc}",
+                )
+                os.replace(path, self.media_failed / path.name)
+                continue
+            except Exception as exc:
                 LOGGER.exception("failed to publish media request: %s", path)
+                self._record_media_failure(request_id, path, str(exc))
                 os.replace(path, self.media_failed / path.name)
                 continue
             os.replace(path, self.media_sent / path.name)
+
+    def _record_media_failure(
+        self,
+        request_id: str,
+        path: Path,
+        error: str,
+    ) -> None:
+        failures = self.state.data.setdefault("media_failures", {})
+        failures[request_id] = {
+            "error": error[:2000],
+            "request": path.name,
+            "failed_at": int(time.time() * 1000),
+        }
+        self.state.save()
 
     async def _publish_image(self, request: dict[str, Any]) -> None:
         if not self.config.media.enabled:
@@ -635,7 +695,9 @@ class MatrixBridge:
             encrypt=True,
             filesize=size,
         )
-        if not isinstance(upload, UploadResponse) or not isinstance(encryption, dict):
+        if not isinstance(upload, UploadResponse) or not _has_complete_encryption_metadata(
+            encryption
+        ):
             raise ConnectionError(f"encrypted image upload failed: {upload}")
 
         caption = str(request.get("caption") or "").strip()[:10_000]
@@ -651,6 +713,7 @@ class MatrixBridge:
                 encryption=encryption,
                 formatted_caption=markdown_to_matrix_html(caption),
             ),
+            tx_id=request_id,
             ignore_unverified_devices=True,
         )
         if not isinstance(response, RoomSendResponse):
@@ -665,6 +728,75 @@ class MatrixBridge:
         }
         self.state.save()
         LOGGER.info("published encrypted image %s in %s", request_id, agent.session)
+
+    async def _publish_file(self, request: dict[str, Any]) -> None:
+        if not self.config.media.enabled:
+            raise MediaError("file exchange is disabled")
+        request_id = str(request.get("id") or "").strip()
+        agent_key = str(request.get("agent") or "").strip()
+        agent = self.config.agents.get(agent_key)
+        if not request_id or agent is None:
+            raise MediaError("file request needs an id and configured agent")
+        room = self.state.data["rooms"].get(agent.key)
+        if not room:
+            raise MediaError(f"no Matrix room configured for: {agent.key}")
+
+        file_path = Path(str(request.get("path") or ""))
+        if not file_path.is_absolute() or not file_path.is_file():
+            raise MediaError(f"file not found: {file_path}")
+        size = file_path.stat().st_size
+        if size <= 0 or size > self.config.media.max_file_bytes:
+            raise MediaError(
+                "file size must be between 1 and "
+                f"{self.config.media.max_file_bytes} bytes"
+            )
+        filename = str(request.get("filename") or file_path.name)
+        mime_type = normalize_mime_type(
+            request.get("mime_type") or "application/octet-stream"
+        )
+        upload, encryption = await self.client.upload(
+            lambda _retries, _timeouts: file_path,
+            content_type=mime_type,
+            filename=filename,
+            encrypt=True,
+            filesize=size,
+        )
+        if not isinstance(upload, UploadResponse) or not _has_complete_encryption_metadata(
+            encryption
+        ):
+            raise MediaError(
+                "encrypted file upload returned incomplete encryption metadata"
+            )
+
+        caption = str(request.get("caption") or "").strip()[:10_000]
+        response = await self.client.room_send(
+            str(room["room_id"]),
+            "m.room.message",
+            encrypted_file_content(
+                filename=filename,
+                caption=caption,
+                mime_type=mime_type,
+                size=size,
+                upload_url=upload.content_uri,
+                encryption=encryption,
+                formatted_caption=markdown_to_matrix_html(caption),
+            ),
+            tx_id=request_id,
+            ignore_unverified_devices=True,
+        )
+        if not isinstance(response, RoomSendResponse):
+            raise ConnectionError(f"encrypted file message failed: {response}")
+        self.state.data["media"][request_id] = {
+            "agent": agent.key,
+            "event_id": response.event_id,
+            "path": str(file_path),
+            "filename": filename,
+            "mime_type": mime_type,
+            "size": size,
+            "sent_at": int(time.time() * 1000),
+        }
+        self.state.save()
+        LOGGER.info("published encrypted file %s in %s", request_id, agent.session)
 
     async def _add_pinned(self, room_id: str, event_ids: list[str]) -> None:
         lock = self.pin_locks.setdefault(room_id, asyncio.Lock())
@@ -1049,6 +1181,13 @@ class MatrixBridge:
         event: RoomMessageImage | RoomEncryptedImage,
     ) -> None:
         asyncio.create_task(self._handle_image(room, event))
+
+    def _on_file(
+        self,
+        room: MatrixRoom,
+        event: RoomMessageFile | RoomEncryptedFile,
+    ) -> None:
+        asyncio.create_task(self._handle_file(room, event))
 
     def _on_unknown_event(self, room: MatrixRoom, event: UnknownEvent) -> None:
         if event.type in {POLL_RESPONSE_TYPE, STABLE_POLL_RESPONSE_TYPE}:
@@ -1972,6 +2111,140 @@ class MatrixBridge:
             f"Format: {image_type.mime_type}, {len(image)} Bytes",
             "image",
             relates_to=message_relation(event),
+        )
+
+    async def _handle_file(
+        self,
+        room: MatrixRoom,
+        event: RoomMessageFile | RoomEncryptedFile,
+    ) -> None:
+        if not self.config.media.enabled:
+            return
+        if event.sender == self.config.user_id:
+            return
+        agent = self._agent_for_room(room.room_id)
+        if agent is None or event.sender not in self.config.allowed_users:
+            return
+        if event.event_id in self.processed_events:
+            return
+        if self.config.max_message_age_minutes >= 0:
+            age_ms = int(time.time() * 1000) - int(event.server_timestamp)
+            if age_ms > self.config.max_message_age_minutes * 60_000:
+                await self._send(
+                    room.room_id,
+                    "Datei ist zu alt und wurde nicht verarbeitet.",
+                    event.event_id,
+                )
+                return
+
+        self.processed_events.add(event.event_id)
+        self.state.data["processed_events"] = list(self.processed_events)[-2000:]
+        self.state.save()
+        await self._send(
+            room.room_id,
+            "Datei empfangen, lade und entschlüssele …",
+            event.event_id,
+        )
+        try:
+            content = event.source.get("content", {})
+            filename = str(content.get("filename") or event.body or "attachment")
+            info = content.get("info", {})
+            mime_type = normalize_mime_type(
+                info.get("mimetype")
+                or getattr(event, "mimetype", None)
+                or "application/octet-stream"
+            )
+            declared_size = info.get("size")
+            if declared_size is not None:
+                if (
+                    isinstance(declared_size, bool)
+                    or not isinstance(declared_size, int)
+                    or declared_size < 0
+                ):
+                    raise MediaError("Angekündigte Dateigröße ist ungültig")
+                if declared_size > self.config.media.max_file_bytes:
+                    raise MediaError(
+                        "Datei überschreitet das konfigurierte Limit von "
+                        f"{self.config.media.max_file_bytes} Bytes"
+                    )
+            download = await self.client.download(mxc=event.url)
+            body = getattr(download, "body", None)
+            if not isinstance(body, bytes):
+                raise ConnectionError(str(download))
+            if len(body) > self.config.media.max_file_bytes + 4096:
+                raise MediaError(
+                    "Datei überschreitet das konfigurierte Limit von "
+                    f"{self.config.media.max_file_bytes} Bytes"
+                )
+            attachment = body
+            if isinstance(event, RoomEncryptedFile):
+                attachment = decrypt_attachment(
+                    body,
+                    event.key["k"],
+                    event.hashes["sha256"],
+                    event.iv,
+                )
+            if not attachment:
+                raise MediaError("Datei ist leer")
+            if len(attachment) > self.config.media.max_file_bytes:
+                raise MediaError(
+                    "Datei überschreitet das konfigurierte Limit von "
+                    f"{self.config.media.max_file_bytes} Bytes"
+                )
+            if declared_size is not None and declared_size != len(attachment):
+                raise MediaError(
+                    "Angekündigte Dateigröße stimmt nicht mit den empfangenen "
+                    f"Bytes überein ({declared_size} statt {len(attachment)})"
+                )
+
+            suffix = Path(filename).suffix
+            if not re.fullmatch(r"\.[A-Za-z0-9]{1,10}", suffix):
+                suffix = ".bin"
+            agent_inbox = safe_agent_directory(self.config.media.inbox_dir, agent.key)
+            agent_inbox.mkdir(parents=True, exist_ok=True, mode=0o700)
+            stored = agent_inbox / f"{uuid.uuid4().hex}{suffix.lower()}"
+            temporary = agent_inbox / f".{stored.name}.part"
+
+            def write_file() -> None:
+                try:
+                    with temporary.open("xb") as handle:
+                        handle.write(attachment)
+                        handle.flush()
+                        os.fsync(handle.fileno())
+                    temporary.chmod(0o600)
+                    os.replace(temporary, stored)
+                finally:
+                    try:
+                        temporary.unlink()
+                    except FileNotFoundError:
+                        pass
+
+            await asyncio.to_thread(write_file)
+        except Exception as exc:
+            LOGGER.exception("file download failed")
+            await self._send(
+                room.room_id,
+                f"Datei konnte nicht übernommen werden: {exc}",
+                event.event_id,
+            )
+            return
+
+        await self._send(
+            room.room_id,
+            f"Datei gespeichert als `{stored.name}`.",
+            event.event_id,
+        )
+        await self._enqueue_prompt(
+            agent,
+            room,
+            event.event_id,
+            event.server_timestamp,
+            f"Datei von {event.sender} via Matrix empfangen.\n\n"
+            f"Lokale Datei: {stored}\n"
+            f"Originaldateiname: {json.dumps(filename, ensure_ascii=False)}\n"
+            f"Medientyp: {mime_type}\n"
+            f"Größe: {len(attachment)} Bytes",
+            "attachment",
         )
 
     async def _start_request(

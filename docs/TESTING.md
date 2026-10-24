@@ -75,6 +75,9 @@ is recorded in the report.
 | `silent-reaction-feedback` | Reaction forwarding without a visible reply |
 | `encrypted-images` | Owner-to-agent encrypted PNG storage and agent-to-owner `send-image` byte round trip |
 | `voice-status-edit` | Encrypted voice note, deterministic local transcript, one threaded progress event edited by `m.replace`, no transcript-only reply, one forwarded prompt and qitem closure |
+| `encrypted-files` | Encrypted PDF and unknown-binary transfer in both directions; generated safe inbox paths; `m.file` metadata and byte-preserving decryption |
+| `attachment-restart-recovery` | A generic-file request queued while stopped is delivered exactly once after restart and records the observed Matrix event ID |
+| `voice-disabled-path` | Encrypted audio handling with voice deliberately disabled |
 | `decision-and-poll` | Pinned decision brief, MSC3381 poll, encrypted response, prompt forwarding, unpin |
 | `proactive-message` | Explicit encrypted `send-message` |
 | `restart-recovery` | Room/state reuse and status recovery across bridge restart |
@@ -92,6 +95,8 @@ is recorded in the report.
   action and remain tracked by issue #1.
 - Federation, production homeserver policy, and trust between real user-owned
   devices are outside this local harness.
+- Attachment malware scanning, client-specific previews, and operator-managed
+  inbox retention are not implemented.
 
 ## Report schema
 
