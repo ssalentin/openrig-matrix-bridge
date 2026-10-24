@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" role="img" aria-labelledby="title">
+  <title id="title">Gateway mark, light background</title>
+  <defs>
+    <linearGradient id="gate" x1="48" y1="34" x2="208" y2="196" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#5946EE"/>
+      <stop offset="1" stop-color="#9B72FF"/>
+    </linearGradient>
+  </defs>
+  <path d="M48 200V118c0-45 36-84 80-84s80 39 80 84v82" fill="none" stroke="url(#gate)" stroke-width="32" stroke-linecap="round"/>
+  <path d="M88 200v-78c0-23 18-43 40-43s40 20 40 43v78" fill="none" stroke="#1C1B32" stroke-width="18" stroke-linecap="round"/>
+  <path d="M84 176h88" fill="none" stroke="#32C7B4" stroke-width="16" stroke-linecap="round"/>
+  <circle cx="84" cy="176" r="14" fill="#32C7B4"/>
+  <circle cx="172" cy="176" r="14" fill="#32C7B4"/>
+</svg>
