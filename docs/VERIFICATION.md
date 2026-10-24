@@ -98,14 +98,14 @@ preservation.
 ### Issue #11 restart-idempotency evidence
 
 The issue #11 source commit
-`9b9496fe960c0347286c2c9a57a06858bfce856e` passed:
+`807c160adca22350a4cabe7182eb4ee89664cd35` passed:
 
 | Check | Exact command | Observed result |
 |---|---|---|
-| Full tests | `.venv/bin/python -m pytest -q` | 150 passed |
-| Focused restart tests | `.venv/bin/python -m pytest -q tests/test_restart_idempotency.py` | 14 passed |
+| Full tests | `.venv/bin/python -m pytest -q` | 151 passed |
+| Focused restart tests | `.venv/bin/python -m pytest -q tests/test_restart_idempotency.py` | 15 passed |
 | Python lint | `.venv/bin/ruff check .` | All checks passed |
-| Matrix integration | `.venv/bin/python tools/matrix_integration.py --timeout 60 --source-commit 9b9496fe960c0347286c2c9a57a06858bfce856e` | `evidence_valid: true`, 19/19 checks in 48.9s |
+| Matrix integration | `.venv/bin/python tools/matrix_integration.py --timeout 60 --source-commit 807c160adca22350a4cabe7182eb4ee89664cd35` | `evidence_valid: true`, 19/19 checks in 50.5s |
 
 The machine-readable result is
 [`issue-11-integration-report.json`](artifacts/issue-11-integration-report.json).
@@ -113,7 +113,9 @@ It includes deterministic bridge exits immediately after qitem claim and final
 answer send. Restart resumes the claimed-but-unsent prompt exactly once and
 reuses the answer transaction ID, returning the same Matrix event and closing
 one qitem. Unit fault tests also cover busy-agent recovery, ambiguous prompt
-sends, and qitem claim/finish/fail reconciliation.
+sends, qitem claim/finish/fail reconciliation, and pre-0.11 state migration.
+Legacy requests with `started_at` but no `prompt_phase` are treated as
+ambiguous and fail closed rather than being resent.
 
 ## Documentation checks
 
