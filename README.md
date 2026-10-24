@@ -467,8 +467,11 @@ boundary and no admission-turn token from `rig send`. The bridge therefore:
 Rapid follow-ups can therefore be delivered into the active turn when the
 runtime accepts pane input, but the bridge does not claim a guaranteed safe
 boundary or guaranteed mid-turn application. If admission cannot be proven
-from the transcript, the batch is delivered exactly once as a normal next turn
-instead of being reported complete silently.
+from the transcript before a bounded grace deadline, the bridge attempts one
+durable fallback delivery as a normal next turn. A residual duplicate-execution
+risk remains: if the pane retained queued input without materializing a
+transcript user message before the grace deadline, the fallback resends the
+batch that the agent is already processing. Issue #36 tracks this window.
 
 Prompt and final-answer delivery persist an operation phase before remote
 effects. If a bridge exits after starting a prompt but before recording an
