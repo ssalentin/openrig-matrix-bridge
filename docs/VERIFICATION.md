@@ -57,6 +57,7 @@ binds its verdict to the source SHA recorded here and in the report.
 | End-to-end encrypted text and room media | `AsyncClientConfig(encryption_enabled=True)` stores E2EE state; newly created rooms include Megolm encryption; image uploads request encryption and verify encryption metadata. | [`test_encrypted_image_is_saved_and_forwarded_to_agent`](../tests/test_bridge.py#L1111), [`test_builds_encrypted_image_message`](../tests/test_media.py#L15). | Synapse reported `m.megolm.v1.aes-sha2`; owner text and image traffic was encrypted through matrix-nio and decrypted back. | **Verified on disposable Synapse; public-server and device-trust policy remain gaps.** |
 | Canonical threaded prompt delivery | Inbound `m.thread` roots are preserved; top-level prompts start one request thread; rich replies without a thread use `m.in_reply_to` instead of manufacturing a thread. Commentary and final delivery fail boundedly rather than blocking later requests. | Relation, storage, delivery, and bounded-failure tests in [`test_bridge.py`](../tests/test_bridge.py). | An encrypted owner prompt already inside `m.thread` survived a bridge restart while the fake seat was busy; commentary and final answer each appeared once under the original root and the qitem closed. | **Verified on disposable Synapse with fake OpenRig transport.** |
 | Local speech-to-text and voice status | `Transcriber` invokes local `ffmpeg` and `sherpa-onnx`; model readiness and checksum are implemented. Each accepted voice note creates one threaded status event, atomically tracks matrix transaction IDs and terminal intent, and edits that event to the transcript or terminal failure. | Voice lifecycle and fault-boundary tests in [`test_bridge.py`](../tests/test_bridge.py), checksum/model tests in [`test_transcription.py`](../tests/test_transcription.py). | A deterministic separate-process transcriber produced a transcript on disposable Synapse: one threaded progress event was edited by `m.replace`, no transcript-only reply appeared, the prompt was forwarded once, and its qitem closed. | **Matrix edit lifecycle verified; real Parakeet recognition and Element rendering remain gaps.** |
+| Restart-idempotent prompt, answer, attachment, and qitem effects | Requests persist prompt/answer/qitem phases before external effects. Prompt ambiguity after restart fails closed; answers use stable Matrix transaction IDs; qitem claim/finish/fail reconcile through queue state; media outbox requests use stable IDs. | [`test_restart_idempotency.py`](../tests/test_restart_idempotency.py) covers simulated process death after prompt/answer sends, qitem claim/finish/fail recovery, answer dedup, and pending completion. Existing media outbox tests cover state-before-rename and recorded-delivery suppression. | Synapse harness kills the bridge immediately after the final answer send; restart produces the same single Matrix event and one completed qitem. | **Verified on disposable Synapse with fake OpenRig transport; live Codex crash behavior remains untested.** |
 | Encrypted image transfer in both directions | Incoming images are downloaded, decrypted, type-checked, size-limited, stored, and forwarded as a path. Outgoing `send-image` encrypts uploads and emits an encrypted image event. | [`test_encrypted_image_is_saved_and_forwarded_to_agent`](../tests/test_bridge.py#L1111), [`test_detects_supported_image_signatures`](../tests/test_media.py#L7), [`test_builds_encrypted_image_message`](../tests/test_media.py#L15). | Owner PNG was stored byte-for-byte and forwarded; `send-image` produced an image the owner downloaded and decrypted byte-for-byte. | **Verified on disposable Synapse.** |
 | Encrypted arbitrary-file transfer in both directions | Incoming `m.file` events and markerless audio are size-checked, decrypted, stored under generated paths, and forwarded with original metadata. Outgoing `send-file` snapshots regular-file bytes at admission, encrypts the snapshot, emits `m.file`, and persists restart-safe delivery state. | [`test_encrypted_pdf_is_safely_stored_and_forwarded_to_agent`](../tests/test_bridge.py), [`test_markerless_audio_is_routed_to_generic_file_handler`](../tests/test_bridge.py), [`test_publishes_encrypted_generic_file_with_original_metadata`](../tests/test_bridge.py), [`test_send_file_rejects_symlink_swapped_after_precheck`](../tests/test_cli.py), [`test_rejects_tampered_file_snapshot_before_upload`](../tests/test_bridge.py). | PDF, unknown binary, and markerless audio passed through disposable Synapse; restart recovery delivered the admitted snapshot exactly once after the source changed. | **Verified on disposable Synapse.** |
 | Pinned decisions and Element-compatible polls | Decisions are written to a durable inbox, published as a pinned brief plus MSC3381 poll events, and selected answers are returned as a queued prompt. | [`test_poll_answer_is_forwarded_and_pinned_decision_is_cleared`](../tests/test_bridge.py#L327), [`test_builds_element_compatible_poll_content`](../tests/test_decisions.py#L36), [`test_reads_unstable_poll_response`](../tests/test_decisions.py#L55). | Brief and poll were pinned; encrypted response returned to the fake transport; completed events were unpinned. | **Protocol path verified; Element rendering not verified.** |
@@ -112,6 +113,25 @@ deterministic fixture rather than a live Codex model. The rebased run also
 preserves the merged #19 canonical-thread delivery behavior, including the
 threaded-prompt restart check and threaded generic-file/markerless-audio root
 preservation.
+
+### Issue #11 restart-idempotency evidence
+
+The issue #11 source commit
+`ee7b10ddc3ff8399e8d8f0f6051060550c6ef632` passed:
+
+| Check | Exact command | Observed result |
+|---|---|---|
+| Full tests | `.venv/bin/python -m pytest -q` | 144 passed |
+| Focused restart tests | `.venv/bin/python -m pytest -q tests/test_restart_idempotency.py` | 9 passed |
+| Python lint | `.venv/bin/ruff check .` | All checks passed |
+| Matrix integration | `.venv/bin/python tools/matrix_integration.py --timeout 60 --source-commit ee7b10ddc3ff8399e8d8f0f6051060550c6ef632` | `status: pass`, `evidence_valid: true`, 18/18 checks in 44.3s |
+
+The machine-readable result is
+[`issue-11-integration-report.json`](artifacts/issue-11-integration-report.json).
+It includes a deterministic bridge exit immediately after answer send, followed
+by a clean restart that reuses the transaction ID, returns the same Matrix event,
+and closes one qitem. Unit fault tests cover ambiguous prompt sends and qitem
+claim/finish/fail reconciliation.
 
 ## Documentation checks
 

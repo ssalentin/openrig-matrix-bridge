@@ -29,6 +29,7 @@ path, the observed result, the tested commit, and the environment boundary.
 | `element-web-verification.txt` | Real Element Web client behavior and the current verification-unavailable boundary | `issue-1-verification-state` manual investigation; no success claim |
 | `issue-3-integration-report.json` | Machine-readable report for all 17 checks, including audio routing, admitted attachment snapshots, restart recovery, and canonical text/voice/file threads | Source `fe6f1271758773dc90ac73975f03763515db7732`; `worktree_clean: true` |
 | `integration-report.json` | Machine-readable report for all 14 checks with clean source provenance | Source `539f8b9ef5c6651f4c0a65cbb6f2f9a083ef58cb`; `worktree_clean: true` |
+| `issue-11-integration-report.json` | Machine-readable report for restart-idempotent prompt, answer, media, qitem, and threaded recovery | Source `5b70d345b6598f2ca50faf86216f6ba353166ead`; `worktree_clean: true` |
 
 Text artifacts are acceptable when they capture real command output. A
 screenshot alone is insufficient if the room context is ambiguous.
@@ -44,6 +45,7 @@ screenshot alone is insufficient if the room context is ambiguous.
 | `test-path.txt` | `2026-10-24T17:22:44Z` | `88dccb3c92329918c62b68f871022d0972377cd8` | Repository docs/tests plus disposable Synapse | Commands listed inside artifact | No credentials or private infrastructure |
 | `issue-3-integration-report.json` | `2026-10-24T18:38:02Z` | `fe6f1271758773dc90ac73975f03763515db7732` | Disposable Synapse on loopback; fake OpenRig CLI | `.venv/bin/python tools/matrix_integration.py --timeout 60 --source-commit fe6f1271758773dc90ac73975f03763515db7732` | Synthetic localhost fixtures; token/room/private-infrastructure scan clean |
 | `element-web-verification.txt` | `2026-10-24` | `issue-1-verification-state` investigation | Real Element Web image plus disposable Synapse on loopback | Manual Chrome/agent-browser path recorded inside artifact | No token, room ID, private MXID, recovery data or device private key |
+| `issue-11-integration-report.json` | `2026-10-24T19:37:00Z` | `5b70d345b6598f2ca50faf86216f6ba353166ead` | Disposable Synapse on loopback; fake OpenRig CLI | `.venv/bin/python tools/matrix_integration.py --timeout 60 --source-commit 5b70d345b6598f2ca50faf86216f6ba353166ead` | Synthetic localhost fixtures; token/room/private-infrastructure scan clean |
 
 The evidence-only commit follows the tested source commit and is named in the
 QA/review handoff. This avoids the impossible self-reference of a commit
