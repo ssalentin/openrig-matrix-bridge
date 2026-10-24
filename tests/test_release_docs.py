@@ -18,6 +18,10 @@ PUBLISHED_DOCS = {
     "docs/VERIFICATION.md",
     "docs/artifacts/README.md",
 }
+RELAY_PREVIEWS = {
+    "docs/branding/artifacts/relay-avatar-light-bg-preview.png",
+    "docs/branding/artifacts/relay-avatar-dark-bg-preview.png",
+}
 
 
 def load_module(path: Path, name: str):
@@ -70,6 +74,12 @@ def test_release_verifier_requires_all_published_evidence_docs():
     verifier = load_module(RELEASE_VERIFIER, "release_artifact_verifier")
 
     assert PUBLISHED_DOCS <= set(verifier.SDIST_SUPPORT_FILES)
+
+
+def test_release_verifier_requires_relay_preview_assets():
+    verifier = load_module(RELEASE_VERIFIER, "release_artifact_verifier_brand")
+
+    assert RELAY_PREVIEWS <= set(verifier.SDIST_SUPPORT_FILES)
 
 
 def make_sdist(path: Path, verifier, names: set[str]) -> None:

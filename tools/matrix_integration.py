@@ -30,6 +30,7 @@ from nio import (
     AsyncClient,
     AsyncClientConfig,
     InviteMemberEvent,
+    ProfileGetResponse,
     ReactionEvent,
     RoomEncryptedAudio,
     RoomEncryptedFile,
@@ -787,6 +788,31 @@ class IntegrationRun:
             raise CheckFailure(f"room is not Megolm encrypted: {encryption.content}")
         if not str(avatar.content.get("url") or "").startswith("mxc://"):
             raise CheckFailure(f"room avatar is missing: {avatar.content}")
+        profile = await owner.client.get_profile(BRIDGE_USER)
+        profile_mxc = (
+            profile.avatar_url
+            if isinstance(profile, ProfileGetResponse)
+            else None
+        )
+        if not str(profile_mxc or "").startswith("mxc://"):
+            raise CheckFailure(
+                f"bridge account profile avatar is missing: {profile}"
+            )
+        profile_download = await owner.client.download(mxc=str(profile_mxc))
+        profile_bytes = getattr(profile_download, "body", None)
+        expected_profile = (
+            ROOT
+            / "src"
+            / "openrig_matrix_bridge"
+            / "assets"
+            / "branding"
+            / "export"
+            / "relay-avatar-256.png"
+        ).read_bytes()
+        if profile_bytes != expected_profile:
+            raise CheckFailure(
+                "bridge account profile avatar does not match the Relay export"
+            )
         if status.content.get("state") != "ready":
             raise CheckFailure(f"initial structured status is not ready: {status.content}")
         if not str(owner.client.rooms[room_id].topic).startswith("🟢 bereit"):
@@ -796,8 +822,10 @@ class IntegrationRun:
             "pass",
             (
                 "Synapse accepted the owner invite and join; the room uses "
-                "`m.megolm.v1.aes-sha2`, has a managed avatar, and publishes "
-                "ready topic plus `dev.openrig.agent_status` state."
+                "`m.megolm.v1.aes-sha2`, has a managed room avatar, exposes a "
+                "downloadable Relay bridge-account profile avatar with identical "
+                "bytes, and publishes ready topic plus `dev.openrig.agent_status` "
+                "state."
             ),
         )
 
