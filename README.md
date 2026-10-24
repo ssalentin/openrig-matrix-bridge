@@ -24,7 +24,8 @@ Your Matrix account
 Inside a room, you can:
 
 - see whether the agent is ready or working;
-- send threaded follow-ups and watch visible progress;
+- send threaded follow-ups and watch a safe runtime activity label with the
+  latest visible progress;
 - receive the final answer in Matrix;
 - send encrypted images, generic files, and voice notes;
 - answer pinned decisions and polls; and

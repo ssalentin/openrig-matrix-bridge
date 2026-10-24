@@ -109,6 +109,54 @@ STATUS_LABELS = {
     "offline": "⚫",
     "error": "🟠",
 }
+FENCED_OUTPUT = re.compile(r"```.*?```", re.DOTALL)
+AUTHORIZATION_VALUE = re.compile(
+    r"(?i)\b(authorization|access[_ -]?token|token|password|secret)"
+    r"(\s*[:=]\s*)(\S+)"
+)
+BEARER_TOKEN = re.compile(r"(?i)\bbearer\s+\S+")
+PRIVATE_PATH = re.compile(
+    r"(?<![\w])"
+    r"(?:/(?:home|Users|root|tmp|var|opt|etc|usr|private|workspace)/"
+    r"[^\s`'\"<>]+|[A-Za-z]:\\[^\s`'\"<>]+)"
+)
+
+
+def activity_card_label(activity_state: str, needs_input_count: int) -> str:
+    if needs_input_count > 0:
+        return "Wartet auf Eingabe"
+    if activity_state == "idle-at-prompt":
+        return "Bereit"
+    return "Arbeitet"
+
+
+def sanitize_activity_summary(text: str) -> str:
+    summary = FENCED_OUTPUT.sub("[redacted raw output]", text)
+    summary = BEARER_TOKEN.sub("Bearer [redacted]", summary)
+    summary = AUTHORIZATION_VALUE.sub(
+        lambda match: f"{match.group(1)}{match.group(2)}[redacted]",
+        summary,
+    )
+    summary = PRIVATE_PATH.sub("[redacted path]", summary)
+    summary = " ".join(summary.split())
+    if len(summary) > 600:
+        summary = summary[:597].rstrip() + "…"
+    return summary
+
+
+def activity_card_text(request: dict[str, Any]) -> str:
+    label = str(
+        request.get("activity_label")
+        or activity_card_label(
+            str(request.get("activity_state") or "unknown"),
+            int(request.get("needs_input_count") or 0),
+        )
+    )
+    summary = str(request.get("commentary_summary") or "").strip()
+    text = f"**Aktivität:** {label}"
+    if summary:
+        text += f"\n\n{summary}"
+    return text
 
 
 class QitemLifecycleError(GatewayError):
@@ -2863,6 +2911,12 @@ class MatrixBridge:
             request["transcript_path"] = str(ref.transcript_path)
             request["offset"] = ref.transcript_path.stat().st_size
             request["started_at"] = time.time()
+            request["activity_state"] = ref.activity_state
+            request["needs_input_count"] = ref.needs_input_count
+            request["activity_label"] = activity_card_label(
+                ref.activity_state,
+                ref.needs_input_count,
+            )
             if not await self._claim_inbound_qitem(agent, request):
                 if request.get("qitem_phase") in {
                     "done",
@@ -2922,6 +2976,9 @@ class MatrixBridge:
             )
             if isinstance(response, RoomSendResponse):
                 request["failure_notice_event_id"] = response.event_id
+            if self.config.mirror_commentary and not request.get("suppress_reply"):
+                request["activity_label"] = "Fehlgeschlagen"
+                await self._deliver_activity_card(room_id, request)
             pending = self.state.data["pending"][agent.key]
             pending.pop(0)
             self.state.save()
@@ -2998,6 +3055,16 @@ class MatrixBridge:
                         request,
                         pending,
                     )
+                    if (
+                        self.config.mirror_commentary
+                        and request.get("commentary_event_id")
+                        and not request.get("suppress_reply")
+                    ):
+                        request["activity_label"] = "Zeitüberschreitung"
+                        await self._deliver_activity_card(
+                            self._room_for_agent(agent.key),
+                            request,
+                        )
                     await self._set_typing(self._room_for_agent(agent.key), False)
                     await self._update_agent_status(agent, "error", "Zeitüberschreitung")
                     if not completed:
@@ -3020,64 +3087,44 @@ class MatrixBridge:
                     and not request.get("suppress_reply")
                     and not request.get("commentary_skipped")
                 ):
+                    room_id = self._room_for_agent(agent.key)
                     pending_commentary = [
                         message
                         for message in commentary_messages(records)
                         if message[0] not in sent_ids
                     ]
                     if pending_commentary:
-                        room_id = self._room_for_agent(agent.key)
-                        commentary_event_id = request.get("commentary_event_id")
-                        if commentary_event_id:
-                            try:
-                                response = await self._edit_message(
-                                    room_id,
-                                    str(commentary_event_id),
-                                    pending_commentary[-1][1],
-                                )
-                            except Exception:
-                                response = None
-                                LOGGER.warning(
-                                    "commentary edit raised for %s",
-                                    agent.key,
-                                    exc_info=True,
-                                )
-                        else:
-                            response = await self._deliver_to_request(
-                                room_id,
-                                pending_commentary[-1][1],
-                                request,
-                            )
-                        if not isinstance(response, RoomSendResponse):
-                            attempts = request.get("commentary_failure_count", 0) + 1
-                            request["commentary_failure_count"] = attempts
-                            LOGGER.error(
-                                "commentary delivery failed for %s (attempt %s/%s): %s",
-                                agent.key,
-                                attempts,
-                                MAX_DELIVERY_ATTEMPTS,
-                                response,
-                            )
-                            if attempts < MAX_DELIVERY_ATTEMPTS:
-                                self.state.save()
-                                return
-                            request["commentary_skipped"] = True
-                            LOGGER.error(
-                                "skipping commentary for %s after %s attempts",
-                                agent.key,
-                                attempts,
-                            )
-                            self.state.save()
-                        if not commentary_event_id and isinstance(
+                        request["commentary_summary"] = sanitize_activity_summary(
+                            pending_commentary[-1][1]
+                        )
+                    response = await self._deliver_activity_card(room_id, request)
+                    if response is not True and not isinstance(
+                        response,
+                        RoomSendResponse,
+                    ):
+                        attempts = request.get("commentary_failure_count", 0) + 1
+                        request["commentary_failure_count"] = attempts
+                        LOGGER.error(
+                            "commentary delivery failed for %s (attempt %s/%s): %s",
+                            agent.key,
+                            attempts,
+                            MAX_DELIVERY_ATTEMPTS,
                             response,
-                            RoomSendResponse,
-                        ):
-                            request["commentary_event_id"] = response.event_id
-                        if isinstance(response, RoomSendResponse):
-                            request["commentary_failure_count"] = 0
-                            sent_commentary.extend(
-                                message_id for message_id, _text in pending_commentary
-                            )
+                        )
+                        if attempts < MAX_DELIVERY_ATTEMPTS:
+                            self.state.save()
+                            return
+                        request["commentary_skipped"] = True
+                        LOGGER.error(
+                            "skipping commentary for %s after %s attempts",
+                            agent.key,
+                            attempts,
+                        )
+                        self.state.save()
+                    if response is True or isinstance(response, RoomSendResponse):
+                        sent_commentary.extend(
+                            message_id for message_id, _text in pending_commentary
+                        )
                         self.state.save()
                 request["offset"] = offset
                 answers = [text for record in records if (text := final_answer(record))]
@@ -3148,6 +3195,13 @@ class MatrixBridge:
                 ) is False:
                     self.state.save()
                     return
+                if (
+                    self.config.mirror_commentary
+                    and request.get("commentary_event_id")
+                    and not request.get("suppress_reply")
+                ):
+                    request["activity_label"] = "Fehlgeschlagen"
+                    await self._deliver_activity_card(room_id, request)
                 await self._set_typing(room_id, False)
                 await self._update_agent_status(agent, "error", "Zustellung fehlgeschlagen")
                 pending.pop(0)
@@ -3164,6 +3218,13 @@ class MatrixBridge:
             request["answer_phase"] = "sent"
             request["answer_event_id"] = response.event_id
             self.state.save()
+            if (
+                getattr(getattr(self, "config", None), "mirror_commentary", False)
+                and request.get("commentary_event_id")
+                and not request.get("suppress_reply")
+            ):
+                request["activity_label"] = "Abgeschlossen"
+                await self._deliver_activity_card(room_id, request)
             if await self._finish_inbound_qitem(agent, request) is False:
                 return
             await self._set_typing(room_id, False)
@@ -3213,6 +3274,39 @@ class MatrixBridge:
             LOGGER.warning("Matrix delivery raised for %s", request["event_id"], exc_info=True)
             return None
 
+    async def _deliver_activity_card(
+        self,
+        room_id: str,
+        request: dict[str, Any],
+    ):
+        text = activity_card_text(request)
+        if text == request.get("activity_card_text"):
+            return True
+        commentary_event_id = request.get("commentary_event_id")
+        if commentary_event_id:
+            try:
+                response = await self._edit_message(
+                    room_id,
+                    str(commentary_event_id),
+                    text,
+                )
+            except Exception:
+                response = None
+                LOGGER.warning(
+                    "activity card edit raised for %s",
+                    request["event_id"],
+                    exc_info=True,
+                )
+        else:
+            response = await self._deliver_to_request(room_id, text, request)
+        if isinstance(response, RoomSendResponse):
+            if not commentary_event_id:
+                request["commentary_event_id"] = response.event_id
+            request["activity_card_text"] = text
+            request["commentary_failure_count"] = 0
+            self.state.save()
+        return response
+
     async def _poll_agent_statuses(self) -> None:
         while True:
             try:
@@ -3232,12 +3326,41 @@ class MatrixBridge:
         except AgentSessionNotFound:
             resolved = {}
         for agent in self.config.agents.values():
+            pending = self.state.data["pending"].get(agent.key, [])
+            ref = resolved.get(agent.session)
+            if (
+                pending
+                and ref is not None
+                and pending[0].get("started_at") is not None
+                and getattr(self.config, "mirror_commentary", False)
+                and not pending[0].get("suppress_reply")
+            ):
+                request = pending[0]
+                request["activity_state"] = ref.activity_state
+                request["needs_input_count"] = ref.needs_input_count
+                request["activity_label"] = activity_card_label(
+                    ref.activity_state,
+                    ref.needs_input_count,
+                )
+                self.state.save()
+                response = await self._deliver_activity_card(
+                    self._room_for_agent(agent.key),
+                    request,
+                )
+                if response is not True and not isinstance(
+                    response,
+                    RoomSendResponse,
+                ):
+                    LOGGER.warning(
+                        "failed to refresh activity card for %s: %s",
+                        agent.key,
+                        response,
+                    )
             if not force and agent.key not in self.agent_statuses:
                 continue
-            if self.state.data["pending"].get(agent.key):
+            if pending:
                 status, detail = "busy", "arbeitet"
             else:
-                ref = resolved.get(agent.session)
                 if ref is None:
                     status, detail = "offline", "offline"
                 else:

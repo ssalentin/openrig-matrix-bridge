@@ -692,10 +692,15 @@ def test_poll_delivers_commentary_then_final_answer(tmp_path):
         },
     )
     sent = []
+    edited = []
 
     async def send(room_id, text, reply_to=None, **kwargs):
         sent.append((text, reply_to))
         return RoomSendResponse(f"${len(sent)}", room_id)
+
+    async def edit(room_id, event_id, text, **kwargs):
+        edited.append((event_id, text))
+        return RoomSendResponse("$edit", room_id)
 
     async def set_typing(room_id, typing):
         return None
@@ -704,14 +709,18 @@ def test_poll_delivers_commentary_then_final_answer(tmp_path):
         return None
 
     bridge._send = send
+    bridge._edit_message = edit
     bridge._set_typing = set_typing
     bridge._update_agent_status = update_status
 
     asyncio.run(bridge._poll_agent(agent))
 
     assert sent == [
-        ("Ich prüfe das.", "$prompt"),
+        ("**Aktivität:** Arbeitet\n\nIch prüfe das.", "$prompt"),
         ("Fertig.", "$prompt"),
+    ]
+    assert edited == [
+        ("$1", "**Aktivität:** Abgeschlossen\n\nIch prüfe das.")
     ]
     assert bridge.state.data["pending"]["advisor"] == []
 
@@ -980,7 +989,7 @@ def test_persistent_commentary_failure_falls_through_to_final_answer(tmp_path):
     finished = []
 
     async def send(room_id, text, reply_to=None, **kwargs):
-        if text == "Ich prüfe das.":
+        if "**Aktivität:** Arbeitet" in text:
             return SimpleNamespace(status_code="M_UNKNOWN")
         sent.append((text, reply_to, kwargs))
         return RoomSendResponse("$answer", room_id)
@@ -1102,7 +1111,12 @@ def test_persistent_commentary_edit_exception_falls_through_to_final_answer(
             break
         asyncio.run(bridge._poll_agent(agent))
 
-    assert edits == [("$status", "Ich prüfe das.")] * 3
+    assert edits == [
+        ("$status", "**Aktivität:** Arbeitet\n\nIch prüfe das."),
+        ("$status", "**Aktivität:** Arbeitet\n\nIch prüfe das."),
+        ("$status", "**Aktivität:** Arbeitet\n\nIch prüfe das."),
+        ("$status", "**Aktivität:** Abgeschlossen\n\nIch prüfe das."),
+    ]
     assert sent == [
         (
             "Fertig.",
@@ -1355,8 +1369,8 @@ def test_commentary_updates_one_status_message_instead_of_reply_spam(tmp_path):
         )
     asyncio.run(bridge._poll_agent(agent))
 
-    assert sent == [("Schritt eins", "$prompt")]
-    assert edited == [("$status", "Schritt zwei")]
+    assert sent == [("**Aktivität:** Arbeitet\n\nSchritt eins", "$prompt")]
+    assert edited == [("$status", "**Aktivität:** Arbeitet\n\nSchritt zwei")]
     assert request["sent_commentary"] == ["comment-1", "comment-2"]
 
 
@@ -1491,15 +1505,22 @@ def test_poll_agent_uses_persisted_canonical_thread_root(tmp_path):
         },
     )
     sent = []
+    edited = []
 
     async def send(room_id, text, reply_to=None, **kwargs):
         sent.append((text, reply_to, kwargs))
-        return RoomSendResponse("$answer", room_id)
+        event_id = "$status" if len(sent) == 1 else "$answer"
+        return RoomSendResponse(event_id, room_id)
+
+    async def edit(room_id, event_id, text, **kwargs):
+        edited.append((event_id, text))
+        return RoomSendResponse("$edit", room_id)
 
     async def noop(*args):
         return None
 
     bridge._send = send
+    bridge._edit_message = edit
     bridge._finish_inbound_qitem = noop
     bridge._set_typing = noop
     bridge._update_agent_status = noop
@@ -1508,15 +1529,22 @@ def test_poll_agent_uses_persisted_canonical_thread_root(tmp_path):
     asyncio.run(bridge._poll_agent(agent))
 
     assert sent == [
-        ("Ich prüfe das.", "$root", {"thread_root": "$root"}),
-            (
-                "Fertig.",
-                "$root",
-                {
-                    "thread_root": "$root",
-                    "tx_id": "answer-$nested-reply",
-                },
-            ),
+        (
+            "**Aktivität:** Arbeitet\n\nIch prüfe das.",
+            "$root",
+            {"thread_root": "$root"},
+        ),
+        (
+            "Fertig.",
+            "$root",
+            {
+                "thread_root": "$root",
+                "tx_id": "answer-$nested-reply",
+            },
+        ),
+    ]
+    assert edited == [
+        ("$status", "**Aktivität:** Abgeschlossen\n\nIch prüfe das.")
     ]
 
 

@@ -840,11 +840,23 @@ class IntegrationRun:
             BRIDGE_USER in item["users"] for item in owner.typing
         ):
             raise CheckFailure("bridge typing indicator was not observed")
-        if any(
-            "Fake transport received" in str(message["body"])
-            for message in owner.messages
-        ) is False:
+        commentary = next(
+            (
+                message
+                for message in owner.messages
+                if "Fake transport received" in str(message["body"])
+            ),
+            None,
+        )
+        if commentary is None:
             raise CheckFailure("visible commentary was not mirrored")
+        if (
+            "**Aktivität:** Arbeitet" not in str(commentary["body"])
+            and "**Aktivität:** Bereit" not in str(commentary["body"])
+        ):
+            raise CheckFailure(
+                f"commentary card lacks a safe activity label: {commentary['body']}"
+            )
         if sum(message["sender"] == BRIDGE_USER for message in owner.messages) <= initial_bridge_messages:
             raise CheckFailure("answer did not create a visible bridge message")
         answer = next(
@@ -871,7 +883,8 @@ class IntegrationRun:
                 "Owner text was encrypted by matrix-nio; the fake OpenRig "
                 "subprocess received it exactly once, and the recorded qitem "
                 "history is pending -> in-progress -> done. Typing was observed, "
-                "commentary was mirrored, and the final answer returned in-thread. "
+                "commentary was mirrored in one activity-labelled card, and the "
+                "final answer returned separately in-thread. "
                 "The raw thread relation references the owner prompt. "
                 "The homeserver API reported the final event as raw "
                 "`m.room.encrypted` with Megolm ciphertext."
@@ -905,6 +918,8 @@ class IntegrationRun:
                 "m.in_reply_to": {"event_id": root_event_id},
             },
         )
+        threaded_prompt = await owner.raw_event(room_id, threaded_event_id)
+        threaded_prompt_ts = int(threaded_prompt.get("origin_server_ts") or 0)
 
         def prompt_started(value: dict[str, Any]) -> bool:
             pending = value.get("pending", {}).get(AGENT_KEY, [])
@@ -936,6 +951,7 @@ class IntegrationRun:
                 message["sender"] == BRIDGE_USER
                 and "Fake transport received: hold first threaded restart request"
                 in str(message["body"])
+                and "**Aktivität:**" in str(message["body"])
                 for message in owner.messages[before_count:]
             ) and any(
                 message["sender"] == BRIDGE_USER
@@ -974,22 +990,67 @@ class IntegrationRun:
             message
             for message in owner.messages[before:]
             if message["sender"] == BRIDGE_USER
+            and int(message["source"].get("origin_server_ts") or 0)
+            >= threaded_prompt_ts
             and (
                 "Fake transport received: hold first threaded restart request"
                 in str(message["body"])
                 or "Fake integration answer: hold first threaded restart request"
                 in str(message["body"])
+                or "**Aktivität:**" in str(message["body"])
             )
         ]
-        if len(threaded_messages) != 2:
+        final_messages = [
+            message
+            for message in threaded_messages
+            if "Fake integration answer: hold first threaded restart request"
+            in str(message["body"])
+        ]
+        if len(final_messages) != 1:
             raise CheckFailure(
-                "threaded prompt did not produce exactly one commentary and one final answer"
+                "threaded prompt did not produce exactly one final answer"
             )
+        final_event_ids = {message["event_id"] for message in final_messages}
+        card_sends = set()
+        card_send_details = {}
+        card_edits = set()
+        commentary_seen = False
         for message in threaded_messages:
-            validate_answer_relation(
-                await owner.raw_event(room_id, message["event_id"]),
-                root_event_id,
+            raw = await owner.raw_event(room_id, message["event_id"])
+            relation = raw.get("content", {}).get("m.relates_to")
+            if not isinstance(relation, dict):
+                continue
+            if (
+                relation.get("rel_type") == "m.thread"
+                and message["event_id"] not in final_event_ids
+            ):
+                if relation.get("event_id") != root_event_id:
+                    raise CheckFailure(
+                        "activity card used the wrong canonical thread root"
+                    )
+                card_sends.add(message["event_id"])
+                card_send_details[message["event_id"]] = (
+                    message["source"].get("origin_server_ts"),
+                    str(message["body"]),
+                )
+            elif relation.get("rel_type") == "m.replace":
+                card_edits.add(str(relation.get("event_id") or ""))
+            if (
+                "Fake transport received: hold first threaded restart request"
+                in str(message["body"])
+            ):
+                commentary_seen = True
+        if len(card_sends) != 1 or card_edits != card_sends:
+            raise CheckFailure(
+                f"threaded activity card identity is inconsistent: "
+                f"sends={card_send_details}, edits={card_edits}"
             )
+        if not commentary_seen:
+            raise CheckFailure("threaded activity card never showed commentary")
+        validate_answer_relation(
+            await owner.raw_event(room_id, final_messages[0]["event_id"]),
+            root_event_id,
+        )
 
         fake = json.loads((self.fake_state / "fake-openrig.json").read_text())
         prompt_records = [
@@ -1183,6 +1244,13 @@ class IntegrationRun:
             self.args.timeout,
             description="second FIFO answer",
         )
+        wait_for_json_state(
+            self.state_dir / "state.json",
+            lambda value: not value.get("pending", {}).get(AGENT_KEY),
+            self.args.timeout,
+        )
+        await asyncio.sleep(0.2)
+        await owner.sync_once()
         fake = json.loads((self.fake_state / "fake-openrig.json").read_text())
         records = fake["prompts"]
         validate_fifo_records(
@@ -1665,19 +1733,35 @@ class IntegrationRun:
             ]
             if not delivered:
                 raise CheckFailure(f"threaded {filename} produced no bridge messages")
+            thread_sends = set()
+            card_edits = set()
             for message in delivered:
                 delivered_relation = message["source"].get("content", {}).get(
                     "m.relates_to"
                 )
-                if (
-                    not isinstance(delivered_relation, dict)
-                    or delivered_relation.get("rel_type") != "m.thread"
-                    or delivered_relation.get("event_id") != root_event_id
-                ):
+                if not isinstance(delivered_relation, dict):
                     raise CheckFailure(
                         f"threaded {filename} escaped its canonical root: "
                         f"{delivered_relation}"
                     )
+                if delivered_relation.get("rel_type") == "m.thread":
+                    if delivered_relation.get("event_id") != root_event_id:
+                        raise CheckFailure(
+                            f"threaded {filename} escaped its canonical root: "
+                            f"{delivered_relation}"
+                        )
+                    thread_sends.add(message["event_id"])
+                elif delivered_relation.get("rel_type") == "m.replace":
+                    card_edits.add(str(delivered_relation.get("event_id") or ""))
+                else:
+                    raise CheckFailure(
+                        f"threaded {filename} used an unsafe relation: "
+                        f"{delivered_relation}"
+                    )
+            if not card_edits <= thread_sends:
+                raise CheckFailure(
+                    f"threaded {filename} edited an unrelated event: {card_edits}"
+                )
             fake = json.loads((self.fake_state / "fake-openrig.json").read_text())
             qitems = [
                 item

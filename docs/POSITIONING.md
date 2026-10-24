@@ -36,10 +36,13 @@ must omit capabilities still marked unverified.
   artifact](artifacts/ordinary-chat.txt).
 - **State is visible where the conversation happens.** The room topic and a
   structured Matrix state event carry agent status; typing is refreshed during
-  work. The [status event test](../tests/test_bridge.py#L122) covers payload
-  construction, and the [live Matrix artifact](artifacts/ordinary-chat.txt)
-  records the owner client observing the typing indicator on disposable
-  Synapse. Element rendering remains a separate client check.
+  work. The editable commentary card also shows the safe runtime activity
+  (`Arbeitet`, `Bereit`, or `Wartet auf Eingabe`) beside the latest sanitized
+  visible update. The [status event test](../tests/test_bridge.py#L122) covers
+  payload construction, and the [live Matrix
+  artifact](artifacts/ordinary-chat.txt) records the owner client observing the
+  typing indicator on disposable Synapse. Element rendering remains a separate
+  client check.
 - **Media and decisions stay in context.** Encrypted images and arbitrary
   files, local voice transcription, pinned briefs, polls, reactions, and queue
   cards are represented in the same room. See the
