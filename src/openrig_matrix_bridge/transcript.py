@@ -6,6 +6,45 @@ from pathlib import Path
 from typing import Any
 
 
+def record_turn_id(record: dict[str, Any]) -> str | None:
+    payload = record.get("payload")
+    if not isinstance(payload, dict):
+        return None
+    turn_id = payload.get("turn_id")
+    if isinstance(turn_id, str) and turn_id:
+        return turn_id
+    metadata = payload.get("internal_chat_message_metadata_passthrough")
+    if isinstance(metadata, dict):
+        turn_id = metadata.get("turn_id")
+        if isinstance(turn_id, str) and turn_id:
+            return turn_id
+    return None
+
+
+def user_messages(records: list[dict[str, Any]]) -> list[tuple[str, str]]:
+    messages: list[tuple[str, str]] = []
+    for record in records:
+        payload = record.get("payload")
+        if (
+            record.get("type") != "response_item"
+            or not isinstance(payload, dict)
+            or payload.get("type") != "message"
+            or payload.get("role") != "user"
+        ):
+            continue
+        turn_id = record_turn_id(record)
+        if turn_id is None:
+            continue
+        text = "".join(
+            str(part.get("text", ""))
+            for part in payload.get("content") or []
+            if isinstance(part, dict) and part.get("type") == "input_text"
+        ).strip()
+        if text:
+            messages.append((turn_id, text))
+    return messages
+
+
 def read_complete_records(path: Path, offset: int) -> tuple[list[dict[str, Any]], int]:
     """Read complete JSONL records starting at offset.
 
@@ -67,9 +106,14 @@ def final_answer(record: dict[str, Any]) -> str | None:
     return message[1] if message else None
 
 
-def commentary_messages(records: list[dict[str, Any]]) -> list[tuple[str, str]]:
+def commentary_messages(
+    records: list[dict[str, Any]],
+    turn_id: str | None = None,
+) -> list[tuple[str, str]]:
     messages: list[tuple[str, str]] = []
     for record in records:
+        if turn_id is not None and record_turn_id(record) != turn_id:
+            continue
         payload = record.get("payload")
         item = payload.get("item") if isinstance(payload, dict) else None
         if not isinstance(item, dict) or item.get("phase") != "commentary":
@@ -78,4 +122,3 @@ def commentary_messages(records: list[dict[str, Any]]) -> list[tuple[str, str]]:
         if message is not None:
             messages.append(message)
     return messages
-

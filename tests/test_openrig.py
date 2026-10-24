@@ -193,6 +193,44 @@ def test_sends_prompt_through_rig_cli_with_bridge_identity(monkeypatch):
     assert kwargs["env"]["OPENRIG_SESSION_NAME"] == "matrix-bridge@kernel"
 
 
+def test_sends_best_effort_steering_through_same_raw_pane_contract(
+    monkeypatch,
+):
+    calls = []
+
+    class Process:
+        returncode = 0
+
+        async def communicate(self):
+            return b'{"ok":true}\n', b""
+
+    async def create_subprocess(*args, **kwargs):
+        calls.append((args, kwargs))
+        return Process()
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", create_subprocess)
+    gateway = OpenRigGateway("/opt/rig", "matrix-bridge@kernel")
+    ref = AgentSessionRef(
+        session_id="session",
+        transcript_path=Path("/tmp/transcript.jsonl"),
+        tmux_session="advisor-lead@kernel",
+        busy=True,
+    )
+
+    asyncio.run(gateway.steer_prompt(ref, "follow-up"))
+
+    args, kwargs = calls[0]
+    assert args == (
+        "/opt/rig",
+        "send",
+        "advisor-lead@kernel",
+        "follow-up",
+        "--raw",
+        "--json",
+    )
+    assert kwargs["env"]["OPENRIG_SESSION_NAME"] == "matrix-bridge@kernel"
+
+
 def test_reports_rig_cli_failure(monkeypatch):
     class Process:
         returncode = 1

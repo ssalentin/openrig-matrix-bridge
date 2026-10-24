@@ -50,7 +50,9 @@ def _agent_key(session: str, max_length: int = 64) -> str:
 
 
 def _display_name(logical_id: str) -> str:
-    return " ".join(part.capitalize() for part in re.split(r"[._-]+", logical_id) if part)
+    return " ".join(
+        part.capitalize() for part in re.split(r"[._-]+", logical_id) if part
+    )
 
 
 def _human_entity_id(matrix_user_id: str) -> str:
@@ -78,9 +80,7 @@ def _ensure_human_registration(
     if show.returncode == 0 and not replace:
         return "retained"
 
-    binding = (
-        f"slack:openrig-matrix:file:{state_dir / 'human-delivery.env'}:primary"
-    )
+    binding = f"slack:openrig-matrix:file:{state_dir / 'human-delivery.env'}:primary"
     args = [
         command,
         "gateway",
@@ -188,7 +188,9 @@ def _snapshot_regular_file(
     except FileNotFoundError as exc:
         raise SystemExit(f"file not found: {source}") from exc
     if not stat.S_ISREG(source_info.st_mode) or stat.S_ISLNK(source_info.st_mode):
-        raise SystemExit(f"file must be a regular file (symlinks are not followed): {source}")
+        raise SystemExit(
+            f"file must be a regular file (symlinks are not followed): {source}"
+        )
 
     descriptor = -1
     temp_name: str | None = None
@@ -208,10 +210,7 @@ def _snapshot_regular_file(
         if not stat.S_ISREG(opened.st_mode):
             raise SystemExit(f"file must be a regular file: {source}")
         if opened.st_size <= 0 or opened.st_size > max_bytes:
-            raise SystemExit(
-                "file size must be between 1 and "
-                f"{max_bytes} bytes"
-            )
+            raise SystemExit(f"file size must be between 1 and {max_bytes} bytes")
 
         destination.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
         temp_fd, temp_name = tempfile.mkstemp(
@@ -229,8 +228,7 @@ def _snapshot_regular_file(
                 size += len(chunk)
                 if size > max_bytes:
                     raise SystemExit(
-                        "file size must be between 1 and "
-                        f"{max_bytes} bytes"
+                        f"file size must be between 1 and {max_bytes} bytes"
                     )
                 digest.update(chunk)
                 output_handle.write(chunk)
@@ -240,7 +238,9 @@ def _snapshot_regular_file(
                 or finished.st_size != opened.st_size
                 or finished.st_mtime_ns != opened.st_mtime_ns
             ):
-                raise SystemExit(f"file changed while it was being snapshotted: {source}")
+                raise SystemExit(
+                    f"file changed while it was being snapshotted: {source}"
+                )
             output_handle.flush()
             os.fsync(output_handle.fileno())
         os.chmod(temp_name, 0o600)
@@ -264,11 +264,14 @@ async def _set_matrix_display_name(
     display_name: str,
 ) -> None:
     timeout = aiohttp.ClientTimeout(total=15)
-    async with aiohttp.ClientSession(timeout=timeout) as session, session.put(
-        f"{homeserver}/_matrix/client/v3/profile/{quote(user_id, safe='')}/displayname",
-        headers={"Authorization": f"Bearer {token}"},
-        json={"displayname": display_name},
-    ) as response:
+    async with (
+        aiohttp.ClientSession(timeout=timeout) as session,
+        session.put(
+            f"{homeserver}/_matrix/client/v3/profile/{quote(user_id, safe='')}/displayname",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"displayname": display_name},
+        ) as response,
+    ):
         if response.status != 200:
             body = (await response.text())[:500]
             raise RuntimeError(
@@ -283,11 +286,14 @@ async def _set_matrix_device_name(
     display_name: str,
 ) -> None:
     timeout = aiohttp.ClientTimeout(total=15)
-    async with aiohttp.ClientSession(timeout=timeout) as session, session.put(
-        f"{homeserver}/_matrix/client/v3/devices/{quote(device_id, safe='')}",
-        headers={"Authorization": f"Bearer {token}"},
-        json={"display_name": display_name},
-    ) as response:
+    async with (
+        aiohttp.ClientSession(timeout=timeout) as session,
+        session.put(
+            f"{homeserver}/_matrix/client/v3/devices/{quote(device_id, safe='')}",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"display_name": display_name},
+        ) as response,
+    ):
         if response.status != 200:
             body = (await response.text())[:500]
             raise RuntimeError(
@@ -306,9 +312,12 @@ def run_setup(args: argparse.Namespace) -> None:
     device_id = (args.device_id or input("Bot Matrix device ID: ")).strip()
     allowed_user = (args.allowed_user or input("Owner Matrix user ID: ")).strip()
     agents = discover_openrig_agents(args.rig_command)
-    state_dir = Path(args.state_dir or Path.home() / ".local" / "state" / "openrig-matrix-bridge")
+    state_dir = Path(
+        args.state_dir or Path.home() / ".local" / "state" / "openrig-matrix-bridge"
+    )
     download_root = Path(
-        args.download_root or Path.home() / ".cache" / "openrig-matrix-bridge" / "parakeet"
+        args.download_root
+        or Path.home() / ".cache" / "openrig-matrix-bridge" / "parakeet"
     )
     human_entity_id = args.human_id or _human_entity_id(allowed_user)
     human_destination = (
@@ -342,6 +351,10 @@ def run_setup(args: argparse.Namespace) -> None:
             "sender_session": args.sender_session,
             "human_destinations": [human_destination],
             "mirror_commentary": not args.no_commentary,
+            "steering_mode": "auto",
+            "steering_max_chars": 2000,
+            "steering_batch_window_seconds": 0.5,
+            "steering_admission_timeout_seconds": 2.0,
             "poll_interval_seconds": 0.2,
             "human_queue_poll_seconds": 2.0,
             "max_message_age_minutes": 60,
@@ -631,10 +644,13 @@ async def _doctor(config_path: Path) -> int:
         errors.append("MATRIX_ACCESS_TOKEN is not set")
     else:
         timeout = aiohttp.ClientTimeout(total=15)
-        async with aiohttp.ClientSession(timeout=timeout) as session, session.get(
-            f"{config.homeserver}/_matrix/client/v3/account/whoami",
-            headers={"Authorization": f"Bearer {token}"},
-        ) as response:
+        async with (
+            aiohttp.ClientSession(timeout=timeout) as session,
+            session.get(
+                f"{config.homeserver}/_matrix/client/v3/account/whoami",
+                headers={"Authorization": f"Bearer {token}"},
+            ) as response,
+        ):
             if response.status != 200:
                 errors.append(f"Matrix whoami failed with HTTP {response.status}")
     config.state_dir.mkdir(parents=True, exist_ok=True, mode=0o700)

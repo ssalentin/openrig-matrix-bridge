@@ -2,6 +2,11 @@
 
 ## 0.10.0
 
+- Add default `auto`, explicit `steer`, and strict FIFO `queue` modes for
+  short same-thread follow-ups.
+- Batch every source event and qitem under the canonical thread, use transcript
+  turn identity to reject unrelated human answers, and fall back losslessly when
+  best-effort pane injection is unavailable or ambiguous.
 - Treat an owner leaving or rejecting an agent room as a durable opt-out instead
   of recreating the room on restart.
 - Use the owner-selected Relay symbol for the README, Matrix bot profile, and

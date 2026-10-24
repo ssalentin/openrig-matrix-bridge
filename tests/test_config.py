@@ -45,6 +45,10 @@ def test_loads_minimal_config(tmp_path: Path):
     assert config.queue_inbound_messages is True
     assert config.inbound_message_priority == "urgent"
     assert config.inbound_queue_source == "owner@external"
+    assert config.steering_mode == "auto"
+    assert config.steering_max_chars == 2000
+    assert config.steering_batch_window_seconds == 0.5
+    assert config.steering_admission_timeout_seconds == 2.0
     assert config.reaction_feedback_enabled is True
     assert config.mirror_commentary is True
     assert config.avatars.enabled is True
@@ -68,14 +72,68 @@ def test_rejects_invalid_inbound_message_priority(tmp_path: Path):
     path = write_config(tmp_path / "config.yaml")
     path.write_text(
         path.read_text(encoding="utf-8").replace(
-            "  human_destinations: [\"owner@external\"]",
-            "  human_destinations: [\"owner@external\"]\n"
+            '  human_destinations: ["owner@external"]',
+            '  human_destinations: ["owner@external"]\n'
             "  inbound_message_priority: immediate",
         ),
         encoding="utf-8",
     )
 
     with pytest.raises(ConfigError, match="inbound_message_priority"):
+        load_config(path)
+
+
+def test_loads_explicit_steering_configuration(tmp_path: Path):
+    path = write_config(tmp_path / "config.yaml")
+    path.write_text(
+        path.read_text(encoding="utf-8").replace(
+            '  human_destinations: ["owner@external"]',
+            '  human_destinations: ["owner@external"]\n'
+            "  steering_mode: steer\n"
+            "  steering_max_chars: 640\n"
+            "  steering_batch_window_seconds: 1.25\n"
+            "  steering_admission_timeout_seconds: 3.5",
+        ),
+        encoding="utf-8",
+    )
+
+    config = load_config(path)
+
+    assert config.steering_mode == "steer"
+    assert config.steering_max_chars == 640
+    assert config.steering_batch_window_seconds == 1.25
+    assert config.steering_admission_timeout_seconds == 3.5
+
+
+@pytest.mark.parametrize(
+    ("setting", "value", "message"),
+    [
+        ("steering_mode", "sometimes", "steering_mode"),
+        ("steering_max_chars", "0", "steering_max_chars"),
+        ("steering_batch_window_seconds", "0", "steering_batch_window_seconds"),
+        (
+            "steering_admission_timeout_seconds",
+            "0",
+            "steering_admission_timeout_seconds",
+        ),
+    ],
+)
+def test_rejects_invalid_steering_configuration(
+    tmp_path: Path,
+    setting: str,
+    value: str,
+    message: str,
+):
+    path = write_config(tmp_path / "config.yaml")
+    path.write_text(
+        path.read_text(encoding="utf-8").replace(
+            '  human_destinations: ["owner@external"]',
+            f'  human_destinations: ["owner@external"]\n  {setting}: {value}',
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ConfigError, match=message):
         load_config(path)
 
 
@@ -155,4 +213,3 @@ def test_safe_agent_directory_rejects_symlink_escape(tmp_path: Path):
 
 def test_safe_agent_directory_returns_key_below_root(tmp_path: Path):
     assert safe_agent_directory(tmp_path, "advisor") == (tmp_path / "advisor").resolve()
-

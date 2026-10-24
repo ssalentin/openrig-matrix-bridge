@@ -420,6 +420,56 @@ With `openrig.queue_inbound_messages: true`:
 - A single pinned queue-status message is edited as the count changes and
   unpinned when the queue drains.
 
+### Hybrid queue and steering
+
+`openrig.steering_mode` controls how same-thread follow-ups behave while one
+Codex turn per agent is active:
+
+- `queue` keeps every new Matrix request in FIFO order.
+- `steer` attempts best-effort delivery only for eligible same-thread
+  follow-ups.
+- `auto` is the default and applies the same conservative eligibility rule:
+  the message must belong to the active request's exact thread, be no longer
+  than `steering_max_chars` (2000 by default), and arrive inside the active
+  turn.
+
+After pane injection, `steering_admission_timeout_seconds` (2.0 seconds by
+default) is the bounded grace period for the Codex transcript to expose the
+admitted input. This covers runtimes that record injected text asynchronously
+or materialize it as the next turn. The durable fallback is sent only after the
+grace period expires without matching admission evidence.
+
+Top-level requests and requests in another thread are never mixed into the
+active thread; they remain separate FIFO requests. Messages in the same thread
+that arrive inside `steering_batch_window_seconds` (0.5 seconds by default) form
+one ordered batch. Every source event still creates its own OpenRig qitem, and
+the batch prompt records every Matrix event ID and the canonical thread root.
+An answer that covers an admitted batch carries the covered IDs in the
+`dev.openrig.source_event_ids` Matrix content field and is posted once in the
+canonical thread.
+
+Steering is intentionally best effort. OpenRig currently exposes pane delivery
+but no runtime acknowledgement that input was admitted at a safe model/tool
+boundary and no admission-turn token from `rig send`. The bridge therefore:
+
+- persists the complete batch in the normal durable queue before attempting
+  injection;
+- records the input text and Codex session/turn identity from the transcript
+  before treating steering as admitted;
+- rescans the transcript during the bounded admission grace period before
+  risking a fallback resend;
+- ignores final answers from unrelated human turns in the same transcript
+  window; and
+- keeps or restores the whole batch in the normal queue when the agent is not
+  busy, the session changes, injection is rejected, the turn completes first,
+  the bridge restarts with an ambiguous outcome, or any other error occurs.
+
+Rapid follow-ups can therefore be delivered into the active turn when the
+runtime accepts pane input, but the bridge does not claim a guaranteed safe
+boundary or guaranteed mid-turn application. If admission cannot be proven
+from the transcript, the batch is delivered exactly once as a normal next turn
+instead of being reported complete silently.
+
 Prompt and final-answer delivery persist an operation phase before remote
 effects. If a bridge exits after starting a prompt but before recording an
 acknowledgement, restart fails that request explicitly rather than risking a

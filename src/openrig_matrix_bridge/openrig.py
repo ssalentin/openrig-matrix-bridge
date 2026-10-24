@@ -33,7 +33,9 @@ class OpenRigSessionResolver:
         self.codex_home = codex_home
         self.timeout = timeout
 
-    def resolve_many(self, sessions: set[str] | None = None) -> dict[str, AgentSessionRef]:
+    def resolve_many(
+        self, sessions: set[str] | None = None
+    ) -> dict[str, AgentSessionRef]:
         command = [self.command, "ps", "--nodes", "-A", "--json", "--full"]
         try:
             result = subprocess.run(
@@ -43,12 +45,18 @@ class OpenRigSessionResolver:
                 text=True,
                 timeout=self.timeout,
             )
-        except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
+        except (
+            OSError,
+            subprocess.CalledProcessError,
+            subprocess.TimeoutExpired,
+        ) as exc:
             raise AgentSessionNotFound(f"OpenRig node inventory failed: {exc}") from exc
         try:
             payload = json.loads(result.stdout)
         except json.JSONDecodeError as exc:
-            raise AgentSessionNotFound("OpenRig node inventory returned invalid JSON") from exc
+            raise AgentSessionNotFound(
+                "OpenRig node inventory returned invalid JSON"
+            ) from exc
         entries = payload.get("entries", []) if isinstance(payload, dict) else payload
         if not isinstance(entries, list):
             raise AgentSessionNotFound("OpenRig node inventory has an invalid shape")
@@ -117,7 +125,9 @@ class OpenRigSessionResolver:
         resolved = self.resolve_many({session_name})
         reference = resolved.get(session_name)
         if reference is None:
-            raise AgentSessionNotFound(f"no live Codex session found for {session_name}")
+            raise AgentSessionNotFound(
+                f"no live Codex session found for {session_name}"
+            )
         return reference
 
     def _transcript_path(
@@ -303,6 +313,24 @@ class OpenRigGateway:
             raise GatewayError("OpenRig queue update returned an invalid shape")
 
     async def send_prompt(self, ref: AgentSessionRef, text: str) -> None:
+        environment = os.environ.copy()
+        environment["OPENRIG_SESSION_NAME"] = self.sender_session
+        await self._run_json(
+            "send",
+            ref.tmux_session,
+            text,
+            "--raw",
+            "--json",
+            environment=environment,
+        )
+
+    async def steer_prompt(self, ref: AgentSessionRef, text: str) -> None:
+        """Best-effort pane injection into an active seat.
+
+        OpenRig currently exposes no turn-identity or safe-boundary response for
+        this operation. Callers must confirm admission from the transcript and
+        retain a durable fallback until they do.
+        """
         environment = os.environ.copy()
         environment["OPENRIG_SESSION_NAME"] = self.sender_session
         await self._run_json(

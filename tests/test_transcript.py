@@ -5,6 +5,8 @@ from openrig_matrix_bridge.transcript import (
     commentary_messages,
     final_answer,
     read_complete_records,
+    record_turn_id,
+    user_messages,
 )
 
 
@@ -71,3 +73,29 @@ def test_extracts_visible_commentary_messages_in_order():
         ("two", "Jetzt setze ich es um."),
     ]
 
+
+def test_extracts_turn_identity_and_user_input_text():
+    records = [
+        {
+            "type": "event_msg",
+            "payload": {
+                "type": "task_started",
+                "turn_id": "turn-one",
+            },
+        },
+        {
+            "type": "response_item",
+            "payload": {
+                "type": "message",
+                "role": "user",
+                "content": [{"type": "input_text", "text": "Matrix prompt"}],
+                "internal_chat_message_metadata_passthrough": {
+                    "turn_id": "turn-one",
+                },
+            },
+        },
+    ]
+
+    assert record_turn_id(records[0]) == "turn-one"
+    assert record_turn_id(records[1]) == "turn-one"
+    assert user_messages(records) == [("turn-one", "Matrix prompt")]

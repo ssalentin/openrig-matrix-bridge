@@ -96,6 +96,10 @@ class BridgeConfig:
     queue_inbound_messages: bool
     inbound_message_priority: str
     inbound_queue_source: str
+    steering_mode: str
+    steering_max_chars: int
+    steering_batch_window_seconds: float
+    steering_admission_timeout_seconds: float
     reaction_feedback_enabled: bool
     mirror_commentary: bool
     poll_interval_seconds: float
@@ -171,12 +175,19 @@ def load_config(path: str | Path) -> BridgeConfig:
 
     state_dir = Path(str(matrix.get("state_dir", "/var/lib/openrig-matrix-bridge")))
     rig_command = str(
-        transport.get("command") or os.environ.get("OPENRIG_CLI") or shutil.which("rig") or "rig"
+        transport.get("command")
+        or os.environ.get("OPENRIG_CLI")
+        or shutil.which("rig")
+        or "rig"
     ).strip()
     if not rig_command:
         raise ConfigError("openrig.command must not be empty")
     codex_home = Path(
-        str(transport.get("codex_home") or os.environ.get("CODEX_HOME") or Path.home() / ".codex")
+        str(
+            transport.get("codex_home")
+            or os.environ.get("CODEX_HOME")
+            or Path.home() / ".codex"
+        )
     )
     sender_session = str(
         transport.get("sender_session") or "matrix-bridge@kernel"
@@ -202,9 +213,25 @@ def load_config(path: str | Path) -> BridgeConfig:
     ).strip()
     if not inbound_queue_source:
         raise ConfigError("openrig.inbound_queue_source must not be empty")
-    reaction_feedback_enabled = bool(
-        transport.get("reaction_feedback_enabled", True)
+    steering_mode = str(transport.get("steering_mode", "auto")).strip()
+    if steering_mode not in {"queue", "steer", "auto"}:
+        raise ConfigError("openrig.steering_mode must be queue, steer, or auto")
+    steering_max_chars = int(transport.get("steering_max_chars", 2000))
+    if steering_max_chars <= 0:
+        raise ConfigError("openrig.steering_max_chars must be positive")
+    steering_batch_window_seconds = float(
+        transport.get("steering_batch_window_seconds", 0.5)
     )
+    if steering_batch_window_seconds <= 0:
+        raise ConfigError("openrig.steering_batch_window_seconds must be positive")
+    steering_admission_timeout_seconds = float(
+        transport.get("steering_admission_timeout_seconds", 2.0)
+    )
+    if steering_admission_timeout_seconds <= 0:
+        raise ConfigError(
+            "openrig.steering_admission_timeout_seconds must be positive"
+        )
+    reaction_feedback_enabled = bool(transport.get("reaction_feedback_enabled", True))
     mirror_commentary = bool(transport.get("mirror_commentary", True))
     poll_interval = float(transport.get("poll_interval_seconds", 0.2))
     human_queue_poll = float(transport.get("human_queue_poll_seconds", 2.0))
@@ -243,6 +270,10 @@ def load_config(path: str | Path) -> BridgeConfig:
         queue_inbound_messages=queue_inbound_messages,
         inbound_message_priority=inbound_message_priority,
         inbound_queue_source=inbound_queue_source,
+        steering_mode=steering_mode,
+        steering_max_chars=steering_max_chars,
+        steering_batch_window_seconds=steering_batch_window_seconds,
+        steering_admission_timeout_seconds=steering_admission_timeout_seconds,
         reaction_feedback_enabled=reaction_feedback_enabled,
         mirror_commentary=mirror_commentary,
         poll_interval_seconds=poll_interval,
@@ -253,7 +284,11 @@ def load_config(path: str | Path) -> BridgeConfig:
         transcription=TranscriptionConfig(
             enabled=bool(transcription.get("enabled", True)),
             download_root=Path(
-                str(transcription.get("download_root", "/var/cache/openrig-matrix-bridge/parakeet"))
+                str(
+                    transcription.get(
+                        "download_root", "/var/cache/openrig-matrix-bridge/parakeet"
+                    )
+                )
             ),
             max_audio_bytes=max_audio_bytes,
             num_threads=max(1, int(transcription.get("num_threads", 4))),
@@ -271,4 +306,3 @@ def load_config(path: str | Path) -> BridgeConfig:
         ),
         agents=agents,
     )
-
