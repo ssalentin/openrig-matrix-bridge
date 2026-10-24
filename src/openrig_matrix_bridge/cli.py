@@ -155,7 +155,7 @@ def discover_openrig_agents(command: str = "rig") -> dict[str, dict[str, str]]:
         ) from exc
 
     if not isinstance(nodes, list):
-        raise RuntimeError(
+        raise TypeError(
             f"OpenRig inventory returned unexpected format. "
             f"Check the OpenRig version: {' '.join(inventory_cmd)}"
         )
