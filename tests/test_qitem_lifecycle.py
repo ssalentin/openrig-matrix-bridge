@@ -301,6 +301,34 @@ def test_terminal_qitem_notice_failure_is_retried_with_stable_tx():
     assert bridge.state.data["pending"]["advisor"] == []
 
 
+def test_finish_error_state_reconciles_after_restart():
+    bridge, _agent = bridge_fixture()
+    request = {
+        "id": "request-one",
+        "event_id": "$prompt",
+        "reply_to_event_id": "$prompt",
+        "qitem_id": "qitem-one",
+        "qitem_phase": "finishing",
+        "prompt_phase": "sent",
+        "answer_phase": "sent",
+        "answer_text": "answer",
+    }
+    bridge.state.data["pending"]["advisor"] = [request]
+
+    class Gateway:
+        async def queue_show(self, qitem_id):
+            return {"state": "done"}
+
+        async def queue_finish(self, qitem_id, session, resolution):
+            raise AssertionError("already-done qitem was finished again")
+
+    bridge.gateway = Gateway()
+    asyncio.run(bridge._reconcile_pending_operations())
+
+    assert request["qitem_phase"] == "done"
+    assert bridge.state.data["pending"]["advisor"] == []
+
+
 def test_finish_failure_remains_pending_for_reconciliation():
     bridge, agent = bridge_fixture()
     request = {
