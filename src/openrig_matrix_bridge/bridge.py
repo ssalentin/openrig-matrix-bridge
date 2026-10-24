@@ -48,17 +48,18 @@ from .decisions import (
     poll_start_content,
 )
 from .formatting import markdown_to_matrix_html
-from .gateway import (
-    AgentSessionNotFound,
-    AgentSessionResolver,
-    GatewayError,
-    MoshiGateway,
-)
 from .media import (
     MediaError,
     detect_image_file,
     detect_image_type,
     encrypted_image_content,
+)
+from .openrig import (
+    AgentSessionNotFound,
+    AgentSessionRef,
+    GatewayError,
+    OpenRigGateway,
+    OpenRigSessionResolver,
 )
 from .transcript import final_answer, read_complete_records
 from .transcription import Transcriber
@@ -99,6 +100,7 @@ class StateStore:
             "decisions": {},
             "media": {},
             "messages": {},
+            "queue_mirror": {"initialized": False, "seen": {}},
         }
         if path.exists():
             self.data.update(json.loads(path.read_text(encoding="utf-8")))
@@ -128,8 +130,8 @@ class MatrixBridge:
         self.config.state_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
         (self.config.state_dir / "matrix-store").mkdir(parents=True, exist_ok=True, mode=0o700)
         self.state = StateStore(config.state_dir / "state.json")
-        self.resolver = AgentSessionResolver(config.codex_sessions_dir)
-        self.gateway = MoshiGateway(config.gateway_url)
+        self.resolver = OpenRigSessionResolver(config.rig_command, config.codex_home)
+        self.gateway = OpenRigGateway(config.rig_command, config.sender_session)
         self.transcriber = Transcriber(config.transcription)
         self.locks = {key: asyncio.Lock() for key in config.agents}
         self.room_agents: dict[str, str] = {}
@@ -211,6 +213,10 @@ class MatrixBridge:
             self._poll_message_outbox(),
             name="openrig-matrix-messages",
         )
+        human_queue_poller = asyncio.create_task(
+            self._poll_human_queue(),
+            name="openrig-matrix-human-queue",
+        )
         try:
             await self.client.sync_forever(
                 timeout=30000,
@@ -223,6 +229,7 @@ class MatrixBridge:
             decision_poller.cancel()
             media_poller.cancel()
             message_poller.cancel()
+            human_queue_poller.cancel()
             for room_id in list(self.typing_tasks):
                 await self._set_typing(room_id, False)
             await self.client.close()
@@ -362,6 +369,94 @@ class MatrixBridge:
             except Exception:
                 LOGGER.exception("message processing failed")
             await asyncio.sleep(1)
+
+    async def _poll_human_queue(self) -> None:
+        while True:
+            try:
+                await self._mirror_human_queue()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                LOGGER.exception("human queue mirror failed")
+            await asyncio.sleep(10)
+
+    async def _mirror_human_queue(self) -> None:
+        if not self.config.human_destinations:
+            return
+        agents_by_session = {
+            agent.session: agent for agent in self.config.agents.values()
+        }
+        items = await self.gateway.queue_list()
+        mirror = self.state.data.setdefault(
+            "queue_mirror",
+            {"initialized": False, "seen": {}},
+        )
+        seen = mirror.setdefault("seen", {})
+        if not mirror.get("initialized"):
+            for item in items:
+                qitem_id = str(item.get("qitemId") or "")
+                if qitem_id:
+                    seen[qitem_id] = int(time.time() * 1000)
+            mirror["initialized"] = True
+            self.state.save()
+            LOGGER.info("initialized Matrix human-queue mirror")
+            return
+
+        human_destinations = set(self.config.human_destinations)
+        for item in items:
+            qitem_id = str(item.get("qitemId") or "").strip()
+            if not qitem_id or qitem_id in seen:
+                continue
+            if item.get("destinationSession") not in human_destinations:
+                seen[qitem_id] = int(time.time() * 1000)
+                continue
+            agent = agents_by_session.get(str(item.get("sourceSession") or ""))
+            if agent is None:
+                seen[qitem_id] = int(time.time() * 1000)
+                continue
+            if any(
+                decision.get("qitem_id") == qitem_id
+                for decision in self.state.data["decisions"].values()
+            ):
+                seen[qitem_id] = int(time.time() * 1000)
+                continue
+
+            detail = await self.gateway.queue_show(qitem_id)
+            title = str(
+                detail.get("summary") or item.get("summary") or "OpenRig update"
+            ).strip()
+            body = str(detail.get("body") or "").strip()
+            if detail.get("humanIntent") == "decision":
+                request_id = f"queue-{qitem_id}"
+                await self._publish_decision(
+                    {
+                        "id": request_id,
+                        "agent": agent.key,
+                        "title": title,
+                        "body": body,
+                        "qitem_id": qitem_id,
+                        "questions": normalize_questions(
+                            detail.get("humanQuestions")
+                        ),
+                    }
+                )
+            else:
+                text = f"**{title}**"
+                if body:
+                    text += f"\n\n{body}"
+                await self._publish_message(
+                    {
+                        "id": f"queue-{qitem_id}",
+                        "agent": agent.key,
+                        "text": text,
+                    }
+                )
+            seen[qitem_id] = int(time.time() * 1000)
+            self.state.save()
+        if len(seen) > 2000:
+            newest = sorted(seen.items(), key=lambda row: row[1])[-2000:]
+            mirror["seen"] = dict(newest)
+            self.state.save()
 
     async def _process_message_outbox(self) -> None:
         for path in sorted(self.message_outbox.glob("*.json")):
@@ -581,10 +676,15 @@ class MatrixBridge:
 
     def _initialize_transcript_offsets(self) -> None:
         offsets = self.state.data.setdefault("transcripts", {})
+        try:
+            resolved = self.resolver.resolve_many(
+                {agent.session for agent in self.config.agents.values()}
+            )
+        except AgentSessionNotFound:
+            resolved = {}
         for key, agent in self.config.agents.items():
-            try:
-                ref = self.resolver.resolve(agent.session)
-            except AgentSessionNotFound:
+            ref = resolved.get(agent.session)
+            if ref is None:
                 continue
             offsets[key] = {
                 "path": str(ref.transcript_path),
@@ -1048,9 +1148,20 @@ class MatrixBridge:
             "image",
         )
 
-    async def _start_request(self, agent: AgentConfig, request: dict[str, Any], room_id: str) -> None:
+    async def _start_request(
+        self,
+        agent: AgentConfig,
+        request: dict[str, Any],
+        room_id: str,
+        ref: AgentSessionRef | None = None,
+    ) -> None:
         try:
-            ref = self.resolver.resolve(agent.session)
+            ref = ref or await asyncio.to_thread(
+                self.resolver.resolve,
+                agent.session,
+            )
+            if ref.busy:
+                return
             request["session_id"] = ref.session_id
             request["transcript_path"] = str(ref.transcript_path)
             request["offset"] = ref.transcript_path.stat().st_size
@@ -1091,7 +1202,10 @@ class MatrixBridge:
             pending = self.state.data["pending"].get(agent.key, [])
             if not pending:
                 try:
-                    ref = self.resolver.resolve(agent.session)
+                    ref = await asyncio.to_thread(
+                        self.resolver.resolve,
+                        agent.session,
+                    )
                 except AgentSessionNotFound:
                     return
                 self.state.data["transcripts"][agent.key] = {
@@ -1108,7 +1222,12 @@ class MatrixBridge:
                     return
                 if ref.busy:
                     return
-                await self._start_request(agent, request, self._room_for_agent(agent.key))
+                await self._start_request(
+                    agent,
+                    request,
+                    self._room_for_agent(agent.key),
+                    ref,
+                )
                 return
             if request.get("answer_text") is None:
                 if request.get("started_at") and time.time() - request["started_at"] > self.config.response_timeout_minutes * 60:
@@ -1170,15 +1289,21 @@ class MatrixBridge:
                 LOGGER.exception("agent status refresh failed")
 
     async def _refresh_agent_statuses(self, force: bool = False) -> None:
+        try:
+            resolved = await asyncio.to_thread(
+                self.resolver.resolve_many,
+                {agent.session for agent in self.config.agents.values()},
+            )
+        except AgentSessionNotFound:
+            resolved = {}
         for agent in self.config.agents.values():
             if not force and agent.key not in self.agent_statuses:
                 continue
             if self.state.data["pending"].get(agent.key):
                 status, detail = "busy", "arbeitet"
             else:
-                try:
-                    ref = self.resolver.resolve(agent.session)
-                except AgentSessionNotFound:
+                ref = resolved.get(agent.session)
+                if ref is None:
                     status, detail = "offline", "offline"
                 else:
                     status, detail = ("busy", "arbeitet") if ref.busy else ("ready", "bereit")

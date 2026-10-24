@@ -6,9 +6,12 @@ matrix:
     - "@owner:matrix.example.org"
   state_dir: /var/lib/openrig-matrix-bridge
 
-moshi:
-  gateway_url: http://127.0.0.1:24543
-  codex_sessions_dir: /root/.local/state/moshi/codex-sessions
+openrig:
+  command: /opt/node24/bin/rig
+  codex_home: /root/.codex
+  sender_session: matrix-bridge@kernel
+  human_destinations:
+    - sebastian@external
   poll_interval_seconds: 1.0
   max_message_age_minutes: 60
   response_timeout_minutes: 360

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+import shutil
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -40,8 +42,10 @@ class BridgeConfig:
     device_id: str
     allowed_users: tuple[str, ...]
     state_dir: Path
-    gateway_url: str
-    codex_sessions_dir: Path
+    rig_command: str
+    codex_home: Path
+    sender_session: str
+    human_destinations: tuple[str, ...]
     poll_interval_seconds: float
     max_message_age_minutes: int
     response_timeout_minutes: int
@@ -68,7 +72,7 @@ def load_config(path: str | Path) -> BridgeConfig:
 
     root = _mapping(raw, "config")
     matrix = _mapping(root.get("matrix"), "matrix")
-    moshi = _mapping(root.get("moshi", {}), "moshi")
+    transport = _mapping(root.get("openrig", root.get("moshi", {})), "openrig")
     agents_raw = _mapping(root.get("agents"), "agents")
     transcription = _mapping(root.get("transcription", {}), "transcription")
     media = _mapping(root.get("media", {}), "media")
@@ -110,18 +114,32 @@ def load_config(path: str | Path) -> BridgeConfig:
         raise ConfigError("at least one agent must be configured")
 
     state_dir = Path(str(matrix.get("state_dir", "/var/lib/openrig-matrix-bridge")))
-    sessions_dir = Path(
-        str(moshi.get("codex_sessions_dir", "/root/.local/state/moshi/codex-sessions"))
+    rig_command = str(
+        transport.get("command") or os.environ.get("OPENRIG_CLI") or shutil.which("rig") or "rig"
+    ).strip()
+    if not rig_command:
+        raise ConfigError("openrig.command must not be empty")
+    codex_home = Path(
+        str(transport.get("codex_home") or os.environ.get("CODEX_HOME") or Path.home() / ".codex")
     )
-    gateway_url = str(moshi.get("gateway_url", "http://127.0.0.1:24543")).rstrip("/")
-    poll_interval = float(moshi.get("poll_interval_seconds", 1.0))
-    max_age = int(moshi.get("max_message_age_minutes", 60))
-    timeout = int(moshi.get("response_timeout_minutes", 360))
-    status_refresh = float(moshi.get("status_refresh_seconds", 30))
+    sender_session = str(
+        transport.get("sender_session") or "matrix-bridge@kernel"
+    ).strip()
+    if "@" not in sender_session:
+        raise ConfigError("openrig.sender_session must look like member@rig")
+    human_destinations_raw = transport.get("human_destinations", [])
+    if not isinstance(human_destinations_raw, list) or not all(
+        isinstance(item, str) and item.strip() for item in human_destinations_raw
+    ):
+        raise ConfigError("openrig.human_destinations must be a list of seat addresses")
+    poll_interval = float(transport.get("poll_interval_seconds", 1.0))
+    max_age = int(transport.get("max_message_age_minutes", 60))
+    timeout = int(transport.get("response_timeout_minutes", 360))
+    status_refresh = float(transport.get("status_refresh_seconds", 30))
     if poll_interval < 0.2:
-        raise ConfigError("moshi.poll_interval_seconds must be at least 0.2")
+        raise ConfigError("openrig.poll_interval_seconds must be at least 0.2")
     if status_refresh < 1:
-        raise ConfigError("moshi.status_refresh_seconds must be at least 1")
+        raise ConfigError("openrig.status_refresh_seconds must be at least 1")
     if max_age < 0 or timeout <= 0:
         raise ConfigError("message age must be non-negative and timeout positive")
     max_audio_bytes = int(transcription.get("max_audio_bytes", 25 * 1024 * 1024))
@@ -138,8 +156,10 @@ def load_config(path: str | Path) -> BridgeConfig:
         device_id=device_id,
         allowed_users=tuple(str(item) for item in allowed),
         state_dir=state_dir,
-        gateway_url=gateway_url,
-        codex_sessions_dir=sessions_dir,
+        rig_command=rig_command,
+        codex_home=codex_home,
+        sender_session=sender_session,
+        human_destinations=tuple(str(item).strip() for item in human_destinations_raw),
         poll_interval_seconds=poll_interval,
         max_message_age_minutes=max_age,
         response_timeout_minutes=timeout,

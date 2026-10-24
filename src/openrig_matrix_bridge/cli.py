@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import re
+import shutil
 import subprocess
 import tempfile
 import time
@@ -20,8 +21,8 @@ from . import __version__
 from .bridge import MatrixBridge
 from .config import load_config
 from .decisions import normalize_questions
-from .gateway import AgentSessionNotFound, AgentSessionResolver
 from .media import detect_image_type
+from .openrig import AgentSessionNotFound, OpenRigSessionResolver
 from .transcription import MODEL_NAME, ensure_model, model_ready
 
 
@@ -43,9 +44,9 @@ def _display_name(logical_id: str) -> str:
     return " ".join(part.capitalize() for part in re.split(r"[._-]+", logical_id) if part)
 
 
-def discover_openrig_agents() -> dict[str, dict[str, str]]:
+def discover_openrig_agents(command: str = "rig") -> dict[str, dict[str, str]]:
     result = subprocess.run(
-        ["rig", "ps", "--nodes", "-A", "--json"],
+        [command, "ps", "--nodes", "-A", "--json"],
         check=True,
         capture_output=True,
         text=True,
@@ -132,7 +133,7 @@ def run_setup(args: argparse.Namespace) -> None:
     user_id = (args.user_id or input("Bot Matrix user ID: ")).strip()
     device_id = (args.device_id or input("Bot Matrix device ID: ")).strip()
     allowed_user = (args.allowed_user or input("Owner Matrix user ID: ")).strip()
-    agents = discover_openrig_agents()
+    agents = discover_openrig_agents(args.rig_command)
     state_dir = Path(args.state_dir or Path.home() / ".local" / "state" / "openrig-matrix-bridge")
     download_root = Path(
         args.download_root or Path.home() / ".cache" / "openrig-matrix-bridge" / "parakeet"
@@ -145,11 +146,11 @@ def run_setup(args: argparse.Namespace) -> None:
             "allowed_users": [allowed_user],
             "state_dir": str(state_dir),
         },
-        "moshi": {
-            "gateway_url": args.gateway_url,
-            "codex_sessions_dir": str(
-                Path.home() / ".local" / "state" / "moshi" / "codex-sessions"
-            ),
+        "openrig": {
+            "command": args.rig_command,
+            "codex_home": str(args.codex_home),
+            "sender_session": args.sender_session,
+            "human_destinations": args.human_destination or [],
             "poll_interval_seconds": 1.0,
             "max_message_age_minutes": 60,
             "response_timeout_minutes": 360,
@@ -181,9 +182,9 @@ def run_setup(args: argparse.Namespace) -> None:
         print(f"Parakeet ready: {model}")
 
 
-def _load_qitem(qitem_id: str) -> dict:
+def _load_qitem(qitem_id: str, command: str = "rig") -> dict:
     result = subprocess.run(
-        ["rig", "queue", "show", qitem_id, "--full", "--json"],
+        [command, "queue", "show", qitem_id, "--full", "--json"],
         check=True,
         capture_output=True,
         text=True,
@@ -198,7 +199,7 @@ def run_decision(args: argparse.Namespace, config) -> int:
     if args.agent not in config.agents:
         raise SystemExit(f"unknown agent: {args.agent}")
 
-    qitem = _load_qitem(args.qitem) if args.qitem else {}
+    qitem = _load_qitem(args.qitem, config.rig_command) if args.qitem else {}
     title = (args.title or str(qitem.get("summary") or "")).strip()
     if not title:
         raise SystemExit("decision requires --title or --qitem")
@@ -356,16 +357,12 @@ async def _doctor(config_path: Path) -> int:
         errors.append("MATRIX_ACCESS_TOKEN is not set")
     else:
         timeout = aiohttp.ClientTimeout(total=15)
-        async with aiohttp.ClientSession(timeout=timeout) as session:
-            async with session.get(
-                f"{config.homeserver}/_matrix/client/v3/account/whoami",
-                headers={"Authorization": f"Bearer {token}"},
-            ) as response:
-                if response.status != 200:
-                    errors.append(f"Matrix whoami failed with HTTP {response.status}")
-            async with session.get(f"{config.gateway_url}/v1/version") as response:
-                if response.status != 200:
-                    errors.append(f"Moshi gateway failed with HTTP {response.status}")
+        async with aiohttp.ClientSession(timeout=timeout) as session, session.get(
+            f"{config.homeserver}/_matrix/client/v3/account/whoami",
+            headers={"Authorization": f"Bearer {token}"},
+        ) as response:
+            if response.status != 200:
+                errors.append(f"Matrix whoami failed with HTTP {response.status}")
     config.state_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
     probe = config.state_dir / ".write-test"
     try:
@@ -381,11 +378,16 @@ async def _doctor(config_path: Path) -> int:
             media_probe.unlink()
         except OSError as exc:
             errors.append(f"media inbox is not writable: {exc}")
-    resolver = AgentSessionResolver(config.codex_sessions_dir)
+    resolver = OpenRigSessionResolver(config.rig_command, config.codex_home)
+    try:
+        resolved = resolver.resolve_many(
+            {agent.session for agent in config.agents.values()}
+        )
+    except AgentSessionNotFound as exc:
+        errors.append(f"OpenRig transport failed: {exc}")
+        resolved = {}
     for agent in config.agents.values():
-        try:
-            resolver.resolve(agent.session)
-        except AgentSessionNotFound:
+        if agent.session not in resolved:
             warnings.append(f"{agent.session}: no live Codex session")
     if config.transcription.enabled:
         if model_ready(config.transcription.download_root):
@@ -427,7 +429,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--allowed-user")
     parser.add_argument("--state-dir")
     parser.add_argument("--download-root")
-    parser.add_argument("--gateway-url", default="http://127.0.0.1:24543")
+    parser.add_argument("--rig-command", default=shutil.which("rig") or "rig")
+    parser.add_argument(
+        "--codex-home",
+        type=Path,
+        default=Path(os.environ.get("CODEX_HOME", Path.home() / ".codex")),
+    )
+    parser.add_argument("--sender-session", default="matrix-bridge@kernel")
+    parser.add_argument("--human-destination", action="append")
     parser.add_argument("--parakeet-threads", type=int, default=4)
     parser.add_argument("--skip-model", action="store_true")
     parser.add_argument("--without-voice", action="store_true")

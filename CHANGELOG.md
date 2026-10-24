@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.5.0
+
+- Replace the Moshi gateway with direct OpenRig seat transport.
+- Resolve Codex transcripts from the live OpenRig node inventory.
+- Deliver Matrix prompts with `rig send --raw` and no separate chat gateway.
+- Mirror new OpenRig human updates and decisions into the source agent's room.
+
 ## 0.4.0
 
 - Render agent Markdown as native Matrix formatted messages, including tables.

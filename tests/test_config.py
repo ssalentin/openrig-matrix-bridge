@@ -14,9 +14,11 @@ matrix:
   device_id: BOT
   allowed_users: ["@owner:matrix.example.org"]
   state_dir: /tmp/state
-moshi:
-  gateway_url: http://127.0.0.1:24543
-  codex_sessions_dir: /tmp/sessions
+openrig:
+  command: /opt/rig
+  codex_home: /tmp/codex
+  sender_session: matrix-bridge@kernel
+  human_destinations: ["sebastian@external"]
 agents:
   advisor:
     display_name: Advisor
@@ -33,6 +35,10 @@ def test_loads_minimal_config(tmp_path: Path):
     assert config.homeserver == "https://matrix.example.org"
     assert config.agents["advisor"].session == "advisor-lead@kernel"
     assert config.status_refresh_seconds == 30
+    assert config.rig_command == "/opt/rig"
+    assert config.codex_home == Path("/tmp/codex")
+    assert config.sender_session == "matrix-bridge@kernel"
+    assert config.human_destinations == ("sebastian@external",)
     assert config.media.enabled is True
     assert config.media.max_image_bytes == 25 * 1024 * 1024
 

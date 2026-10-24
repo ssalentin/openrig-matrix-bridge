@@ -287,6 +287,114 @@ def test_explicit_message_is_published_and_recorded():
     assert bridge.state.data["messages"]["message-1"]["event_id"] == "$message"
 
 
+def test_human_queue_items_are_mirrored_to_the_source_agent_room():
+    bridge = object.__new__(MatrixBridge)
+    agent = AgentConfig(
+        key="advisor",
+        display_name="Advisor",
+        session="advisor-lead@kernel",
+    )
+    bridge.config = SimpleNamespace(
+        agents={"advisor": agent},
+        human_destinations=("sebastian@external",),
+    )
+    bridge.state = SimpleNamespace(
+        save=lambda: None,
+        data={
+            "decisions": {},
+            "queue_mirror": {"initialized": True, "seen": {}},
+        },
+    )
+
+    class QueueGateway:
+        async def queue_list(self):
+            return [
+                {
+                    "qitemId": "qitem-decision",
+                    "destinationSession": "sebastian@external",
+                    "sourceSession": "advisor-lead@kernel",
+                },
+                {
+                    "qitemId": "qitem-update",
+                    "destinationSession": "sebastian@external",
+                    "sourceSession": "advisor-lead@kernel",
+                },
+            ]
+
+        async def queue_show(self, qitem_id):
+            if qitem_id == "qitem-decision":
+                return {
+                    "summary": "Welche Variante?",
+                    "body": "Bitte entscheiden.",
+                    "humanIntent": "decision",
+                    "humanQuestions": [
+                        {
+                            "id": "choice",
+                            "question": "Welche Variante?",
+                            "options": [
+                                {"id": "a", "label": "A"},
+                                {"id": "b", "label": "B"},
+                            ],
+                        }
+                    ],
+                }
+            return {
+                "summary": "Arbeit abgeschlossen",
+                "body": "Alles erledigt.",
+                "humanIntent": "update",
+                "humanQuestions": None,
+            }
+
+    bridge.gateway = QueueGateway()
+    decisions = []
+    messages = []
+
+    async def publish_decision(request):
+        decisions.append(request)
+
+    async def publish_message(request):
+        messages.append(request)
+
+    bridge._publish_decision = publish_decision
+    bridge._publish_message = publish_message
+
+    asyncio.run(bridge._mirror_human_queue())
+
+    assert decisions[0]["qitem_id"] == "qitem-decision"
+    assert decisions[0]["agent"] == "advisor"
+    assert messages[0]["text"] == "**Arbeit abgeschlossen**\n\nAlles erledigt."
+    assert set(bridge.state.data["queue_mirror"]["seen"]) == {
+        "qitem-decision",
+        "qitem-update",
+    }
+
+
+def test_first_human_queue_scan_only_sets_the_watermark():
+    bridge = object.__new__(MatrixBridge)
+    bridge.config = SimpleNamespace(
+        agents={},
+        human_destinations=("sebastian@external",),
+    )
+    bridge.state = SimpleNamespace(
+        save=lambda: None,
+        data={
+            "decisions": {},
+            "queue_mirror": {"initialized": False, "seen": {}},
+        },
+    )
+
+    class QueueGateway:
+        async def queue_list(self):
+            return [{"qitemId": "qitem-old"}]
+
+    bridge.gateway = QueueGateway()
+
+    asyncio.run(bridge._mirror_human_queue())
+
+    assert bridge.state.data["queue_mirror"]["initialized"] is True
+    assert set(bridge.state.data["queue_mirror"]["seen"]) == {"qitem-old"}
+
+
 def test_encrypted_image_is_saved_and_forwarded_to_agent(tmp_path):
     png = b"\x89PNG\r\n\x1a\n" + b"test image payload"
     encrypted, keys = encrypt_attachment(png)

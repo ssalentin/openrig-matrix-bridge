@@ -3,10 +3,10 @@
 **A private Matrix room for every OpenRig agent, with live status and local
 voice transcription.**
 
-The bridge uses the local [Moshi gateway](https://getmoshi.app/docs/debug-gateway)
-to inject prompts into the live Codex terminal and watches the same agent
-transcript for the final answer. It does not start duplicate agents and does
-not require an OpenRig-native Matrix connector.
+The bridge uses the OpenRig CLI to inject prompts into the live Codex terminal
+and watches that seat's native JSONL transcript for the final answer. It does
+not start duplicate agents, does not need a separate chat gateway, and does not
+require an OpenRig-native Matrix connector.
 
 ## Live status in Matrix rooms
 
@@ -39,6 +39,7 @@ represented per room. OpenRig can use one bot for any number of agents.
 - Per-agent room status: `🟢 bereit`, `🟡 arbeitet`, `🟠 Fehler`, `⚫ offline`.
 - A refreshed Matrix typing indicator while the agent is working.
 - Pinned decision briefs and Element-compatible multiple-choice polls.
+- Automatic mirroring of new OpenRig human updates and decisions into the source agent's room.
 - Device verification with Matrix emoji SAS.
 - One allow-listed Matrix user; messages from everybody else are ignored.
 - Replies are posted in a Matrix thread under the original prompt.
@@ -52,7 +53,6 @@ Prerequisites:
 
 - A Matrix account for the bridge bot and an access token.
 - OpenRig with Codex seats running in tmux or Herdr.
-- `moshi-hook` running on the same host.
 - `rig`, Python 3.11+, and `ffmpeg`.
 
 Create the configuration from the currently running Codex seats:
@@ -145,12 +145,27 @@ This command sends through the running bridge so the message is encrypted with
 the correct Matrix room session. Ordinary terminal conversation is not mirrored
 automatically.
 
+## Human handoffs from OpenRig
+
+Set `openrig.human_destinations` to the human queue addresses that should be
+visible in Matrix. New queue items whose source is a configured agent are then
+mirrored into that agent's room:
+
+- `humanIntent: decision` becomes a pinned decision message and, when
+  `humanQuestions` is present, encrypted Matrix polls.
+- `humanIntent: update` becomes a normal formatted Matrix message.
+
+The first bridge start records the existing queue as a watermark and does not
+replay old history. Items created while the bridge is running are delivered
+once. This makes Matrix a first-class delivery surface rather than an
+afterthought to another chat gateway.
+
 ## Current scope
 
-This first version targets Codex seats because it resolves their session and
-transcript through `moshi-hook` state under
-`~/.local/state/moshi/codex-sessions/`. Other runtimes can be added by extending
-the gateway and transcript adapters.
+This first version targets Codex seats. It resolves their live transcript and
+Codex thread through `rig ps --nodes --json --full`, then sends prompts with
+`rig send --raw`. Other runtimes can be added by extending the transport and
+transcript adapters.
 
 Direct messages from the owner to configured agents are supported. Structured
 OpenRig decisions can be published explicitly with the `decision` command;
@@ -191,17 +206,18 @@ environment file.
 ## How a message flows
 
 1. The allowed Matrix user writes in an agent-specific room.
-2. The bridge resolves that seat's current Codex session from Moshi hook state.
-3. It submits the text through `POST /v1/prompt` on the loopback Moshi gateway.
-4. It tails the mapped JSONL transcript.
-5. The next completed final assistant answer is posted to the Matrix thread.
-6. Queued messages for the same agent are submitted in order.
+2. The bridge resolves the live Codex seat and native transcript through OpenRig.
+3. It records the current transcript offset.
+4. It submits the text directly with `rig send --raw`.
+5. It tails the native Codex JSONL transcript.
+6. The next completed final assistant answer is posted to the Matrix thread.
+7. Queued messages for the same agent are submitted in order.
 
 ## Security
 
 - Keep the configuration file free of tokens.
 - Restrict `allowed_users` to the owner's full MXID.
-- Keep both Matrix and Moshi state directories mode `0700`.
+- Keep the Matrix and OpenRig state accessible only to trusted local users.
 - Keep the media inbox private and apply a suitable retention policy.
 - Use a dedicated bot account where possible.
 
