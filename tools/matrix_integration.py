@@ -912,6 +912,8 @@ class IntegrationRun:
                 pending
                 and pending[0].get("event_id") == threaded_event_id
                 and pending[0].get("started_at")
+                and pending[0].get("prompt_phase") == "sent"
+                and pending[0].get("qitem_phase") in {"claimed", "finishing"}
                 and pending[0].get("thread_root_event_id") == root_event_id
             )
 
