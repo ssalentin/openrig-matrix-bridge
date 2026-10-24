@@ -24,25 +24,33 @@ comprehensive live-server coverage before the integration artifact exists.
 
 ## Evidence-backed value
 
-These bullets are suitable for an internal release note. The public version
-must wait for the live checks named in the verification matrix.
+These bullets are suitable for an internal release note when read with the
+linked [claim matrix](VERIFICATION.md#product-claim-matrix). The public version
+must omit capabilities still marked unverified.
 
 - **Same agent, different surface.** Matrix prompts are submitted to the
   resolved live Codex seat through `rig send --raw`; the bridge does not launch
-  a duplicate agent. Unit evidence covers resolution and send-command
-  construction.
+  a duplicate agent. See the [duplicate-session test](../tests/test_config.py#L57),
+  [send-command contract](../tests/test_openrig.py#L100), and [live room/chat
+  artifact](artifacts/ordinary-chat.txt).
 - **State is visible where the conversation happens.** The room topic and a
   structured Matrix state event carry agent status; typing is refreshed during
-  work. Status event construction is unit-tested; a live typing check remains
-  pending.
+  work. The [status event test](../tests/test_bridge.py#L122) covers payload
+  construction, and the [live Matrix artifact](artifacts/ordinary-chat.txt)
+  records the owner client observing the typing indicator on disposable
+  Synapse. Element rendering remains a separate client check.
 - **Media and decisions stay in context.** Encrypted images, local voice
   transcription, pinned briefs, polls, reactions, and queue cards are
-  represented in the same room. Protocol and storage paths are unit-tested;
-  live encryption and client rendering require the integration evidence.
+  represented in the same room. See the [image](../tests/test_media.py#L15) and
+  [poll](../tests/test_decisions.py#L36) protocol tests plus the
+  [13-check integration report](artifacts/integration-report.json). Local voice
+  model execution remains explicitly unverified in the claim matrix.
 - **OpenRig remains the work ledger.** Matrix prompts become prioritized
   OpenRig qitems, are claimed when work starts, and close after answer delivery.
-  The command sequence is unit-tested; the integration harness uses a fake
-  OpenRig CLI.
+  See the [queue command tests](../tests/test_openrig.py#L159), [qitem lifecycle
+  test](../tests/test_openrig.py#L205), and [live Matrix/chat
+  evidence](artifacts/ordinary-chat.txt). The integration transport itself is a
+  fake OpenRig CLI; live daemon recovery remains unverified.
 
 ## Conditional launch copy
 
