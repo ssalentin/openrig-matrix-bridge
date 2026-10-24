@@ -25,6 +25,7 @@ from . import __version__
 from .bridge import MatrixBridge
 from .config import ConfigError, load_config, validate_homeserver
 from .decisions import normalize_questions
+from .instance import InstanceAlreadyRunning, acquire_instance_lock, instance_is_running
 from .media import detect_image_type, normalize_mime_type
 from .openrig import AgentSessionNotFound, OpenRigSessionResolver
 from .transcription import MODEL_NAME, ensure_model, model_ready
@@ -114,22 +115,71 @@ def _ensure_human_registration(
 
 
 def discover_openrig_agents(command: str = "rig") -> dict[str, dict[str, str]]:
-    result = subprocess.run(
-        [command, "ps", "--nodes", "-A", "--json"],
-        check=True,
-        capture_output=True,
-        text=True,
-        timeout=30,
-    )
-    nodes = json.loads(result.stdout)
+    """Discover running Codex seats from OpenRig inventory.
+
+    Raises RuntimeError with actionable guidance if discovery fails.
+    """
+    inventory_cmd = [command, "ps", "--nodes", "-A", "--json"]
+
+    try:
+        result = subprocess.run(
+            inventory_cmd,
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+    except FileNotFoundError as exc:
+        raise RuntimeError(
+            f"OpenRig command not found: {command}. "
+            "Install OpenRig or pass --rig-command with the full path to rig."
+        ) from exc
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError(
+            f"OpenRig inventory timed out after 30s. "
+            f"Check that OpenRig is responsive: {' '.join(inventory_cmd)}"
+        ) from exc
+    except subprocess.CalledProcessError as exc:
+        stderr = exc.stderr.strip() if exc.stderr else ""
+        raise RuntimeError(
+            f"OpenRig inventory failed: {stderr[:200]}. "
+            f"Run {' '.join(inventory_cmd)} and fix the reported error."
+        ) from exc
+
+    try:
+        nodes = json.loads(result.stdout)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(
+            f"OpenRig inventory returned invalid JSON. "
+            f"Check the OpenRig version: {' '.join(inventory_cmd)}"
+        ) from exc
+
+    if not isinstance(nodes, list):
+        raise RuntimeError(
+            f"OpenRig inventory returned unexpected format. "
+            f"Check the OpenRig version: {' '.join(inventory_cmd)}"
+        )
+
     agents: dict[str, dict[str, str]] = {}
+    seen_sessions: set[str] = set()
+
     for node in nodes:
+        if not isinstance(node, dict):
+            continue
         if node.get("sessionStatus") != "running" or node.get("runtime") != "codex":
             continue
         logical_id = str(node.get("logicalId") or "")
         session = str(node.get("canonicalSessionName") or "")
         if not logical_id or not session or logical_id == "operator.human":
             continue
+
+        if session in seen_sessions:
+            raise RuntimeError(
+                f"duplicate Codex seat found: {session}. "
+                "Stop the duplicate seat before running setup."
+            )
+        seen_sessions.add(session)
+
         key = _agent_key(session)
         if key in agents:
             rig = str(node.get("rigName") or "")
@@ -138,8 +188,13 @@ def discover_openrig_agents(command: str = "rig") -> dict[str, dict[str, str]]:
             "display_name": _display_name(logical_id),
             "session": session,
         }
+
     if not agents:
-        raise RuntimeError("no running Codex seats found through `rig ps --nodes -A`")
+        raise RuntimeError(
+            "no running Codex seats found. "
+            f"Start at least one Codex seat, confirm with {' '.join(inventory_cmd)}, "
+            "then retry setup."
+        )
     return agents
 
 
