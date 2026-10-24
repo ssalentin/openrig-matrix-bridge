@@ -1,16 +1,17 @@
 [build-system]
-requires = ["setuptools>=68"]
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "openrig-matrix-bridge"
-version = "0.3.0"
+version = "0.4.0"
 description = "Matrix rooms for specific OpenRig agent seats"
 readme = "README.md"
 requires-python = ">=3.11"
-license = { text = "MIT" }
+license = "MIT"
 dependencies = [
   "matrix-nio[e2e]>=0.25,<0.26",
+  "mistune>=3.0,<4",
   "PyYAML>=6.0,<7",
   "sherpa-onnx>=1.13,<2",
   "numpy>=1.24,<3",

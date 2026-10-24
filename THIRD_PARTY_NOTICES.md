@@ -1,5 +1,12 @@
 # Third-Party Notices
 
+## Mistune
+
+Markdown is converted to Matrix rich text with Mistune.
+
+- Project: <https://github.com/lepture/mistune>
+- License: BSD 3-Clause
+
 ## NVIDIA Parakeet TDT 0.6B v3
 
 The bridge downloads NVIDIA's `parakeet-tdt-0.6b-v3` model weights at runtime.

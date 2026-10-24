@@ -22,14 +22,17 @@ from nio import (
     MatrixRoom,
     RoomCreateResponse,
     RoomEncryptedAudio,
+    RoomEncryptedImage,
     RoomGetStateEventResponse,
     RoomMemberEvent,
     RoomMessageAudio,
+    RoomMessageImage,
     RoomMessageText,
     RoomSendResponse,
     SyncResponse,
     ToDeviceError,
     UnknownEvent,
+    UploadResponse,
 )
 from nio.api import RoomPreset, RoomVisibility
 from nio.crypto import decrypt_attachment
@@ -44,11 +47,18 @@ from .decisions import (
     poll_response,
     poll_start_content,
 )
+from .formatting import markdown_to_matrix_html
 from .gateway import (
     AgentSessionNotFound,
     AgentSessionResolver,
     GatewayError,
     MoshiGateway,
+)
+from .media import (
+    MediaError,
+    detect_image_file,
+    detect_image_type,
+    encrypted_image_content,
 )
 from .transcript import final_answer, read_complete_records
 from .transcription import Transcriber
@@ -87,6 +97,7 @@ class StateStore:
             "processed_events": [],
             "welcomed": {},
             "decisions": {},
+            "media": {},
         }
         if path.exists():
             self.data.update(json.loads(path.read_text(encoding="utf-8")))
@@ -136,6 +147,13 @@ class MatrixBridge:
         self.decision_inbox.mkdir(parents=True, exist_ok=True, mode=0o700)
         self.decision_sent.mkdir(parents=True, exist_ok=True, mode=0o700)
         self.decision_failed.mkdir(parents=True, exist_ok=True, mode=0o700)
+        self.media_outbox = config.state_dir / "media-outbox"
+        self.media_sent = self.media_outbox / "sent"
+        self.media_failed = self.media_outbox / "failed"
+        self.media_outbox.mkdir(parents=True, exist_ok=True, mode=0o700)
+        self.media_sent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        self.media_failed.mkdir(parents=True, exist_ok=True, mode=0o700)
+        config.media.inbox_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
         self.client = AsyncClient(
             config.homeserver,
             config.user_id,
@@ -154,6 +172,7 @@ class MatrixBridge:
         )
         self.client.add_event_callback(self._on_room_message, RoomMessageText)
         self.client.add_event_callback(self._on_audio, (RoomMessageAudio, RoomEncryptedAudio))
+        self.client.add_event_callback(self._on_image, (RoomMessageImage, RoomEncryptedImage))
         self.client.add_event_callback(self._on_invite, InviteMemberEvent)
         self.client.add_event_callback(self._on_member, RoomMemberEvent)
         self.client.add_event_callback(self._on_unknown_event, UnknownEvent)
@@ -177,6 +196,10 @@ class MatrixBridge:
             self._poll_decisions(),
             name="openrig-matrix-decisions",
         )
+        media_poller = asyncio.create_task(
+            self._poll_media_outbox(),
+            name="openrig-matrix-media",
+        )
         try:
             await self.client.sync_forever(
                 timeout=30000,
@@ -187,6 +210,7 @@ class MatrixBridge:
             poller.cancel()
             status_poller.cancel()
             decision_poller.cancel()
+            media_poller.cancel()
             for room_id in list(self.typing_tasks):
                 await self._set_typing(room_id, False)
             await self.client.close()
@@ -317,6 +341,93 @@ class MatrixBridge:
         self.state.save()
         LOGGER.info("published decision %s in %s", request_id, agent.session)
 
+    async def _poll_media_outbox(self) -> None:
+        while True:
+            try:
+                await self._process_media_outbox()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                LOGGER.exception("media processing failed")
+            await asyncio.sleep(1)
+
+    async def _process_media_outbox(self) -> None:
+        for path in sorted(self.media_outbox.glob("*.json")):
+            try:
+                request = json.loads(path.read_text(encoding="utf-8"))
+                if not isinstance(request, dict):
+                    raise MediaError("media request must be an object")
+                await self._publish_image(request)
+            except (MediaError, json.JSONDecodeError, OSError):
+                LOGGER.warning("invalid media request: %s", path, exc_info=True)
+                os.replace(path, self.media_failed / path.name)
+                continue
+            except Exception:
+                LOGGER.exception("failed to publish media request: %s", path)
+                os.replace(path, self.media_failed / path.name)
+                continue
+            os.replace(path, self.media_sent / path.name)
+
+    async def _publish_image(self, request: dict[str, Any]) -> None:
+        if not self.config.media.enabled:
+            raise MediaError("image exchange is disabled")
+        request_id = str(request.get("id") or "").strip()
+        agent_key = str(request.get("agent") or "").strip()
+        agent = self.config.agents.get(agent_key)
+        if not request_id or agent is None:
+            raise MediaError("image request needs an id and configured agent")
+        room = self.state.data["rooms"].get(agent.key)
+        if not room:
+            raise MediaError(f"no Matrix room configured for: {agent.key}")
+
+        image_path = Path(str(request.get("path") or ""))
+        if not image_path.is_absolute() or not image_path.is_file():
+            raise MediaError(f"image file not found: {image_path}")
+        size = image_path.stat().st_size
+        if size <= 0 or size > self.config.media.max_image_bytes:
+            raise MediaError(f"image size is outside the allowed range: {size} bytes")
+        image_type = await asyncio.to_thread(detect_image_file, image_path)
+        if image_type is None:
+            raise MediaError("unsupported image type; use PNG, JPEG, GIF, or WebP")
+
+        upload, encryption = await self.client.upload(
+            lambda _retries, _timeouts: image_path,
+            content_type=image_type.mime_type,
+            filename=image_path.name,
+            encrypt=True,
+            filesize=size,
+        )
+        if not isinstance(upload, UploadResponse) or not isinstance(encryption, dict):
+            raise ConnectionError(f"encrypted image upload failed: {upload}")
+
+        caption = str(request.get("caption") or "").strip()[:10_000]
+        response = await self.client.room_send(
+            str(room["room_id"]),
+            "m.room.message",
+            encrypted_image_content(
+                filename=image_path.name,
+                caption=caption,
+                mime_type=image_type.mime_type,
+                size=size,
+                upload_url=upload.content_uri,
+                encryption=encryption,
+                formatted_caption=markdown_to_matrix_html(caption),
+            ),
+            ignore_unverified_devices=True,
+        )
+        if not isinstance(response, RoomSendResponse):
+            raise ConnectionError(f"encrypted image message failed: {response}")
+        self.state.data["media"][request_id] = {
+            "agent": agent.key,
+            "event_id": response.event_id,
+            "path": str(image_path),
+            "mime_type": image_type.mime_type,
+            "size": size,
+            "sent_at": int(time.time() * 1000),
+        }
+        self.state.save()
+        LOGGER.info("published encrypted image %s in %s", request_id, agent.session)
+
     async def _add_pinned(self, room_id: str, event_ids: list[str]) -> None:
         lock = self.pin_locks.setdefault(room_id, asyncio.Lock())
         async with lock:
@@ -445,6 +556,13 @@ class MatrixBridge:
 
     def _on_audio(self, room: MatrixRoom, event: RoomMessageAudio) -> None:
         asyncio.create_task(self._handle_audio(room, event))
+
+    def _on_image(
+        self,
+        room: MatrixRoom,
+        event: RoomMessageImage | RoomEncryptedImage,
+    ) -> None:
+        asyncio.create_task(self._handle_image(room, event))
 
     def _on_unknown_event(self, room: MatrixRoom, event: UnknownEvent) -> None:
         if event.type in {POLL_RESPONSE_TYPE, STABLE_POLL_RESPONSE_TYPE}:
@@ -778,6 +896,95 @@ class MatrixBridge:
             "audio",
         )
 
+    async def _handle_image(
+        self,
+        room: MatrixRoom,
+        event: RoomMessageImage | RoomEncryptedImage,
+    ) -> None:
+        if not self.config.media.enabled:
+            return
+        if event.sender == self.config.user_id:
+            return
+        agent = self._agent_for_room(room.room_id)
+        if agent is None or event.sender not in self.config.allowed_users:
+            return
+        if event.event_id in self.processed_events:
+            return
+        if self.config.max_message_age_minutes >= 0:
+            age_ms = int(time.time() * 1000) - int(event.server_timestamp)
+            if age_ms > self.config.max_message_age_minutes * 60_000:
+                await self._send(
+                    room.room_id,
+                    "Bild ist zu alt und wurde nicht verarbeitet.",
+                    event.event_id,
+                )
+                return
+
+        self.processed_events.add(event.event_id)
+        self.state.data["processed_events"] = list(self.processed_events)[-2000:]
+        self.state.save()
+        await self._send(
+            room.room_id,
+            "Bild empfangen, lade und entschlüssele …",
+            event.event_id,
+        )
+        try:
+            download = await self.client.download(mxc=event.url)
+            body = getattr(download, "body", None)
+            if not isinstance(body, bytes):
+                raise ConnectionError(str(download))
+            if len(body) > self.config.media.max_image_bytes:
+                raise MediaError("encrypted image exceeds the configured size limit")
+            image = body
+            if isinstance(event, RoomEncryptedImage):
+                image = decrypt_attachment(
+                    body,
+                    event.key["k"],
+                    event.hashes["sha256"],
+                    event.iv,
+                )
+            image_type = detect_image_type(image)
+            if image_type is None:
+                raise MediaError("unsupported image type; use PNG, JPEG, GIF, or WebP")
+            if len(image) > self.config.media.max_image_bytes:
+                raise MediaError("image exceeds the configured size limit")
+            agent_inbox = self.config.media.inbox_dir / agent.key
+            agent_inbox.mkdir(parents=True, exist_ok=True, mode=0o700)
+            stored = agent_inbox / f"{uuid.uuid4().hex}{image_type.suffix}"
+
+            def write_image() -> None:
+                with stored.open("xb") as handle:
+                    handle.write(image)
+                stored.chmod(0o600)
+
+            await asyncio.to_thread(write_image)
+        except Exception as exc:
+            LOGGER.exception("image download failed")
+            await self._send(
+                room.room_id,
+                f"Bild konnte nicht übernommen werden: {exc}",
+                event.event_id,
+            )
+            return
+
+        caption = event.body.strip()
+        caption_line = f"\nBildunterschrift: {caption}" if caption else ""
+        await self._send(
+            room.room_id,
+            f"Bild gespeichert als `{stored.name}`.",
+            event.event_id,
+        )
+        await self._enqueue_prompt(
+            agent,
+            room,
+            event.event_id,
+            event.server_timestamp,
+            f"Bild von {event.sender} via Matrix empfangen.{caption_line}\n\n"
+            f"Lokale Datei: {stored}\n"
+            f"Format: {image_type.mime_type}, {len(image)} Bytes",
+            "image",
+        )
+
     async def _start_request(self, agent: AgentConfig, request: dict[str, Any], room_id: str) -> None:
         try:
             ref = self.resolver.resolve(agent.session)
@@ -978,6 +1185,10 @@ class MatrixBridge:
 
     async def _send(self, room_id: str, text: str, reply_to: str | None = None):
         content: dict[str, Any] = {"msgtype": "m.text", "body": text[:60000]}
+        formatted_body = markdown_to_matrix_html(text[:60000])
+        if formatted_body:
+            content["format"] = "org.matrix.custom.html"
+            content["formatted_body"] = formatted_body
         if reply_to:
             content["m.relates_to"] = {
                 "rel_type": "m.thread",

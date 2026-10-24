@@ -33,6 +33,8 @@ def test_loads_minimal_config(tmp_path: Path):
     assert config.homeserver == "https://matrix.example.org"
     assert config.agents["advisor"].session == "advisor-lead@kernel"
     assert config.status_refresh_seconds == 30
+    assert config.media.enabled is True
+    assert config.media.max_image_bytes == 25 * 1024 * 1024
 
 
 def test_rejects_duplicate_sessions(tmp_path: Path):

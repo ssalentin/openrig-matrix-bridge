@@ -33,6 +33,8 @@ represented per room. OpenRig can use one bot for any number of agents.
 - One private Matrix room per configured agent seat.
 - End-to-end encrypted Matrix rooms by default.
 - Local speech-to-text for encrypted Matrix voice messages with NVIDIA Parakeet.
+- Encrypted PNG, JPEG, GIF, and WebP transfer in both directions.
+- Native Matrix rendering for Markdown, including headings, lists, code, and tables.
 - Per-agent room status: `🟢 bereit`, `🟡 arbeitet`, `🟠 Fehler`, `⚫ offline`.
 - A refreshed Matrix typing indicator while the agent is working.
 - Pinned decision briefs and Element-compatible multiple-choice polls.
@@ -105,6 +107,31 @@ the agent as a normal queued prompt. Once all structured questions are
 answered, their pinned events are removed automatically. Queue items without
 structured choices are still pinned as a complete written decision brief.
 
+## Images and formatting
+
+Images sent by the owner are downloaded, decrypted, type-checked, and stored in
+`media.inbox_dir/<agent>/`. The responsible agent receives the local file path
+as a queued prompt. The bridge accepts PNG, JPEG, GIF, and WebP up to
+`media.max_image_bytes`.
+
+An agent can send an image back to its Matrix room through the running bridge:
+
+```bash
+openrig-matrix-bridge send-image \
+  --agent advisor \
+  --path /tmp/screenshot.png \
+  --caption 'Screenshot der aktuellen Ansicht'
+```
+
+The file and its Matrix event are encrypted separately before upload. The
+command reports the Matrix event ID once delivery completes.
+
+Agent answers are converted from Markdown to Matrix's `org.matrix.custom.html`
+format in addition to their plain-text fallback. Tables, headings, lists,
+emphasis, code blocks, and ordinary links therefore render natively in Element.
+Raw HTML is escaped, and remote Markdown images are shown as references rather
+than loaded automatically.
+
 ## Current scope
 
 This first version targets Codex seats because it resolves their session and
@@ -162,6 +189,7 @@ environment file.
 - Keep the configuration file free of tokens.
 - Restrict `allowed_users` to the owner's full MXID.
 - Keep both Matrix and Moshi state directories mode `0700`.
+- Keep the media inbox private and apply a suitable retention policy.
 - Use a dedicated bot account where possible.
 
 ## License

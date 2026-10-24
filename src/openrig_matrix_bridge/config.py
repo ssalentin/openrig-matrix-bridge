@@ -27,6 +27,13 @@ class TranscriptionConfig:
 
 
 @dataclass(frozen=True)
+class MediaConfig:
+    enabled: bool
+    inbox_dir: Path
+    max_image_bytes: int
+
+
+@dataclass(frozen=True)
 class BridgeConfig:
     homeserver: str
     user_id: str
@@ -40,6 +47,7 @@ class BridgeConfig:
     response_timeout_minutes: int
     status_refresh_seconds: float
     transcription: TranscriptionConfig
+    media: MediaConfig
     agents: dict[str, AgentConfig]
 
 
@@ -63,6 +71,7 @@ def load_config(path: str | Path) -> BridgeConfig:
     moshi = _mapping(root.get("moshi", {}), "moshi")
     agents_raw = _mapping(root.get("agents"), "agents")
     transcription = _mapping(root.get("transcription", {}), "transcription")
+    media = _mapping(root.get("media", {}), "media")
 
     homeserver = str(matrix.get("homeserver", "")).rstrip("/")
     user_id = str(matrix.get("user_id", ""))
@@ -118,6 +127,10 @@ def load_config(path: str | Path) -> BridgeConfig:
     max_audio_bytes = int(transcription.get("max_audio_bytes", 25 * 1024 * 1024))
     if max_audio_bytes <= 0:
         raise ConfigError("transcription.max_audio_bytes must be positive")
+    max_image_bytes = int(media.get("max_image_bytes", 25 * 1024 * 1024))
+    if max_image_bytes <= 0:
+        raise ConfigError("media.max_image_bytes must be positive")
+    media_inbox = Path(str(media.get("inbox_dir", state_dir / "media-inbox")))
 
     return BridgeConfig(
         homeserver=homeserver,
@@ -138,6 +151,11 @@ def load_config(path: str | Path) -> BridgeConfig:
             ),
             max_audio_bytes=max_audio_bytes,
             num_threads=max(1, int(transcription.get("num_threads", 4))),
+        ),
+        media=MediaConfig(
+            enabled=bool(media.get("enabled", True)),
+            inbox_dir=media_inbox,
+            max_image_bytes=max_image_bytes,
         ),
         agents=agents,
     )

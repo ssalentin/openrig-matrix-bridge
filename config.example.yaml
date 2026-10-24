@@ -20,6 +20,11 @@ transcription:
   max_audio_bytes: 26214400
   num_threads: 4
 
+media:
+  enabled: true
+  inbox_dir: /var/lib/openrig-matrix-bridge/media-inbox
+  max_image_bytes: 26214400
+
 agents:
   advisor:
     display_name: Advisor

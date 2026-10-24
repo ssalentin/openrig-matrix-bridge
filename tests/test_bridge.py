@@ -2,7 +2,8 @@ import asyncio
 from types import SimpleNamespace
 
 import pytest
-from nio import RoomSendResponse
+from nio import RoomEncryptedImage, RoomSendResponse
+from nio.crypto import encrypt_attachment
 
 from openrig_matrix_bridge.bridge import MatrixBridge, verification_decision
 from openrig_matrix_bridge.config import AgentConfig
@@ -219,6 +220,100 @@ def test_poll_answer_delivery_uses_decision_brief_as_thread_root():
         )
     ]
     assert bridge.state.data["pending"]["advisor"] == []
+
+
+def test_send_adds_matrix_formatted_body_for_markdown_table():
+    class RichTextClient:
+        async def room_send(self, room_id, message_type, content, **kwargs):
+            self.call = (room_id, message_type, content, kwargs)
+            return RoomSendResponse("$message", room_id)
+
+    bridge = object.__new__(MatrixBridge)
+    bridge.client = RichTextClient()
+
+    response = asyncio.run(
+        bridge._send(
+            "!advisor:matrix.example.org",
+            "| Agent | Status |\n|---|---|\n| Advisor | bereit |",
+            "$prompt",
+        )
+    )
+
+    assert isinstance(response, RoomSendResponse)
+    content = bridge.client.call[2]
+    assert content["format"] == "org.matrix.custom.html"
+    assert "<table>" in content["formatted_body"]
+    assert content["m.relates_to"]["event_id"] == "$prompt"
+
+
+def test_encrypted_image_is_saved_and_forwarded_to_agent(tmp_path):
+    png = b"\x89PNG\r\n\x1a\n" + b"test image payload"
+    encrypted, keys = encrypt_attachment(png)
+
+    class ImageClient:
+        async def download(self, mxc):
+            assert mxc == "mxc://matrix.example.org/image"
+            return SimpleNamespace(body=encrypted)
+
+    bridge = object.__new__(MatrixBridge)
+    agent = AgentConfig(
+        key="advisor",
+        display_name="Advisor",
+        session="advisor-lead@kernel",
+    )
+    bridge.config = SimpleNamespace(
+        user_id="@openrig:matrix.example.org",
+        allowed_users=("@owner:matrix.example.org",),
+        max_message_age_minutes=-1,
+        agents={"advisor": agent},
+        media=SimpleNamespace(
+            enabled=True,
+            inbox_dir=tmp_path,
+            max_image_bytes=1024 * 1024,
+        ),
+    )
+    bridge.room_agents = {"!advisor:matrix.example.org": "advisor"}
+    bridge.processed_events = set()
+    bridge.state = SimpleNamespace(
+        save=lambda: None,
+        data={"processed_events": []},
+    )
+    bridge.client = ImageClient()
+    bridge._send = lambda *args: _completed(None)
+    forwarded = []
+
+    async def enqueue_prompt(*args):
+        forwarded.append(args)
+
+    bridge._enqueue_prompt = enqueue_prompt
+    room = SimpleNamespace(room_id="!advisor:matrix.example.org")
+    event = RoomEncryptedImage(
+        {
+            "event_id": "$image",
+            "sender": "@owner:matrix.example.org",
+            "origin_server_ts": 1_700_000_000_000,
+            "type": "m.room.encrypted",
+            "content": {},
+        },
+        "mxc://matrix.example.org/image",
+        "Screenshot",
+        keys["key"],
+        keys["hashes"],
+        keys["iv"],
+        "image/png",
+    )
+
+    asyncio.run(bridge._handle_image(room, event))
+
+    stored = list((tmp_path / "advisor").glob("*.png"))
+    assert len(stored) == 1
+    assert stored[0].read_bytes() == png
+    assert forwarded[0][5] == "image"
+    assert str(stored[0]) in forwarded[0][4]
+
+
+async def _completed(value):
+    return value
 
 
 @pytest.mark.parametrize("text", ["ja", "Ja", "JA!", "bestätigen", "stimmt"])

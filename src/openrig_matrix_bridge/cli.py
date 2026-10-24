@@ -21,6 +21,7 @@ from .bridge import MatrixBridge
 from .config import load_config
 from .decisions import normalize_questions
 from .gateway import AgentSessionNotFound, AgentSessionResolver
+from .media import detect_image_type
 from .transcription import MODEL_NAME, ensure_model, model_ready
 
 
@@ -160,6 +161,11 @@ def run_setup(args: argparse.Namespace) -> None:
             "max_audio_bytes": 25 * 1024 * 1024,
             "num_threads": args.parakeet_threads,
         },
+        "media": {
+            "enabled": True,
+            "inbox_dir": str(state_dir / "media-inbox"),
+            "max_image_bytes": 25 * 1024 * 1024,
+        },
         "agents": agents,
     }
     _write_private_yaml(args.config, config)
@@ -248,6 +254,57 @@ def run_decision(args: argparse.Namespace, config) -> int:
     return 1
 
 
+def run_send_image(args: argparse.Namespace, config) -> int:
+    if not args.agent:
+        raise SystemExit("send-image requires --agent")
+    if args.agent not in config.agents:
+        raise SystemExit(f"unknown agent: {args.agent}")
+    if not args.path:
+        raise SystemExit("send-image requires --path")
+    image_path = args.path.expanduser().resolve()
+    if not image_path.is_file():
+        raise SystemExit(f"image not found: {image_path}")
+    size = image_path.stat().st_size
+    if size <= 0 or size > config.media.max_image_bytes:
+        raise SystemExit(
+            f"image size must be between 1 and {config.media.max_image_bytes} bytes"
+        )
+    with image_path.open("rb") as handle:
+        image_type = detect_image_type(handle.read(16))
+    if image_type is None:
+        raise SystemExit("unsupported image type; use PNG, JPEG, GIF, or WebP")
+
+    request_id = f"image-{uuid.uuid4().hex}"
+    request = {
+        "id": request_id,
+        "agent": args.agent,
+        "path": str(image_path),
+        "caption": (args.caption or "").strip(),
+    }
+    outbox = config.state_dir / "media-outbox"
+    _write_private_json(outbox / f"{request_id}.json", request)
+
+    deadline = time.monotonic() + max(0, args.wait_seconds)
+    state_path = config.state_dir / "state.json"
+    while time.monotonic() < deadline:
+        try:
+            state = json.loads(state_path.read_text(encoding="utf-8"))
+        except (FileNotFoundError, json.JSONDecodeError):
+            time.sleep(0.2)
+            continue
+        media = state.get("media", {}).get(request_id)
+        if media:
+            print(f"{request_id} sent as {media['event_id']}")
+            return 0
+        time.sleep(0.2)
+
+    print(
+        f"queued {request_id}; the bridge did not confirm delivery within "
+        f"{args.wait_seconds}s"
+    )
+    return 1
+
+
 async def _doctor(config_path: Path) -> int:
     config = load_config(config_path)
     token = os.environ.get("MATRIX_ACCESS_TOKEN", "")
@@ -274,6 +331,14 @@ async def _doctor(config_path: Path) -> int:
         probe.unlink()
     except OSError as exc:
         errors.append(f"state directory is not writable: {exc}")
+    if config.media.enabled:
+        try:
+            config.media.inbox_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+            media_probe = config.media.inbox_dir / ".write-test"
+            media_probe.write_text("ok", encoding="utf-8")
+            media_probe.unlink()
+        except OSError as exc:
+            errors.append(f"media inbox is not writable: {exc}")
     resolver = AgentSessionResolver(config.codex_sessions_dir)
     for agent in config.agents.values():
         try:
@@ -302,7 +367,7 @@ def build_parser() -> argparse.ArgumentParser:
         "command",
         nargs="?",
         default="run",
-        choices=("run", "setup", "doctor", "download-model", "decision"),
+        choices=("run", "setup", "doctor", "download-model", "decision", "send-image"),
     )
     parser.add_argument("--config", type=Path, default=_default_config())
     parser.add_argument("--verbose", action="store_true")
@@ -322,6 +387,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--body")
     parser.add_argument("--body-file", type=Path)
     parser.add_argument("--option", action="append")
+    parser.add_argument("--path", type=Path)
+    parser.add_argument("--caption")
     parser.add_argument("--wait-seconds", type=int, default=10)
     return parser
 
@@ -339,6 +406,8 @@ def main() -> None:
     config = load_config(args.config)
     if args.command == "decision":
         raise SystemExit(run_decision(args, config))
+    if args.command == "send-image":
+        raise SystemExit(run_send_image(args, config))
     if args.command == "doctor":
         raise SystemExit(asyncio.run(_doctor(args.config)))
     if args.command == "download-model":
