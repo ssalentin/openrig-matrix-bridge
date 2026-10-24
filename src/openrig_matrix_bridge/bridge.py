@@ -136,6 +136,7 @@ class MatrixBridge:
         self._load_room_index()
         if any(key not in self.state.data["rooms"] for key in self.config.agents):
             await self._create_rooms()
+        await self._restore_room_names()
         self._initialize_transcript_offsets()
         await self._refresh_agent_statuses(force=True)
         poller = asyncio.create_task(self._poll_answers(), name="openrig-matrix-poller")
@@ -170,6 +171,21 @@ class MatrixBridge:
             room_id = value.get("room_id")
             if key in agents and room_id:
                 self.room_agents[room_id] = key
+
+    async def _restore_room_names(self) -> None:
+        for agent in self.config.agents.values():
+            room = self.state.data["rooms"].get(agent.key)
+            if not room:
+                continue
+            base_name = str(room.get("name") or f"OpenRig · {agent.display_name}")
+            try:
+                await self.client.room_put_state(
+                    str(room["room_id"]),
+                    "m.room.name",
+                    {"name": base_name},
+                )
+            except Exception:
+                LOGGER.warning("failed to restore room name for %s", agent.session, exc_info=True)
 
     async def _create_rooms(self) -> None:
         owner = self.config.allowed_users[0]
@@ -622,13 +638,12 @@ class MatrixBridge:
         if not room:
             return
         room_id = str(room["room_id"])
-        base_name = str(room.get("name") or f"OpenRig · {agent.display_name}")
-        status_name = f"{STATUS_LABELS[status]} {base_name} · {detail}"
+        status_topic = f"{STATUS_LABELS[status]} {detail} · {agent.session}"
         try:
             await self.client.room_put_state(
                 room_id,
-                "m.room.name",
-                {"name": status_name},
+                "m.room.topic",
+                {"topic": status_topic},
             )
             await self.client.room_put_state(
                 room_id,

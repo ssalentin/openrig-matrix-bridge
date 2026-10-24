@@ -8,16 +8,18 @@ to inject prompts into the live Codex terminal and watches the same agent
 transcript for the final answer. It does not start duplicate agents and does
 not require an OpenRig-native Matrix connector.
 
-## Live status in the room list
+## Live status in Matrix rooms
 
-The bridge keeps each room name synchronized with the agent's actual state:
+The bridge keeps each room topic synchronized with the agent's actual state.
+Room names stay stable, so Matrix clients do not turn the status symbol into
+the generated room logo:
 
-| Room name | Meaning |
+| Room topic | Meaning |
 |---|---|
-| `🟢 OpenRig · Advisor · bereit` | Online and idle |
-| `🟡 OpenRig · Advisor · arbeitet` | Working on a request |
-| `🟠 OpenRig · Advisor · Prompt fehlgeschlagen` | Actionable bridge/gateway error |
-| `⚫ OpenRig · Advisor · offline` | No live agent process |
+| `🟢 bereit · advisor-lead@kernel` | Online and idle |
+| `🟡 arbeitet · advisor-lead@kernel` | Working on a request |
+| `🟠 Prompt fehlgeschlagen · advisor-lead@kernel` | Actionable bridge/gateway error |
+| `⚫ offline · advisor-lead@kernel` | No live agent process |
 
 While an answer is being generated, Matrix also shows the bot typing. The same
 state is published as the `dev.openrig.agent_status` room event for clients and
