@@ -41,8 +41,11 @@ def test_ships_matrix_avatar_and_small_size_exports():
         "relay-secondary-light-256.png": (256, 256),
         "thread-tertiary-dark-256.png": (256, 256),
         "thread-tertiary-light-256.png": (256, 256),
+        "gateway-primary-light-32.png": (32, 32),
         "gateway-primary-dark-32.png": (32, 32),
+        "relay-secondary-light-32.png": (32, 32),
         "relay-secondary-dark-32.png": (32, 32),
+        "thread-tertiary-light-32.png": (32, 32),
         "thread-tertiary-dark-32.png": (32, 32),
     }
     actual = {

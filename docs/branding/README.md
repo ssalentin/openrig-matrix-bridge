@@ -60,8 +60,8 @@ Source: [`thread-tertiary-light.svg`](../../src/openrig_matrix_bridge/assets/bra
 The 256px PNG exports are the intended upload size. The 32px files make the
 small-size behavior explicit rather than relying on a browser's downscaling.
 
-| Concept | Light 256 | Dark 256 | Dark 32 |
-|---|---|---|---|
-| Gateway | [PNG](../../src/openrig_matrix_bridge/assets/branding/export/gateway-primary-light-256.png) | [PNG](../../src/openrig_matrix_bridge/assets/branding/export/gateway-primary-dark-256.png) | [PNG](../../src/openrig_matrix_bridge/assets/branding/export/gateway-primary-dark-32.png) |
-| Relay | [PNG](../../src/openrig_matrix_bridge/assets/branding/export/relay-secondary-light-256.png) | [PNG](../../src/openrig_matrix_bridge/assets/branding/export/relay-secondary-dark-256.png) | [PNG](../../src/openrig_matrix_bridge/assets/branding/export/relay-secondary-dark-32.png) |
-| Thread | [PNG](../../src/openrig_matrix_bridge/assets/branding/export/thread-tertiary-light-256.png) | [PNG](../../src/openrig_matrix_bridge/assets/branding/export/thread-tertiary-dark-256.png) | [PNG](../../src/openrig_matrix_bridge/assets/branding/export/thread-tertiary-dark-32.png) |
+| Concept | Light 256 | Dark 256 | Light 32 | Dark 32 |
+|---|---|---|---|---|
+| Gateway | [PNG](../../src/openrig_matrix_bridge/assets/branding/export/gateway-primary-light-256.png) | [PNG](../../src/openrig_matrix_bridge/assets/branding/export/gateway-primary-dark-256.png) | [PNG](../../src/openrig_matrix_bridge/assets/branding/export/gateway-primary-light-32.png) | [PNG](../../src/openrig_matrix_bridge/assets/branding/export/gateway-primary-dark-32.png) |
+| Relay | [PNG](../../src/openrig_matrix_bridge/assets/branding/export/relay-secondary-light-256.png) | [PNG](../../src/openrig_matrix_bridge/assets/branding/export/relay-secondary-dark-256.png) | [PNG](../../src/openrig_matrix_bridge/assets/branding/export/relay-secondary-light-32.png) | [PNG](../../src/openrig_matrix_bridge/assets/branding/export/relay-secondary-dark-32.png) |
+| Thread | [PNG](../../src/openrig_matrix_bridge/assets/branding/export/thread-tertiary-light-256.png) | [PNG](../../src/openrig_matrix_bridge/assets/branding/export/thread-tertiary-dark-256.png) | [PNG](../../src/openrig_matrix_bridge/assets/branding/export/thread-tertiary-light-32.png) | [PNG](../../src/openrig_matrix_bridge/assets/branding/export/thread-tertiary-dark-32.png) |
