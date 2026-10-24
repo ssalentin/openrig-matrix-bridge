@@ -78,6 +78,15 @@ def room_name(agent: AgentConfig) -> str:
     return agent.display_name
 
 
+def formatted_message_content(text: str) -> dict[str, Any]:
+    content: dict[str, Any] = {"msgtype": "m.text", "body": text[:60000]}
+    formatted_body = markdown_to_matrix_html(text[:60000])
+    if formatted_body:
+        content["format"] = "org.matrix.custom.html"
+        content["formatted_body"] = formatted_body
+    return content
+
+
 def verification_decision(text: str) -> bool | None:
     normalized = text.strip().lower().rstrip(".!")
     if normalized in {"ja", "ja bitte", "bestätigen", "bestaetigen", "stimmt"}:
@@ -1249,15 +1258,26 @@ class MatrixBridge:
                 sent_commentary = request.setdefault("sent_commentary", [])
                 sent_ids = set(sent_commentary)
                 if self.config.mirror_commentary:
-                    for message_id, text in commentary_messages(records):
-                        if message_id in sent_ids:
-                            continue
+                    pending_commentary = [
+                        message
+                        for message in commentary_messages(records)
+                        if message[0] not in sent_ids
+                    ]
+                    if pending_commentary:
                         room_id = self._room_for_agent(agent.key)
-                        response = await self._send(
-                            room_id,
-                            text,
-                            self._reply_target(request),
-                        )
+                        commentary_event_id = request.get("commentary_event_id")
+                        if commentary_event_id:
+                            response = await self._edit_message(
+                                room_id,
+                                str(commentary_event_id),
+                                pending_commentary[-1][1],
+                            )
+                        else:
+                            response = await self._send(
+                                room_id,
+                                pending_commentary[-1][1],
+                                self._reply_target(request),
+                            )
                         if not isinstance(response, RoomSendResponse):
                             LOGGER.error(
                                 "commentary delivery failed for %s: %s",
@@ -1265,8 +1285,11 @@ class MatrixBridge:
                                 response,
                             )
                             return
-                        sent_commentary.append(message_id)
-                        sent_ids.add(message_id)
+                        if not commentary_event_id:
+                            request["commentary_event_id"] = response.event_id
+                        sent_commentary.extend(
+                            message_id for message_id, _text in pending_commentary
+                        )
                         self.state.save()
                 request["offset"] = offset
                 answers = [text for record in records if (text := final_answer(record))]
@@ -1393,12 +1416,28 @@ class MatrixBridge:
                 LOGGER.debug("Matrix typing update failed", exc_info=True)
             await asyncio.sleep(20)
 
+    async def _edit_message(self, room_id: str, event_id: str, text: str):
+        new_content = formatted_message_content(text)
+        content = {
+            **new_content,
+            "body": f"* {new_content['body']}",
+            "m.new_content": new_content,
+            "m.relates_to": {
+                "rel_type": "m.replace",
+                "event_id": event_id,
+            },
+        }
+        if "formatted_body" in new_content:
+            content["formatted_body"] = f"* {new_content['formatted_body']}"
+        return await self.client.room_send(
+            room_id,
+            "m.room.message",
+            content,
+            ignore_unverified_devices=True,
+        )
+
     async def _send(self, room_id: str, text: str, reply_to: str | None = None):
-        content: dict[str, Any] = {"msgtype": "m.text", "body": text[:60000]}
-        formatted_body = markdown_to_matrix_html(text[:60000])
-        if formatted_body:
-            content["format"] = "org.matrix.custom.html"
-            content["formatted_body"] = formatted_body
+        content = formatted_message_content(text)
         if reply_to:
             content["m.relates_to"] = {
                 "rel_type": "m.thread",

@@ -375,6 +375,86 @@ def test_failed_commentary_delivery_does_not_skip_transcript(tmp_path):
     assert request.get("sent_commentary") == []
 
 
+def test_commentary_updates_one_status_message_instead_of_reply_spam(tmp_path):
+    transcript = tmp_path / "rollout.jsonl"
+    bridge = object.__new__(MatrixBridge)
+    agent = AgentConfig(
+        key="advisor",
+        display_name="Advisor",
+        session="advisor-lead@kernel",
+    )
+    request = {
+        "event_id": "$prompt",
+        "reply_to_event_id": "$prompt",
+        "answer_text": None,
+        "started_at": time.time(),
+        "session_id": "session",
+        "transcript_path": str(transcript),
+        "offset": 0,
+    }
+    bridge.config = SimpleNamespace(
+        mirror_commentary=True,
+        response_timeout_minutes=30,
+    )
+    bridge.locks = {"advisor": asyncio.Lock()}
+    bridge.state = SimpleNamespace(
+        save=lambda: None,
+        data={
+            "pending": {"advisor": [request]},
+            "rooms": {"advisor": {"room_id": "!advisor:matrix.example.org"}},
+        },
+    )
+    sent = []
+    edited = []
+
+    def message_record(item_id, phase, text):
+        return {
+            "type": "event_msg",
+            "payload": {
+                "type": "item_completed",
+                "item": {
+                    "type": "AgentMessage",
+                    "id": item_id,
+                    "phase": phase,
+                    "content": [{"type": "Text", "text": text}],
+                },
+            },
+        }
+
+    async def send(room_id, text, reply_to=None):
+        sent.append((text, reply_to))
+        return RoomSendResponse("$status", room_id)
+
+    async def edit(room_id, event_id, text):
+        edited.append((event_id, text))
+        return RoomSendResponse("$edit", room_id)
+
+    async def noop(*args, **kwargs):
+        return None
+
+    bridge._send = send
+    bridge._edit_message = edit
+    bridge._set_typing = noop
+    bridge._update_agent_status = noop
+
+    transcript.write_text(
+        json.dumps(message_record("comment-1", "commentary", "Schritt eins")) + "\n",
+        encoding="utf-8",
+    )
+    asyncio.run(bridge._poll_agent(agent))
+
+    with transcript.open("a", encoding="utf-8") as handle:
+        handle.write(
+            json.dumps(message_record("comment-2", "commentary", "Schritt zwei"))
+            + "\n"
+        )
+    asyncio.run(bridge._poll_agent(agent))
+
+    assert sent == [("Schritt eins", "$prompt")]
+    assert edited == [("$status", "Schritt zwei")]
+    assert request["sent_commentary"] == ["comment-1", "comment-2"]
+
+
 def test_send_adds_matrix_formatted_body_for_markdown_table():
     class RichTextClient:
         async def room_send(self, room_id, message_type, content, **kwargs):
@@ -397,6 +477,35 @@ def test_send_adds_matrix_formatted_body_for_markdown_table():
     assert content["format"] == "org.matrix.custom.html"
     assert "<table>" in content["formatted_body"]
     assert content["m.relates_to"]["event_id"] == "$prompt"
+
+
+def test_message_edit_uses_matrix_replace_relation():
+    class ReplaceClient:
+        async def room_send(self, room_id, message_type, content, **kwargs):
+            self.call = (room_id, message_type, content, kwargs)
+            return RoomSendResponse("$edit", room_id)
+
+    bridge = object.__new__(MatrixBridge)
+    bridge.client = ReplaceClient()
+
+    response = asyncio.run(
+        bridge._edit_message(
+            "!advisor:matrix.example.org",
+            "$status",
+            "**Schritt zwei**",
+        )
+    )
+
+    assert isinstance(response, RoomSendResponse)
+    content = bridge.client.call[2]
+    assert content["m.relates_to"] == {
+        "rel_type": "m.replace",
+        "event_id": "$status",
+    }
+    assert content["m.new_content"]["formatted_body"] == (
+        "<p><strong>Schritt zwei</strong></p>"
+    )
+    assert content["body"].startswith("* ")
 
 
 def test_explicit_message_is_published_and_recorded():

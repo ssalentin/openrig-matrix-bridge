@@ -7,7 +7,7 @@
 - Deliver Matrix prompts with `rig send --raw` and no separate chat gateway.
 - Mirror new OpenRig human updates and decisions into the source agent's room.
 - Register the Matrix owner as an OpenRig human recipient during `setup`.
-- Mirror visible Codex commentary messages into the active Matrix thread.
+- Mirror visible Codex commentary into one editable Matrix status message per request.
 - Reduce active transcript and outbox polling latency to 200 ms.
 - Poll OpenRig human-queue handoffs every two seconds by default.
 
