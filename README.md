@@ -31,6 +31,13 @@ Additional Matrix requests waiting behind the active one are shown in one
 pinned queue-status message. The bridge edits that message as the count changes
 and unpins it when the queue drains, avoiding a queue reply for every prompt.
 
+Each accepted owner message also creates a real OpenRig queue item for the
+target seat with the configurable inbound priority (`urgent` by default) and
+the `matrix,inbound` tags. The item is created without an additional nudge,
+because the bridge already delivers the prompt directly. The bridge claims the
+row when work starts and closes it after the Matrix answer is delivered, so
+Matrix requests are visible and prioritized without duplicate turns.
+
 Visible Codex progress is mirrored into one Matrix status message per request.
 As new `commentary` messages arrive, the bridge edits that message in place
 instead of creating another thread reply. Hidden reasoning and raw tool output
@@ -64,6 +71,7 @@ represented per room. OpenRig can use one bot for any number of agents.
 - One allow-listed Matrix user; messages from everybody else are ignored.
 - Replies are posted in a Matrix thread under the original prompt.
 - Per-agent FIFO: a second prompt waits until the current answer is complete.
+- Priority-aware durable qitems for incoming Matrix requests.
 - No secrets in the repository or configuration file.
 - Systemd-ready, with persisted Matrix sync and E2EE state.
 

@@ -42,6 +42,9 @@ def test_loads_minimal_config(tmp_path: Path):
     assert config.codex_home == Path("/tmp/codex")
     assert config.sender_session == "matrix-bridge@kernel"
     assert config.human_destinations == ("owner@external",)
+    assert config.queue_inbound_messages is True
+    assert config.inbound_message_priority == "urgent"
+    assert config.inbound_queue_source == "owner@external"
     assert config.mirror_commentary is True
     assert config.avatars.enabled is True
     assert config.avatars.replace_existing is False
@@ -57,4 +60,19 @@ def test_rejects_duplicate_sessions(tmp_path: Path):
 """
     with pytest.raises(ConfigError, match="duplicate agent session"):
         load_config(write_config(tmp_path / "config.yaml", extra))
+
+
+def test_rejects_invalid_inbound_message_priority(tmp_path: Path):
+    path = write_config(tmp_path / "config.yaml")
+    path.write_text(
+        path.read_text(encoding="utf-8").replace(
+            "  human_destinations: [\"owner@external\"]",
+            "  human_destinations: [\"owner@external\"]\n"
+            "  inbound_message_priority: immediate",
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ConfigError, match="inbound_message_priority"):
+        load_config(path)
 

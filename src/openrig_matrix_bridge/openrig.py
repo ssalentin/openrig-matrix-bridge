@@ -171,6 +171,106 @@ class OpenRigGateway:
             raise GatewayError("OpenRig queue show returned an invalid shape")
         return payload
 
+    async def queue_create(
+        self,
+        *,
+        source_session: str,
+        destination_session: str,
+        summary: str,
+        body: str,
+        priority: str,
+    ) -> str:
+        environment = os.environ.copy()
+        environment.pop("OPENRIG_SESSION_NAME", None)
+        payload = await self._run_json(
+            "queue",
+            "create",
+            "--source",
+            source_session,
+            "--destination",
+            destination_session,
+            "--summary",
+            summary,
+            "--body",
+            body,
+            "--priority",
+            priority,
+            "--tags",
+            "matrix,inbound",
+            "--no-nudge",
+            "--json",
+            environment=environment,
+        )
+        if not isinstance(payload, dict):
+            raise GatewayError("OpenRig queue create returned an invalid shape")
+        qitem_id = payload.get("qitemId")
+        if not isinstance(qitem_id, str) or not qitem_id:
+            raise GatewayError("OpenRig queue create did not return a qitem id")
+        return qitem_id
+
+    async def queue_claim(self, qitem_id: str, destination_session: str) -> None:
+        environment = os.environ.copy()
+        environment["OPENRIG_SESSION_NAME"] = destination_session
+        payload = await self._run_json(
+            "queue",
+            "claim",
+            qitem_id,
+            "--json",
+            environment=environment,
+        )
+        if not isinstance(payload, dict):
+            raise GatewayError("OpenRig queue claim returned an invalid shape")
+
+    async def queue_finish(
+        self,
+        qitem_id: str,
+        destination_session: str,
+        resolution: str,
+    ) -> None:
+        environment = os.environ.copy()
+        environment["OPENRIG_SESSION_NAME"] = destination_session
+        payload = await self._run_json(
+            "queue",
+            "update",
+            qitem_id,
+            "--state",
+            "done",
+            "--closure-reason",
+            "no-follow-on",
+            "--resolution",
+            resolution,
+            "--note",
+            "Matrix answer delivered by openrig-matrix-bridge",
+            "--json",
+            environment=environment,
+        )
+        if not isinstance(payload, dict):
+            raise GatewayError("OpenRig queue update returned an invalid shape")
+
+    async def queue_fail(
+        self,
+        qitem_id: str,
+        destination_session: str,
+        resolution: str,
+    ) -> None:
+        environment = os.environ.copy()
+        environment["OPENRIG_SESSION_NAME"] = destination_session
+        payload = await self._run_json(
+            "queue",
+            "update",
+            qitem_id,
+            "--state",
+            "failed",
+            "--resolution",
+            resolution,
+            "--note",
+            "Matrix request failed in openrig-matrix-bridge",
+            "--json",
+            environment=environment,
+        )
+        if not isinstance(payload, dict):
+            raise GatewayError("OpenRig queue update returned an invalid shape")
+
     async def send_prompt(self, ref: AgentSessionRef, text: str) -> None:
         environment = os.environ.copy()
         environment["OPENRIG_SESSION_NAME"] = self.sender_session

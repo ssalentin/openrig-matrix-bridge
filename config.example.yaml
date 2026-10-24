@@ -12,6 +12,9 @@ openrig:
   sender_session: matrix-bridge@kernel
   human_destinations:
     - owner@external
+  queue_inbound_messages: true
+  inbound_message_priority: urgent
+  inbound_queue_source: owner@external
   mirror_commentary: true
   poll_interval_seconds: 0.2
   human_queue_poll_seconds: 2.0

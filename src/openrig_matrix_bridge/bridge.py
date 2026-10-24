@@ -640,8 +640,17 @@ class MatrixBridge:
             return
 
         noun = "Nachricht wartet" if waiting == 1 else "Nachrichten warten"
+        priority = str(
+            getattr(self.config, "inbound_message_priority", "urgent")
+        )
+        priority_label = {
+            "routine": "normal",
+            "urgent": "hoch",
+            "critical": "kritisch",
+        }.get(priority, priority)
         text = (
-            f"⏳ **Warteschlange:** {waiting} {noun}.\n\n"
+            f"⏳ **Warteschlange:** {waiting} {noun} · "
+            f"Priorität {priority_label}.\n\n"
             "Diese Hinweiskarte wird aktualisiert und nach dem Abarbeiten entpinnt."
         )
         target_event_id = str(event_id) if event_id else None
@@ -1127,11 +1136,25 @@ class MatrixBridge:
     ) -> None:
         async with self.locks[agent.key]:
             pending = self.state.data["pending"].setdefault(agent.key, [])
+            self.processed_events.add(event_id)
+            self.state.data["processed_events"] = list(self.processed_events)[-2000:]
+            qitem_id = await self._create_inbound_qitem(
+                agent,
+                event_id=event_id,
+                text=text,
+                source_label=source_label or "message",
+            )
             request = {
                 "id": uuid.uuid4().hex,
                 "event_id": event_id,
                 "reply_to_event_id": reply_to_event_id or event_id,
                 "source_label": source_label or "message",
+                "qitem_id": qitem_id,
+                "priority": getattr(
+                    self.config,
+                    "inbound_message_priority",
+                    "urgent",
+                ),
                 "text": text,
                 "enqueued_at": time.time(),
                 "started_at": None,
@@ -1141,8 +1164,6 @@ class MatrixBridge:
                 "answer_text": None,
             }
             pending.append(request)
-            self.processed_events.add(event_id)
-            self.state.data["processed_events"] = list(self.processed_events)[-2000:]
             self.state.save()
             if len(pending) == 1:
                 await self._start_request(agent, pending[0], room.room_id)
@@ -1152,6 +1173,117 @@ class MatrixBridge:
                     room.room_id,
                     len(pending) - 1,
                 )
+
+    async def _create_inbound_qitem(
+        self,
+        agent: AgentConfig,
+        *,
+        event_id: str,
+        text: str,
+        source_label: str,
+    ) -> str | None:
+        if not getattr(self.config, "queue_inbound_messages", False):
+            return None
+        source_session = str(
+            getattr(self.config, "inbound_queue_source", "")
+        ).strip()
+        if not source_session:
+            LOGGER.warning("inbound queue source is not configured")
+            return None
+        first_line = next(
+            (line.strip() for line in text.splitlines() if line.strip()),
+            f"Matrix {source_label}",
+        )
+        priority = str(
+            getattr(self.config, "inbound_message_priority", "urgent")
+        )
+        try:
+            qitem_id = await self.gateway.queue_create(
+                source_session=source_session,
+                destination_session=agent.session,
+                summary=f"Matrix ({source_label}): {first_line[:180]}",
+                body=(
+                    f"Matrix message for {agent.session}\n"
+                    f"Event: {event_id}\n"
+                    f"Priority: {priority}\n\n"
+                    f"{text}"
+                ),
+                priority=priority,
+            )
+        except (GatewayError, OSError):
+            LOGGER.warning(
+                "could not create priority qitem for Matrix event %s",
+                event_id,
+                exc_info=True,
+            )
+            return None
+        LOGGER.info(
+            "created %s qitem %s for Matrix event %s",
+            priority,
+            qitem_id,
+            event_id,
+        )
+        return qitem_id
+
+    async def _claim_inbound_qitem(
+        self,
+        agent: AgentConfig,
+        request: dict[str, Any],
+    ) -> None:
+        qitem_id = str(request.get("qitem_id") or "").strip()
+        if not qitem_id:
+            return
+        try:
+            await self.gateway.queue_claim(qitem_id, agent.session)
+        except (GatewayError, OSError):
+            LOGGER.warning(
+                "could not claim Matrix qitem %s",
+                qitem_id,
+                exc_info=True,
+            )
+
+    async def _finish_inbound_qitem(
+        self,
+        agent: AgentConfig,
+        request: dict[str, Any],
+    ) -> None:
+        qitem_id = str(request.get("qitem_id") or "").strip()
+        if not qitem_id:
+            return
+        try:
+            await self.gateway.queue_finish(
+                qitem_id,
+                agent.session,
+                "Matrix answer delivered",
+            )
+        except (GatewayError, OSError):
+            LOGGER.warning(
+                "could not finish Matrix qitem %s",
+                qitem_id,
+                exc_info=True,
+            )
+
+    async def _fail_inbound_qitem(
+        self,
+        agent: AgentConfig,
+        request: dict[str, Any],
+        resolution: str,
+    ) -> None:
+        qitem_id = str(request.get("qitem_id") or "").strip()
+        if not qitem_id:
+            return
+        try:
+            await self.gateway.queue_fail(
+                qitem_id,
+                agent.session,
+                resolution[:1000],
+            )
+        except (GatewayError, OSError):
+            LOGGER.warning(
+                "could not fail Matrix qitem %s",
+                qitem_id,
+                exc_info=True,
+            )
 
     async def _handle_audio(
         self,
@@ -1337,11 +1469,17 @@ class MatrixBridge:
             request["transcript_path"] = str(ref.transcript_path)
             request["offset"] = ref.transcript_path.stat().st_size
             request["started_at"] = time.time()
+            await self._claim_inbound_qitem(agent, request)
             await self.gateway.send_prompt(ref, request["text"])
             await self._set_typing(room_id, True)
             await self._update_agent_status(agent, "busy", "arbeitet")
         except (AgentSessionNotFound, GatewayError, OSError) as exc:
             LOGGER.exception("prompt failed for %s", agent.session)
+            await self._fail_inbound_qitem(
+                agent,
+                request,
+                f"Prompt failed: {exc}",
+            )
             await self._set_typing(room_id, False)
             await self._update_agent_status(agent, "error", "Prompt fehlgeschlagen")
             await self._send(
@@ -1414,6 +1552,11 @@ class MatrixBridge:
                 return
             if request.get("answer_text") is None:
                 if request.get("started_at") and time.time() - request["started_at"] > self.config.response_timeout_minutes * 60:
+                    await self._fail_inbound_qitem(
+                        agent,
+                        request,
+                        "Timed out waiting for a Matrix answer",
+                    )
                     await self._send(
                         self._room_for_agent(agent.key),
                         "Der Agent hat für diese Anfrage nicht rechtzeitig geantwortet.",
@@ -1488,6 +1631,7 @@ class MatrixBridge:
             if not isinstance(response, RoomSendResponse):
                 LOGGER.error("answer delivery failed for %s: %s", agent.key, response)
                 return
+            await self._finish_inbound_qitem(agent, request)
             await self._set_typing(room_id, False)
             await self._update_agent_status(agent, "ready", "bereit")
             pending.pop(0)

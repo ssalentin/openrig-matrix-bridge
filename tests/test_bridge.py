@@ -629,6 +629,7 @@ def test_explicit_message_is_published_and_recorded():
 
 def test_queue_notice_is_one_updated_and_pinned_message():
     bridge = object.__new__(MatrixBridge)
+    bridge.config = SimpleNamespace(inbound_message_priority="urgent")
     agent = AgentConfig(
         key="advisor",
         display_name="Advisor",
@@ -673,6 +674,56 @@ def test_queue_notice_is_one_updated_and_pinned_message():
     assert pinned == [["$queue"], ["$queue"]]
     assert unpinned == [["$queue"]]
     assert bridge.state.data["queue_notices"]["advisor"]["pinned"] is False
+
+
+def test_matrix_message_creates_priority_qitem():
+    bridge = object.__new__(MatrixBridge)
+    agent = AgentConfig(
+        key="advisor",
+        display_name="Advisor",
+        session="advisor-lead@kernel",
+    )
+    created = []
+    started = []
+
+    class Gateway:
+        async def queue_create(self, **kwargs):
+            created.append(kwargs)
+            return "qitem-matrix"
+
+    async def start_request(agent_arg, request, room_id):
+        started.append((agent_arg.key, request, room_id))
+
+    bridge.config = SimpleNamespace(
+        queue_inbound_messages=True,
+        inbound_message_priority="urgent",
+        inbound_queue_source="owner@external",
+    )
+    bridge.gateway = Gateway()
+    bridge.locks = {"advisor": asyncio.Lock()}
+    bridge.processed_events = set()
+    bridge.state = SimpleNamespace(
+        data={"pending": {}, "processed_events": []},
+        save=lambda: None,
+    )
+    bridge._start_request = start_request
+    room = SimpleNamespace(room_id="!advisor:matrix.example.org")
+
+    asyncio.run(
+        bridge._enqueue_prompt(
+            agent,
+            room,
+            "$matrix-event",
+            1_700_000_000_000,
+            "Bitte prüfen.",
+        )
+    )
+
+    assert created[0]["source_session"] == "owner@external"
+    assert created[0]["destination_session"] == "advisor-lead@kernel"
+    assert created[0]["priority"] == "urgent"
+    assert started[0][1]["qitem_id"] == "qitem-matrix"
+    assert started[0][1]["priority"] == "urgent"
 
 
 def test_human_queue_items_are_mirrored_to_the_source_agent_room():

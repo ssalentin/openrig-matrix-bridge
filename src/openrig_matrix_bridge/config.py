@@ -53,6 +53,9 @@ class BridgeConfig:
     codex_home: Path
     sender_session: str
     human_destinations: tuple[str, ...]
+    queue_inbound_messages: bool
+    inbound_message_priority: str
+    inbound_queue_source: str
     mirror_commentary: bool
     poll_interval_seconds: float
     human_queue_poll_seconds: float
@@ -143,6 +146,20 @@ def load_config(path: str | Path) -> BridgeConfig:
         isinstance(item, str) and item.strip() for item in human_destinations_raw
     ):
         raise ConfigError("openrig.human_destinations must be a list of seat addresses")
+    queue_inbound_messages = bool(transport.get("queue_inbound_messages", True))
+    inbound_message_priority = str(
+        transport.get("inbound_message_priority", "urgent")
+    ).strip()
+    if inbound_message_priority not in {"routine", "urgent", "critical"}:
+        raise ConfigError(
+            "openrig.inbound_message_priority must be routine, urgent, or critical"
+        )
+    inbound_queue_source = str(
+        transport.get("inbound_queue_source")
+        or (human_destinations_raw[0] if human_destinations_raw else sender_session)
+    ).strip()
+    if not inbound_queue_source:
+        raise ConfigError("openrig.inbound_queue_source must not be empty")
     mirror_commentary = bool(transport.get("mirror_commentary", True))
     poll_interval = float(transport.get("poll_interval_seconds", 0.2))
     human_queue_poll = float(transport.get("human_queue_poll_seconds", 2.0))
@@ -175,6 +192,9 @@ def load_config(path: str | Path) -> BridgeConfig:
         codex_home=codex_home,
         sender_session=sender_session,
         human_destinations=tuple(str(item).strip() for item in human_destinations_raw),
+        queue_inbound_messages=queue_inbound_messages,
+        inbound_message_priority=inbound_message_priority,
+        inbound_queue_source=inbound_queue_source,
         mirror_commentary=mirror_commentary,
         poll_interval_seconds=poll_interval,
         human_queue_poll_seconds=human_queue_poll,

@@ -154,3 +154,84 @@ def test_reports_rig_cli_failure(monkeypatch):
 
     with pytest.raises(GatewayError, match="interactive prompt"):
         asyncio.run(gateway.send_prompt(ref, "Hallo"))
+
+
+def test_creates_matrix_qitem_with_priority_and_no_duplicate_nudge(
+    monkeypatch,
+):
+    calls = []
+
+    class Process:
+        returncode = 0
+
+        async def communicate(self):
+            return (
+                b'{"qitemId":"qitem-matrix","priority":"urgent"}\n',
+                b"",
+            )
+
+    async def create_subprocess(*args, **kwargs):
+        calls.append((args, kwargs))
+        return Process()
+
+    monkeypatch.setenv("OPENRIG_SESSION_NAME", "advisor-lead@kernel")
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", create_subprocess)
+    gateway = OpenRigGateway("/opt/rig", "matrix-bridge@kernel")
+
+    qitem_id = asyncio.run(
+        gateway.queue_create(
+            source_session="owner@external",
+            destination_session="advisor-lead@kernel",
+            summary="Matrix: Hallo",
+            body="Hallo",
+            priority="urgent",
+        )
+    )
+
+    args, kwargs = calls[0]
+    assert qitem_id == "qitem-matrix"
+    assert args[:5] == (
+        "/opt/rig",
+        "queue",
+        "create",
+        "--source",
+        "owner@external",
+    )
+    assert "--no-nudge" in args
+    assert args[args.index("--priority") + 1] == "urgent"
+    assert "OPENRIG_SESSION_NAME" not in kwargs["env"]
+
+
+def test_claims_and_finishes_qitem_as_destination_agent(monkeypatch):
+    calls = []
+
+    class Process:
+        returncode = 0
+
+        async def communicate(self):
+            return b'{"qitemId":"qitem-matrix","state":"ok"}\n', b""
+
+    async def create_subprocess(*args, **kwargs):
+        calls.append((args, kwargs))
+        return Process()
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", create_subprocess)
+    gateway = OpenRigGateway("/opt/rig", "matrix-bridge@kernel")
+
+    async def run_updates():
+        await gateway.queue_claim("qitem-matrix", "advisor-lead@kernel")
+        await gateway.queue_finish(
+            "qitem-matrix",
+            "advisor-lead@kernel",
+            "Matrix answer delivered",
+        )
+
+    asyncio.run(run_updates())
+
+    claim_args, claim_kwargs = calls[0]
+    finish_args, finish_kwargs = calls[1]
+    assert claim_args[:4] == ("/opt/rig", "queue", "claim", "qitem-matrix")
+    assert finish_args[:4] == ("/opt/rig", "queue", "update", "qitem-matrix")
+    assert "--closure-reason" in finish_args
+    assert claim_kwargs["env"]["OPENRIG_SESSION_NAME"] == "advisor-lead@kernel"
+    assert finish_kwargs["env"]["OPENRIG_SESSION_NAME"] == "advisor-lead@kernel"
