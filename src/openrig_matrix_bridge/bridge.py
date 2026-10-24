@@ -2091,6 +2091,17 @@ class MatrixBridge:
                     "pending",
                     "claiming",
                 } and not await self._claim_inbound_qitem(agent, request):
+                    if request.get("qitem_phase") in {
+                        "done",
+                        "failed",
+                        "canceled",
+                        "denied",
+                    }:
+                        await self._abandon_terminal_qitem(
+                            agent,
+                            request,
+                            self._room_for_agent(agent.key),
+                        )
                     continue
                 if (
                     request.get("prompt_phase") is None
@@ -2190,6 +2201,37 @@ class MatrixBridge:
             pending.pop(0)
         self.state.save()
         return True
+
+    async def _abandon_terminal_qitem(
+        self,
+        agent: AgentConfig,
+        request: dict[str, Any],
+        room_id: str,
+    ) -> None:
+        request["terminal_error"] = (
+            f"OpenRig qitem ended before Matrix delivery: {request.get('qitem_phase')}"
+        )
+        response = await self._send(
+            room_id,
+            f"OpenRig Queue-Item {request.get('qitem_id')} ist bereits "
+            f"{request.get('qitem_phase')}. Die Anfrage wird nicht gesendet.",
+            self._reply_target(request),
+            tx_id=f"failure-{request.get('id') or request['event_id']}",
+            **self._delivery_kwargs(request),
+        )
+        if isinstance(response, RoomSendResponse):
+            request["failure_notice_event_id"] = response.event_id
+        pending = self.state.data["pending"][agent.key]
+        if pending and pending[0].get("id") == request.get("id"):
+            pending.pop(0)
+            self.state.save()
+            await self._update_queue_notice(
+                agent,
+                room_id,
+                max(0, len(pending) - 1),
+            )
+            if pending:
+                await self._start_request(agent, pending[0], room_id)
 
     async def _handle_audio(
         self,
@@ -2807,6 +2849,14 @@ class MatrixBridge:
             request["offset"] = ref.transcript_path.stat().st_size
             request["started_at"] = time.time()
             if not await self._claim_inbound_qitem(agent, request):
+                if request.get("qitem_phase") in {
+                    "done",
+                    "failed",
+                    "canceled",
+                    "denied",
+                }:
+                    await self._abandon_terminal_qitem(agent, request, room_id)
+                    return
                 raise QitemLifecycleError(
                     f"could not claim Matrix qitem {request.get('qitem_id')}"
                 )
@@ -2837,19 +2887,26 @@ class MatrixBridge:
             return
         except (AgentSessionNotFound, GatewayError, OSError) as exc:
             LOGGER.exception("prompt failed for %s", agent.session)
-            await self._fail_inbound_qitem(
+            resolution = f"Prompt failed: {exc}"
+            request["terminal_error"] = resolution
+            if await self._fail_inbound_qitem(
                 agent,
                 request,
-                f"Prompt failed: {exc}",
-            )
+                resolution,
+            ) is False:
+                self.state.save()
+                return
             await self._set_typing(room_id, False)
             await self._update_agent_status(agent, "error", "Prompt fehlgeschlagen")
-            await self._send(
+            response = await self._send(
                 room_id,
-                f"Prompt fehlgeschlagen: {exc}",
+                f"Prompt fehlgeschlagen: {resolution}",
                 self._reply_target(request),
+                tx_id=f"failure-{request.get('id') or request['event_id']}",
                 **self._delivery_kwargs(request),
             )
+            if isinstance(response, RoomSendResponse):
+                request["failure_notice_event_id"] = response.event_id
             pending = self.state.data["pending"][agent.key]
             pending.pop(0)
             self.state.save()
@@ -2917,21 +2974,19 @@ class MatrixBridge:
                 return
             if request.get("answer_text") is None:
                 if request.get("started_at") and time.time() - request["started_at"] > self.config.response_timeout_minutes * 60:
-                    await self._fail_inbound_qitem(
+                    request["terminal_error"] = (
+                        "Timed out waiting for a Matrix answer"
+                    )
+                    request["answer_phase"] = "failed"
+                    completed = await self._complete_failed_answer(
                         agent,
                         request,
-                        "Timed out waiting for a Matrix answer",
-                    )
-                    await self._send(
-                        self._room_for_agent(agent.key),
-                        "Der Agent hat für diese Anfrage nicht rechtzeitig geantwortet.",
-                        self._reply_target(request),
-                        **self._delivery_kwargs(request),
+                        pending,
                     )
                     await self._set_typing(self._room_for_agent(agent.key), False)
                     await self._update_agent_status(agent, "error", "Zeitüberschreitung")
-                    pending.pop(0)
-                    self.state.save()
+                    if not completed:
+                        return
                     await self._update_queue_notice(
                         agent,
                         self._room_for_agent(agent.key),
