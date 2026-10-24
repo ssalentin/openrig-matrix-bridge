@@ -6,6 +6,9 @@ The base is `771979544ced46ae2fb0a99b2c49fddf1cc54666` on `main`. The
 Engineering Lead retains final merge, tag, and GitHub Release authority. This
 cell prepares and proves the release candidate only.
 
+The operator-executable install, verification and rollback procedure is in the
+[0.11.0 runbook](RUNBOOK_0.11.0.md).
+
 ## Release outcome
 
 Ship `0.11.0` with:
