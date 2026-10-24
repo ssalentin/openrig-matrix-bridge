@@ -1,0 +1,38 @@
+matrix:
+  homeserver: https://matrix.example.org
+  user_id: "@openrig-bot:matrix.example.org"
+  device_id: OPENRIG_BRIDGE
+  allowed_users:
+    - "@owner:matrix.example.org"
+  state_dir: /var/lib/openrig-matrix-bridge
+
+moshi:
+  gateway_url: http://127.0.0.1:24543
+  codex_sessions_dir: /root/.local/state/moshi/codex-sessions
+  poll_interval_seconds: 1.0
+  max_message_age_minutes: 60
+  response_timeout_minutes: 360
+
+agents:
+  advisor:
+    display_name: Advisor
+    session: advisor-lead@kernel
+  operator:
+    display_name: Operator
+    session: operator-agent@kernel
+  queue:
+    display_name: Queue
+    session: queue-worker@kernel
+  curator:
+    display_name: Curator
+    session: curator-agent@collection-curation
+  assistant:
+    display_name: Assistant
+    session: assistant-agent@personal-assistant
+  knowledge:
+    display_name: Knowledge
+    session: knowledge-steward@knowledge-management
+  ebay:
+    display_name: eBay
+    session: ebay-agent@web-ops
+

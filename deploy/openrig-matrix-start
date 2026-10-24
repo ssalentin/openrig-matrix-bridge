@@ -1,0 +1,8 @@
+#!/bin/bash
+set -euo pipefail
+
+: "${MATRIX_ACCESS_TOKEN:?set MATRIX_ACCESS_TOKEN through your secret manager}"
+
+exec /opt/openrig-matrix/venv/bin/openrig-matrix-bridge \
+  --config /etc/openrig-matrix-bridge/config.yaml
+

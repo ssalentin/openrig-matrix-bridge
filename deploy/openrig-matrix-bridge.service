@@ -1,0 +1,17 @@
+[Unit]
+Description=OpenRig Matrix bridge
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+Environment=HOME=/root
+ExecStart=/usr/local/sbin/openrig-matrix-start
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=20
+
+[Install]
+WantedBy=multi-user.target
+
