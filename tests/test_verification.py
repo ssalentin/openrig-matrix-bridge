@@ -57,13 +57,13 @@ def test_recovery_marks_active_transaction_interrupted_once():
     assert recover_interrupted_verifications(records, now=202) == []
 
 
-def test_interrupted_transaction_stops_guarding_after_reply_grace_period():
+def test_interrupted_transaction_remains_guarded_after_reply_grace_period():
     records = {}
     begin_verification(records, "tx-one", "!advisor:example.org", now=100)
     recover_interrupted_verifications(records, now=200)
 
     assert pending_verification(records, "!advisor:example.org", now=500) is not None
-    assert pending_verification(records, "!advisor:example.org", now=1000) is None
+    assert pending_verification(records, "!advisor:example.org", now=1000) is not None
 
 
 @pytest.mark.parametrize(
