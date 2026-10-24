@@ -1405,6 +1405,117 @@ class IntegrationRun:
             ),
         )
 
+    async def check_threaded_files(self, room_id: str) -> None:
+        assert self.owner is not None
+        owner = self.owner
+        root_event_id = next(
+            message["event_id"]
+            for message in owner.messages
+            if message["body"] == "thread root request"
+        )
+        relation = {
+            "rel_type": "m.thread",
+            "event_id": root_event_id,
+            "is_falling_back": True,
+            "m.in_reply_to": {"event_id": root_event_id},
+        }
+        cases = [
+            (
+                "threaded-report.pdf",
+                b"%PDF-1.7\nthreaded integration report\n",
+                "m.file",
+                "application/pdf",
+            ),
+            (
+                "threaded-meeting.ogg",
+                b"OggS threaded markerless audio",
+                "m.audio",
+                "audio/ogg",
+            ),
+        ]
+        for filename, payload, msgtype, mimetype in cases:
+            before = len(owner.messages)
+            await owner.send_encrypted_file(
+                room_id,
+                payload,
+                msgtype=msgtype,
+                filename=filename,
+                mimetype=mimetype,
+                body=filename,
+                extra_content={"m.relates_to": relation},
+            )
+
+            def threaded_file_delivered(
+                before_count=before,
+            ) -> bool:
+                new_messages = owner.messages[before_count:]
+                return any(
+                    message["sender"] == BRIDGE_USER
+                    and "Datei gespeichert" in str(message["body"])
+                    for message in new_messages
+                ) and any(
+                    message["sender"] == BRIDGE_USER
+                    and "Fake integration answer: Datei von" in str(message["body"])
+                    for message in new_messages
+                )
+
+            await owner.sync_until(
+                threaded_file_delivered,
+                self.args.timeout,
+                description=f"threaded {filename} delivery",
+            )
+            wait_for_json_state(
+                self.state_dir / "state.json",
+                lambda value: not value.get("pending", {}).get(AGENT_KEY),
+                self.args.timeout,
+            )
+            await asyncio.sleep(0.2)
+            await owner.sync_once()
+            delivered = [
+                message
+                for message in owner.messages[before:]
+                if message["sender"] == BRIDGE_USER
+            ]
+            if not delivered:
+                raise CheckFailure(f"threaded {filename} produced no bridge messages")
+            for message in delivered:
+                delivered_relation = message["source"].get("content", {}).get(
+                    "m.relates_to"
+                )
+                if (
+                    not isinstance(delivered_relation, dict)
+                    or delivered_relation.get("rel_type") != "m.thread"
+                    or delivered_relation.get("event_id") != root_event_id
+                ):
+                    raise CheckFailure(
+                        f"threaded {filename} escaped its canonical root: "
+                        f"{delivered_relation}"
+                    )
+            fake = json.loads((self.fake_state / "fake-openrig.json").read_text())
+            qitems = [
+                item
+                for item in fake["queue"].values()
+                if filename in str(item.get("body") or "")
+            ]
+            if len(qitems) != 1:
+                raise CheckFailure(
+                    f"threaded {filename} did not create exactly one qitem"
+                )
+            validate_qitem_history(qitems[0])
+            if qitems[0]["state"] != "done":
+                raise CheckFailure(f"threaded {filename} qitem did not close")
+
+        self.record(
+            "threaded-files",
+            "pass",
+            (
+                "A PDF and markerless audio sent from inside an existing m.thread "
+                "were stored and forwarded. Every file status and final bridge "
+                "message used the original canonical thread root, and each input "
+                "created one completed qitem."
+            ),
+        )
+
     async def check_audio_gap(self, room_id: str) -> None:
         assert self.owner is not None
         owner = self.owner
@@ -1655,6 +1766,7 @@ class IntegrationRun:
         await self.check_reaction(room_id)
         await self.check_images(room_id)
         await self.check_files(room_id)
+        await self.check_threaded_files(room_id)
         await self.check_audio_gap(room_id)
         await self.check_decision_and_poll(room_id)
         await self.check_proactive_message(room_id)

@@ -82,7 +82,7 @@ def inbound_file_bridge(tmp_path, download_body, *, max_file_bytes=1024):
     replies = []
     forwarded = []
 
-    async def send(room_id, text, reply_to=None):
+    async def send(room_id, text, reply_to=None, **kwargs):
         replies.append(text)
         return RoomSendResponse("$reply", room_id)
 
@@ -417,7 +417,7 @@ def test_poll_answer_is_forwarded_and_pinned_decision_is_cleared():
     async def remove_pinned(room_id, event_ids):
         unpinned.append((room_id, event_ids))
 
-    async def enqueue_prompt(*args):
+    async def enqueue_prompt(*args, **kwargs):
         forwarded.append(args)
 
     async def send(*args):
@@ -2021,10 +2021,10 @@ def test_encrypted_pdf_is_safely_stored_and_forwarded_to_agent(tmp_path):
         data={"processed_events": []},
     )
     bridge.client = FileClient()
-    bridge._send = lambda *args: _completed(None)
+    bridge._send = lambda *args, **kwargs: _completed(None)
     forwarded = []
 
-    async def enqueue_prompt(*args):
+    async def enqueue_prompt(*args, **kwargs):
         forwarded.append(args)
 
     bridge._enqueue_prompt = enqueue_prompt
@@ -2725,6 +2725,93 @@ def test_markerless_audio_is_routed_to_generic_file_handler():
     asyncio.run(bridge._handle_audio(room, event))
 
     assert forwarded == [(room, event)]
+
+
+@pytest.mark.parametrize(
+    ("filename", "mime_type", "payload"),
+    [
+        ("threaded.pdf", "application/pdf", b"%PDF-1.7\nthreaded file\n"),
+        ("meeting.ogg", "audio/ogg", b"OggS threaded markerless audio"),
+    ],
+)
+def test_threaded_generic_files_preserve_canonical_root(
+    tmp_path,
+    filename,
+    mime_type,
+    payload,
+):
+    relation = {
+        "rel_type": "m.thread",
+        "event_id": "$root",
+        "m.in_reply_to": {"event_id": "$parent"},
+    }
+    agent = AgentConfig(
+        key="advisor",
+        display_name="Advisor",
+        session="advisor-lead@kernel",
+    )
+    bridge = object.__new__(MatrixBridge)
+    bridge.config = SimpleNamespace(
+        user_id="@openrig:matrix.example.org",
+        allowed_users=("@owner:matrix.example.org",),
+        max_message_age_minutes=-1,
+        agents={"advisor": agent},
+        media=SimpleNamespace(
+            enabled=True,
+            inbox_dir=tmp_path,
+            max_file_bytes=1024,
+        ),
+    )
+    bridge.room_agents = {"!advisor:matrix.example.org": "advisor"}
+    bridge.processed_events = set()
+    bridge.state = SimpleNamespace(
+        save=lambda: None,
+        data={"processed_events": []},
+    )
+    sent = []
+    forwarded = []
+
+    class FileClient:
+        async def download(self, mxc):
+            return SimpleNamespace(body=payload)
+
+    async def send(room_id, text, reply_to=None, **kwargs):
+        sent.append((text, reply_to, kwargs))
+        return RoomSendResponse(f"${len(sent)}", room_id)
+
+    async def enqueue_prompt(*args, **kwargs):
+        forwarded.append((args, kwargs))
+
+    bridge.client = FileClient()
+    bridge._send = send
+    bridge._enqueue_prompt = enqueue_prompt
+    room = SimpleNamespace(room_id="!advisor:matrix.example.org")
+    event = SimpleNamespace(
+        event_id="$file",
+        sender="@owner:matrix.example.org",
+        server_timestamp=1_700_000_000_000,
+        source={
+            "content": {
+                "msgtype": "m.audio" if mime_type == "audio/ogg" else "m.file",
+                "body": filename,
+                "filename": filename,
+                "info": {"mimetype": mime_type, "size": len(payload)},
+                "m.relates_to": relation,
+            }
+        },
+        url=f"mxc://matrix.example.org/{filename}",
+        body=filename,
+    )
+
+    asyncio.run(bridge._handle_file(room, event))
+
+    assert sent
+    assert all(
+        reply_to == "$root" and kwargs["thread_root"] == "$root"
+        for _text, reply_to, kwargs in sent
+    )
+    assert forwarded[0][1]["relates_to"] == relation
+    assert forwarded[0][0][5] == "attachment"
 
 
 def test_marked_voice_audio_is_transcribed_and_forwarded():
