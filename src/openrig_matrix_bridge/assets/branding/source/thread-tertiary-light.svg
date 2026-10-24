@@ -1,9 +1,0 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" role="img" aria-labelledby="title">
-  <title id="title">Thread mark, light background</title>
-  <path d="M40 86c0-30 24-54 54-54h68c30 0 54 24 54 54v70c0 30-24 54-54 54h-27l-39 28 7-28H94c-30 0-54-24-54-54V86Z" fill="none" stroke="#1C1B32" stroke-width="18" stroke-linejoin="round"/>
-  <path d="M82 119h92M82 158h92" fill="none" stroke="#35BE87" stroke-width="14" stroke-linecap="round"/>
-  <circle cx="68" cy="119" r="17" fill="#35BE87"/>
-  <circle cx="68" cy="158" r="17" fill="#35BE87"/>
-  <circle cx="188" cy="119" r="17" fill="#35BE87"/>
-  <circle cx="188" cy="158" r="17" fill="#5946EE"/>
-</svg>

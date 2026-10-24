@@ -1180,7 +1180,7 @@ class MatrixBridge:
                 upload, _encryption = await self.client.upload(
                     BytesIO(image_data),
                     content_type="image/png",
-                    filename="openrig-profile.png",
+                    filename="relay-avatar-256.png",
                     filesize=len(image_data),
                 )
                 if isinstance(upload, UploadResponse):

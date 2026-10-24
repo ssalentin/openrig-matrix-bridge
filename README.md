@@ -10,6 +10,17 @@ terminal session, tools, and working context.
 The result is simple: your familiar Matrix client becomes the interface, and
 OpenRig remains the runtime.
 
+<!-- markdownlint-disable MD033 -->
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="src/openrig_matrix_bridge/assets/branding/export/relay-secondary-dark-256.png">
+  <img src="src/openrig_matrix_bridge/assets/branding/export/relay-secondary-light-256.png" alt="Relay" width="96" height="96">
+</picture>
+<!-- markdownlint-enable MD033 -->
+
+Relay is the selected symbol for the 0.11.0 OpenRig Matrix Bridge identity. The
+product name remains OpenRig Matrix Bridge. See the
+[Relay brand and usage guide](docs/branding/README.md).
+
 ## What this gives you
 
 Each configured agent appears as one private room:
@@ -215,7 +226,8 @@ python -m pip install -e '.[dev]'
 openrig-matrix-bridge --version
 ```
 
-The console entry point and bundled avatars are part of the installed package.
+The console entry point, selected Relay identity, and bundled agent avatars are
+part of the installed package.
 The automated build/install smoke checks are documented in
 [Verification and evidence](docs/VERIFICATION.md).
 
@@ -276,7 +288,8 @@ This command:
 3. Registers the owner as an OpenRig human recipient with a reusable connector
    binding. The binding is a routing marker; the bridge performs Matrix
    delivery itself.
-4. Renames the bot profile and device to `OpenRig`.
+4. Renames the bot profile and device to `OpenRig`, and installs the Relay
+   profile image.
 5. Downloads and checksum-verifies the Parakeet model unless `--skip-model` is
    present.
 

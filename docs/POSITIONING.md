@@ -15,6 +15,9 @@ private Encrypted Matrix rooms. Status, progress, images, arbitrary files,
 voice transcription, polls, reactions, and durable queue items stay attached
 to the same live seat.
 
+**Identity:** Relay is the selected 0.11.0 product symbol. The product name
+remains OpenRig Matrix Bridge.
+
 **Who it is for:** A single OpenRig operator who wants a convenient,
 multi-device Matrix interface without rebuilding the agent runtime around a new
 chat gateway.

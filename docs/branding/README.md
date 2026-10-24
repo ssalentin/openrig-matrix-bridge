@@ -1,75 +1,60 @@
-# Symbol identity proposals
+# Relay identity
 
-These three original, name-independent concepts are review candidates for the
-product identity. None contains a wordmark or third-party mark. The symbol is
-the durable part; naming can follow the owner decision in issue #22.
+## Selected identity: Relay
 
-![Three symbol concepts on light and dark backgrounds](artifacts/concepts-preview.png)
+Relay is the selected symbol for the 0.11.0 OpenRig Matrix Bridge identity.
+Two interlocking conversation forms share one signal node: the bridge keeps the
+person and the existing OpenRig seat in one continuous exchange. The product
+name remains **OpenRig Matrix Bridge**.
 
-## Primary: Gateway
+The earlier proposal alternatives are not shipped. Relay is the single product
+mark used by the README, Matrix profile, release assets, and usage guidance.
 
-The two nested gateway arches represent a private room between a person and an
-agent. The mint beam and nodes represent the shared live connection.
+## Asset set
 
-| Light | Dark |
+The source of truth is the checked-in SVG. The PNG exports are deterministic
+derivatives for Matrix and documentation use.
+
+| Use | 256px | 32px | Source |
+|---|---|---|---|
+| Light background | [PNG](../../src/openrig_matrix_bridge/assets/branding/export/relay-secondary-light-256.png) | [PNG](../../src/openrig_matrix_bridge/assets/branding/export/relay-secondary-light-32.png) | [SVG](../../src/openrig_matrix_bridge/assets/branding/source/relay-secondary-light.svg) |
+| Dark background | [PNG](../../src/openrig_matrix_bridge/assets/branding/export/relay-secondary-dark-256.png) | [PNG](../../src/openrig_matrix_bridge/assets/branding/export/relay-secondary-dark-32.png) | [SVG](../../src/openrig_matrix_bridge/assets/branding/source/relay-secondary-dark.svg) |
+| Matrix profile | [PNG](../../src/openrig_matrix_bridge/assets/branding/export/relay-avatar-256.png) | [PNG](../../src/openrig_matrix_bridge/assets/branding/export/relay-avatar-32.png) | [SVG](../../src/openrig_matrix_bridge/assets/branding/source/relay-avatar.svg) |
+
+The Matrix profile uses the contained dark-tile avatar. One profile image cannot
+follow the viewer's light or dark theme, so the contained variant preserves the
+mark's contrast in both clients. The transparent light and dark exports remain
+the design masters for documentation and future surfaces.
+
+## Preview
+
+| Matrix profile on light | Matrix profile on dark |
 |---|---|
-| ![Gateway mark on light](../../src/openrig_matrix_bridge/assets/branding/export/gateway-primary-light-256.png) | ![Gateway mark on dark](../../src/openrig_matrix_bridge/assets/branding/export/gateway-primary-dark-256.png) |
+| ![Relay profile on light](artifacts/relay-avatar-light-bg-preview.png) | ![Relay profile on dark](artifacts/relay-avatar-dark-bg-preview.png) |
 
-Source: [`gateway-primary-light.svg`](../../src/openrig_matrix_bridge/assets/branding/source/gateway-primary-light.svg) and [`gateway-primary-dark.svg`](../../src/openrig_matrix_bridge/assets/branding/source/gateway-primary-dark.svg).
+## Usage
 
-## Direction B: Relay
+- Keep clear space around the symbol equal to at least one quarter of its width.
+- Use the light-background SVG on light surfaces and the dark-background SVG on
+  dark surfaces.
+- Keep the transparent background; do not redraw or recolor individual paths.
+- Use the contained avatar for the bot's Matrix profile. Do not upload one of
+  the transparent theme-specific masters as a profile image.
+- The standalone symbol is the complete 0.11.0 identity. Do not add text inside
+  the mark or create a separate wordmark without a new brand review.
 
-Two interlocking conversation forms share one signal node. This direction puts
-the two-sided conversation ahead of the container metaphor.
+The bridge assigns the existing 32-image pool to individual agent rooms. The
+bot profile itself uses `relay-avatar-256.png` through the runtime asset loader.
 
-| Light | Dark |
-|---|---|
-| ![Relay mark on light](../../src/openrig_matrix_bridge/assets/branding/export/relay-secondary-light-256.png) | ![Relay mark on dark](../../src/openrig_matrix_bridge/assets/branding/export/relay-secondary-dark-256.png) |
+## README
 
-Source: [`relay-secondary-light.svg`](../../src/openrig_matrix_bridge/assets/branding/source/relay-secondary-light.svg) and [`relay-secondary-dark.svg`](../../src/openrig_matrix_bridge/assets/branding/source/relay-secondary-dark.svg).
+The project README embeds the local light/dark PNG pair with a responsive
+picture. It uses no external image host, fixed markup loads at 96x96 pixels, and
+the accessible name is `Relay`.
 
-## Direction C: Thread
+## Licensing
 
-Four linked nodes inside one room outline emphasize persistent, threaded work.
-The asymmetric violet node gives the mark a direction without adding text.
-
-| Light | Dark |
-|---|---|
-| ![Thread mark on light](../../src/openrig_matrix_bridge/assets/branding/export/thread-tertiary-light-256.png) | ![Thread mark on dark](../../src/openrig_matrix_bridge/assets/branding/export/thread-tertiary-dark-256.png) |
-
-Source: [`thread-tertiary-light.svg`](../../src/openrig_matrix_bridge/assets/branding/source/thread-tertiary-light.svg) and [`thread-tertiary-dark.svg`](../../src/openrig_matrix_bridge/assets/branding/source/thread-tertiary-dark.svg).
-
-## Review and production notes
-
-- The source of truth is SVG. PNGs are deterministic 256px Matrix-avatar
-  exports; 32px PNGs are included for favicon-size review.
-- Keep the mark outside the safe-area boundary by at least one quarter of its
-  width. Do not add text below 128px; use the symbol alone for Matrix avatars
-  and favicons.
-- Use the light-on-dark source on roomy dark surfaces and the dark-on-light
-  source on light surfaces. Preserve the transparent background.
-- The final selection must be recorded before these files replace the current
-  generated Matrix profile avatar. This proposal does not rename the product,
-  package, or CLI.
-- All six source files were authored for this repository and are released
-  under the repository's MIT license. They contain no embedded third-party
-  artwork, fonts, or trademarks.
-
-## Matrix profile preview
-
-The containment avatar uses a dark rounded tile so the same file remains
-legible on both room themes. The transparent 256px marks stay as design
-masters. The 32px files make the small-size behavior explicit rather than
-relying on a browser's downscaling.
-
-| Concept | On light background | On dark background | 256 | 32 |
-|---|---|---|---|---|
-| Gateway | ![Gateway contained avatar on light](artifacts/gateway-avatar-light-bg-preview.png) | ![Gateway contained avatar on dark](artifacts/gateway-avatar-dark-bg-preview.png) | [PNG](../../src/openrig_matrix_bridge/assets/branding/export/gateway-avatar-256.png) | [PNG](../../src/openrig_matrix_bridge/assets/branding/export/gateway-avatar-32.png) |
-| Relay | ![Relay contained avatar on light](artifacts/relay-avatar-light-bg-preview.png) | ![Relay contained avatar on dark](artifacts/relay-avatar-dark-bg-preview.png) | [PNG](../../src/openrig_matrix_bridge/assets/branding/export/relay-avatar-256.png) | [PNG](../../src/openrig_matrix_bridge/assets/branding/export/relay-avatar-32.png) |
-| Thread | ![Thread contained avatar on light](artifacts/thread-avatar-light-bg-preview.png) | ![Thread contained avatar on dark](artifacts/thread-avatar-dark-bg-preview.png) | [PNG](../../src/openrig_matrix_bridge/assets/branding/export/thread-avatar-256.png) | [PNG](../../src/openrig_matrix_bridge/assets/branding/export/thread-avatar-32.png) |
-
-| Concept | Light 256 | Dark 256 | Light 32 | Dark 32 |
-|---|---|---|---|---|
-| Gateway | [PNG](../../src/openrig_matrix_bridge/assets/branding/export/gateway-primary-light-256.png) | [PNG](../../src/openrig_matrix_bridge/assets/branding/export/gateway-primary-dark-256.png) | [PNG](../../src/openrig_matrix_bridge/assets/branding/export/gateway-primary-light-32.png) | [PNG](../../src/openrig_matrix_bridge/assets/branding/export/gateway-primary-dark-32.png) |
-| Relay | [PNG](../../src/openrig_matrix_bridge/assets/branding/export/relay-secondary-light-256.png) | [PNG](../../src/openrig_matrix_bridge/assets/branding/export/relay-secondary-dark-256.png) | [PNG](../../src/openrig_matrix_bridge/assets/branding/export/relay-secondary-light-32.png) | [PNG](../../src/openrig_matrix_bridge/assets/branding/export/relay-secondary-dark-32.png) |
-| Thread | [PNG](../../src/openrig_matrix_bridge/assets/branding/export/thread-tertiary-light-256.png) | [PNG](../../src/openrig_matrix_bridge/assets/branding/export/thread-tertiary-dark-256.png) | [PNG](../../src/openrig_matrix_bridge/assets/branding/export/thread-tertiary-light-32.png) | [PNG](../../src/openrig_matrix_bridge/assets/branding/export/thread-tertiary-dark-32.png) |
+All Relay source and export files were authored for this repository and are
+released under the repository's [MIT license](../../LICENSE). They contain no
+embedded third-party artwork, fonts, or trademarks. External visual similarity
+and trademark clearance are not claimed.
