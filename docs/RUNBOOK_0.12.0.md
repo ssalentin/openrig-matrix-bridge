@@ -35,17 +35,30 @@ on a disposable seat before production traffic.
 
 ### Latency measurements
 
-Not yet measured on a live seat. QA or the builder fills this table after
-running section 5, with the method and boundary stated. The Matrix harness
-report has a `steering_latency` section with the same stages for the
-deterministic transport; that is not live-Codex latency and must not be copied
-into this table.
+Not yet measured on a live seat: live Codex turns were not run in the 0.12.0
+gate. QA or the builder fills the live table after running section 5, with the
+method and boundary stated. The harness `steering_latency` median and maximum for
+the deterministic transport are in the committed
+`docs/artifacts/final-0.12.0-integration-report.json`; they are not live-Codex
+latency and must not be copied into the live table.
 
-| Boundary | Runs | Median | Max | Method |
+| Boundary (live seat) | Runs | Median | Max | Method |
 |---|---|---|---|---|
-| Bridge intake to pane injection | | | | |
-| Bridge intake to transcript admission | | | | |
-| Bridge intake to 👍 acceptance reaction | | | | |
+| Bridge intake to pane injection | 0 | not measured | not measured | live Codex not run in the 0.12.0 gate |
+| Bridge intake to transcript admission | 0 | not measured | not measured | live Codex not run in the 0.12.0 gate |
+| Bridge intake to 👍 acceptance reaction | 0 | not measured | not measured | live Codex not run in the 0.12.0 gate |
+
+Deterministic harness latency, from the `steering_latency` section of
+`docs/artifacts/final-0.12.0-integration-report.json`: fake OpenRig transport and
+a loopback Synapse, not a live seat. Admission includes up to one bridge poll interval.
+Maxima include the crash, restart and delayed-probe scenarios.
+
+| Boundary (harness) | Median | Max |
+|---|---|---|
+| Prompt: intake to injection | 124.4 ms | 5504.3 ms |
+| Prompt: intake to admission | 315.4 ms | 5756.8 ms |
+| Prompt: intake to 👍 | 165.0 ms | 846.9 ms |
+| Steer: intake to admission | 496.9 ms | 1056.8 ms |
 
 ## 1. Record the approved candidate
 
@@ -132,7 +145,10 @@ Before production ownership traffic, use a dedicated disposable Codex seat:
 3. Confirm both source event IDs appear in the same injected batch.
 4. Confirm each transcript user message appears once and the batch receives one
    Matrix answer.
-5. Repeat after a bridge restart and retain redacted timing evidence.
+5. Repeat after a bridge restart and retain redacted timing evidence. Send the
+   follow-ups only after the restarted bridge has finished its initial sync:
+   events delivered during that sync are not routed. This predates 0.12.0. Such
+   a message receives no 👍, which makes the gap visible to the owner.
 
 Do not use the OpenRig production bridge or this project-cell seat as the
 disposable target.

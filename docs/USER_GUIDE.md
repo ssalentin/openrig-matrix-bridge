@@ -59,9 +59,10 @@ live Matrix delivery.
 ## Acceptance receipt
 
 When the bridge has durably accepted a message from an allowed user, it adds
-one 👍 reaction to that message. The 👍 means *accepted*: the OpenRig queue item
-exists and the request is either queued behind the active work or joined to a
-steering batch. It does not mean the agent has started or finished. The final
+one 👍 reaction to that message. The 👍 means *accepted*: the bridge has durably
+accepted it (and created its OpenRig queue item when queueing is enabled) and
+the request is either queued behind the active work or joined to a steering
+batch. It does not mean the agent has started or finished. The final
 answer in the thread remains the completion signal.
 
 - Every event in a steering batch gets its own single 👍.

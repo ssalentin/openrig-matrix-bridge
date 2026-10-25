@@ -67,8 +67,8 @@ visible and durable outside the chat client.
 
 ## Acceptance receipt
 
-Once the bridge has durably accepted a message (the OpenRig queue item is
-persisted and the request is queued or steered), it adds one 👍 to it. The 👍
+Once the bridge has durably accepted a message (and its OpenRig queue item is
+created when queueing is enabled; the request is queued or steered), it adds one 👍 to it. The 👍
 means *accepted*, not finished; the final answer is still the completion signal.
 Retries, restarts, and batched steering never duplicate it. Untrusted, rejected,
 and too-old messages get none. Disable it with

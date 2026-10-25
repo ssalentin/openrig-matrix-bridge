@@ -53,6 +53,9 @@ the configuration and complete state directory before replacing the service.
 
 ## Known limits
 
+- Events delivered during a restarted bridge's initial sync are not routed: the
+  message gets no 👍 and is not delivered, which makes the gap visible to the
+  owner. This predates 0.12.0 and is also present on `main`.
 - Matrix device SAS and complete cross-signing remain tracked by Issue #1.
 - Activity-card duplication and legacy pending-state reconciliation remain
   separately tracked by Issues #39 and #41.
@@ -60,5 +63,6 @@ the configuration and complete state directory before replacing the service.
   integration harness uses a real Synapse and a deterministic OpenRig transport,
   so it does not prove delivery into a live Codex terminal. The first live
   observation is the disposable-seat check in the
-  [runbook](RUNBOOK_0.12.0.md), which also holds the latency table to be filled
-  with median and maximum values and the method.
+  [runbook](RUNBOOK_0.12.0.md). Its live-seat latency table is not measured;
+  the deterministic-transport median and maximum are in the retained
+  `final-0.12.0-integration-report.json`.

@@ -194,8 +194,8 @@ admitting pane input. Exactly-once delivery after steering admission fails is
 not claimed; a late pane admission remains a documented best-effort residual
 risk because OpenRig has no acknowledged safe-boundary or turn-admission
 primitive. The source SHA, check count, and retained report for the final
-candidate are recorded in
-[`docs/artifacts/README.md`](artifacts/README.md) once QA names the SHA.
+candidate (`final-0.12.0-integration-report.json`) are recorded in
+[`docs/artifacts/README.md`](artifacts/README.md).
 
 ### Issue #4 hybrid steering evidence (0.11.0 candidate, historical)
 
