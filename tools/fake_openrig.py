@@ -171,7 +171,8 @@ def complete_prompt(root: Path, prompt: str, prompt_id: str) -> None:
     time.sleep(0.15)
 
     def ready(state: dict[str, Any]) -> None:
-        state["busy_until"] = 0.0
+        if not state.get("late_steer_pending"):
+            state["busy_until"] = 0.0
         for record in reversed(state["prompts"]):
             if record["id"] == prompt_id:
                 record["completed_at"] = time.time()
@@ -194,6 +195,30 @@ def complete_prompt(root: Path, prompt: str, prompt_id: str) -> None:
     append_agent_message(root, turn_id, "final_answer", answer)
 
 
+def materialize_late_steer(
+    root: Path,
+    prompt: str,
+    turn_id: str,
+    delay: float,
+) -> None:
+    time.sleep(delay)
+    append_user_message(root, turn_id, prompt)
+    time.sleep(0.15)
+    answer = response_copy(
+        "OPENRIG_FAKE_LATE_ANSWER",
+        "Late steering answer: {prompt}",
+        prompt[:120],
+    )
+    append_agent_message(root, turn_id, "final_answer", answer)
+
+    def ready(state: dict[str, Any]) -> None:
+        state["busy_until"] = 0.0
+        state["late_steer_pending"] = False
+        state["late_steer_completed_at"] = time.time()
+
+    update_state(root, ready)
+
+
 def handle_send(root: Path, args: list[str]) -> None:
     if len(args) < 2:
         raise SystemExit("send requires a destination and prompt")
@@ -208,9 +233,11 @@ def handle_send(root: Path, args: list[str]) -> None:
     prompt_id = uuid.uuid4().hex
     turn_id = str(uuid.uuid4())
     steered_turn_id: str | None = None
+    late_turn_id: str | None = None
+    late_delay = float(os.environ.get("OPENRIG_FAKE_LATE_STEER_SECONDS", "0") or "0")
 
     def record(state: dict[str, Any]) -> None:
-        nonlocal steered_turn_id
+        nonlocal late_turn_id, steered_turn_id
         if float(state.get("busy_until", 0)) > time.time():
             if os.environ.get("OPENRIG_FAKE_ALLOW_STEERING") != "1":
                 raise TransportBusy(
@@ -226,12 +253,23 @@ def handle_send(root: Path, args: list[str]) -> None:
             )
             if active is None:
                 raise TransportBusy("agent is busy without an active turn")
-            steered_turn_id = str(active["turn_id"])
+            steered_turn_id = (
+                uuid.uuid4().hex if late_delay > 0 else str(active["turn_id"])
+            )
+            if late_delay > 0:
+                late_turn_id = steered_turn_id
+                state["late_steer_pending"] = True
+                state["busy_until"] = max(
+                    float(state.get("busy_until", 0)),
+                    time.time() + late_delay + 0.4,
+                )
             state.setdefault("steers", []).append(
                 {
                     "destination": destination,
                     "prompt": prompt,
-                    "turn_id": active["turn_id"],
+                    "turn_id": steered_turn_id,
+                    "source_turn_id": active["turn_id"],
+                    "late_materialization": late_delay > 0,
                     "sent_at": time.time(),
                 }
             )
@@ -253,13 +291,31 @@ def handle_send(root: Path, args: list[str]) -> None:
     except TransportBusy as exc:
         raise SystemExit(str(exc)) from exc
     if steered_turn_id is not None:
-        append_user_message(root, steered_turn_id, prompt)
+        if late_turn_id is None:
+            append_user_message(root, steered_turn_id, prompt)
+        else:
+            subprocess.Popen(
+                [
+                    sys.executable,
+                    __file__,
+                    "_late_steer",
+                    prompt,
+                    late_turn_id,
+                    str(late_delay),
+                ],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True,
+                env=os.environ.copy(),
+            )
         print_json(
             {
                 "delivered": True,
                 "steered": True,
                 "session": destination,
                 "turnId": steered_turn_id,
+                "materialization": "late" if late_turn_id else "immediate",
             }
         )
         return
@@ -376,6 +432,8 @@ def main() -> None:
         handle_human(root, args)
     elif command == "_complete":
         complete_prompt(root, args[1], args[2])
+    elif command == "_late_steer":
+        materialize_late_steer(root, args[1], args[2], float(args[3]))
     else:
         raise SystemExit(f"unsupported fake command: {command}")
 

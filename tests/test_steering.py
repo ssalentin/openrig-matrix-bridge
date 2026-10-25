@@ -562,6 +562,49 @@ def test_async_transcript_admission_within_grace_prevents_fallback_resend(
     assert harness.bridge.state.data["pending"]["advisor"] == []
 
 
+def test_busy_late_next_turn_beyond_grace_is_adopted_without_resend(
+    tmp_path: Path,
+):
+    harness = SteeringHarness(tmp_path, "auto")
+    harness.enqueue("$root", "root request", None)
+    harness.busy = True
+    harness.enqueue("$follow", "thread follow-up", "$root")
+    pending = harness.bridge.state.data["pending"]["advisor"]
+    group = pending[1]
+    group["injection_phase"] = "injected_unconfirmed"
+    group["injection_offset"] = harness.transcript.stat().st_size
+    group["injection_text"] = group["text"]
+    group["injection_attempted_at"] = time.time() - 10
+    group["fallback_not_before"] = time.time() - 1
+    pending.pop(0)
+
+    asyncio.run(harness.bridge._poll_agent(harness.agent))
+
+    assert group["injection_phase"] == "injected_unconfirmed"
+    assert [prompt[1] for prompt in harness.prompts] == ["root request"]
+
+    append_records(
+        harness.transcript,
+        [
+            transcript_user_message("turn-follow", group["text"]),
+            transcript_agent_message(
+                "turn-follow",
+                "final-follow",
+                "final_answer",
+                "Follow-up answer.",
+            ),
+        ],
+    )
+    harness.busy = False
+    asyncio.run(harness.bridge._poll_agent(harness.agent))
+    asyncio.run(harness.bridge._poll_agent(harness.agent))
+
+    assert [prompt[1] for prompt in harness.prompts] == ["root request"]
+    assert harness.sent_answers == [("Follow-up answer.", "$root")]
+    assert group["externally_admitted"] is True
+    assert harness.bridge.state.data["pending"]["advisor"] == []
+
+
 def test_unconfirmed_steering_batch_falls_back_after_grace_once(
     tmp_path: Path,
 ):

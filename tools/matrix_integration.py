@@ -707,6 +707,7 @@ class IntegrationRun:
         *,
         crash_after: str | None = None,
         allow_steering: bool = True,
+        late_steer_seconds: float | None = None,
         unrelated_turn: bool = False,
     ) -> None:
         if self.bridge is not None and self.bridge.poll() is None:
@@ -717,6 +718,10 @@ class IntegrationRun:
             environment["OPENRIG_FAKE_ALLOW_STEERING"] = "1"
         else:
             environment.pop("OPENRIG_FAKE_ALLOW_STEERING", None)
+        if late_steer_seconds is not None:
+            environment["OPENRIG_FAKE_LATE_STEER_SECONDS"] = str(late_steer_seconds)
+        else:
+            environment.pop("OPENRIG_FAKE_LATE_STEER_SECONDS", None)
         if unrelated_turn:
             environment["OPENRIG_FAKE_UNRELATED_TURN"] = "1"
         else:
@@ -1750,6 +1755,140 @@ class IntegrationRun:
                 "without resending the batch."
             ),
         )
+
+        self.stop_bridge()
+        self.start_bridge(late_steer_seconds=6)
+        await self.wait_for_steering_mode_ready(room_id)
+        late_before = len(json.loads(fake_path.read_text())["steers"])
+        late_root = await owner.send_text(
+            room_id,
+            "hold first late admission root",
+        )
+        self.wait_for_active_prompt(
+            late_root,
+            "hold first late admission root",
+        )
+        late_follow = await owner.send_text(
+            room_id,
+            "late admission follow",
+            relates_to={
+                "rel_type": "m.thread",
+                "event_id": late_root,
+                "m.in_reply_to": {"event_id": late_root},
+            },
+        )
+        wait_for_json_state(
+            fake_path,
+            lambda value: len(value.get("steers", [])) > late_before,
+            self.args.timeout,
+            description="late-admission steering injection",
+        )
+        await owner.sync_until(
+            lambda: any(
+                "Late steering answer:" in str(message["body"])
+                for message in owner.messages
+            ),
+            self.args.timeout,
+            description="answer from late-materialized steering turn",
+        )
+        wait_for_json_state(
+            self.state_dir / "state.json",
+            lambda value: not value.get("pending", {}).get(AGENT_KEY),
+            self.args.timeout,
+            description="late-admission pending queue to drain",
+        )
+        late_fake = json.loads(fake_path.read_text(encoding="utf-8"))
+        late_batch = late_fake["steers"][late_before]
+        if late_follow not in late_batch["prompt"]:
+            raise CheckFailure(f"late-admission batch lost its source: {late_batch}")
+        if not late_batch.get("late_materialization"):
+            raise CheckFailure(f"late-admission probe was not delayed: {late_batch}")
+        if any(
+            item.get("prompt") == late_batch["prompt"]
+            for item in late_fake["prompts"]
+        ):
+            raise CheckFailure("late-admitted batch was also sent as a fallback")
+        transcript_records = [
+            json.loads(line)
+            for line in (self.fake_state / "transcript.jsonl")
+            .read_text(encoding="utf-8")
+            .splitlines()
+            if line.strip()
+        ]
+        late_user_records = [
+            record
+            for record in transcript_records
+            if record.get("type") == "response_item"
+            and record.get("payload", {}).get("role") == "user"
+            and record.get("payload", {}).get("content", [{}])[0].get("text")
+            == late_batch["prompt"]
+        ]
+        if len(late_user_records) != 1:
+            raise CheckFailure(
+                f"late-admission batch materialized {len(late_user_records)} times"
+            )
+        late_turn_id = late_user_records[0]["payload"][
+            "internal_chat_message_metadata_passthrough"
+        ]["turn_id"]
+        late_finals = [
+            record
+            for record in transcript_records
+            if record.get("payload", {}).get("turn_id") == late_turn_id
+            and record.get("payload", {}).get("item", {}).get("phase")
+            == "final_answer"
+        ]
+        if len(late_finals) != 1:
+            raise CheckFailure(
+                f"late-admission turn produced {len(late_finals)} final answers"
+            )
+        late_answers = [
+            message
+            for message in owner.messages
+            if "Late steering answer:" in str(message["body"])
+        ]
+        if len(late_answers) != 1:
+            raise CheckFailure(
+                f"late-admission batch produced {len(late_answers)} Matrix answers"
+            )
+        if (
+            late_answers[0]["source"]
+            .get("content", {})
+            .get("dev.openrig.source_event_ids")
+            != [late_root, late_follow]
+        ):
+            raise CheckFailure("late-admission answer lost source-event provenance")
+        late_qitems = [
+            item
+            for item in late_fake["queue"].values()
+            if any(
+                marker in str(item.get("body") or "")
+                for marker in (
+                    "hold first late admission root",
+                    "late admission follow",
+                )
+            )
+        ]
+        if len(late_qitems) != 2:
+            raise CheckFailure(
+                f"late-admission batch lost qitems: {late_qitems}"
+            )
+        for item in late_qitems:
+            validate_qitem_history(item)
+        self.record(
+            "steering-late-admission",
+            "pass",
+            (
+                "The deterministic transport retained a busy-pane follow-up "
+                "without a transcript user record past the initial admission "
+                "grace, completed the root turn first, then materialized the "
+                "follow-up as a later turn. Matrix received one answer with both "
+                "source event IDs; the batch appeared exactly once in the "
+                "transcript and was never sent as a fallback prompt."
+            ),
+        )
+        self.stop_bridge()
+        self.start_bridge()
+        await self.wait_for_steering_mode_ready(room_id)
 
     async def check_reaction(self, room_id: str) -> None:
         assert self.owner is not None

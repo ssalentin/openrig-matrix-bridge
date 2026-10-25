@@ -3491,7 +3491,12 @@ class MatrixBridge:
                                 )
                             )
                         )
-                        if time.time() < deadline:
+                        if time.time() < deadline or ref.busy:
+                            if ref.busy:
+                                request["last_injection_error"] = (
+                                    "waiting for transcript admission while "
+                                    "the seat remains busy"
+                                )
                             request["started_at"] = None
                             self.state.save()
                             return

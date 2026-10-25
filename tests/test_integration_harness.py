@@ -288,6 +288,69 @@ def test_fake_transport_records_best_effort_steering_inside_active_turn(
     )
 
 
+def test_fake_transport_can_materialize_steering_after_completion(
+    tmp_path: Path,
+):
+    first = fake(
+        tmp_path,
+        "send",
+        "integration-agent@local",
+        "active prompt",
+        "--raw",
+        "--json",
+        delay="0.2",
+    )
+    assert first.returncode == 0
+
+    steer = fake(
+        tmp_path,
+        "send",
+        "integration-agent@local",
+        "late follow-up",
+        "--raw",
+        "--json",
+        allow_steering=True,
+        extra_env={"OPENRIG_FAKE_LATE_STEER_SECONDS": "0.4"},
+    )
+    assert steer.returncode == 0
+    assert json.loads(steer.stdout)["materialization"] == "late"
+
+    transcript = tmp_path / "transcript.jsonl"
+    deadline = time.monotonic() + 3
+    records: list[dict[str, object]] = []
+    while time.monotonic() < deadline:
+        records = [
+            json.loads(line)
+            for line in transcript.read_text(encoding="utf-8").splitlines()
+        ]
+        if any(
+            record.get("payload", {}).get("item", {}).get("phase") == "final_answer"
+            and "Late steering answer:" in str(record)
+            for record in records
+        ):
+            break
+        time.sleep(0.05)
+
+    user_records = [
+        record
+        for record in records
+        if record.get("type") == "response_item"
+        and record.get("payload", {}).get("role") == "user"
+    ]
+    assert [record["payload"]["content"][0]["text"] for record in user_records] == [
+        "active prompt",
+        "late follow-up",
+    ]
+    assert len(
+        {
+            record["payload"]["internal_chat_message_metadata_passthrough"][
+                "turn_id"
+            ]
+            for record in user_records
+        }
+    ) == 2
+
+
 def test_fake_transport_can_emit_unrelated_human_final_before_owner_answer(
     tmp_path: Path,
 ):
@@ -353,7 +416,14 @@ def test_fake_transport_accepts_natural_demo_copy(tmp_path: Path):
                 json.loads(line)
                 for line in transcript.read_text(encoding="utf-8").splitlines()
             ]
-            if len(records) >= 2:
+            if (
+                sum(
+                    isinstance(record.get("payload"), dict)
+                    and isinstance(record["payload"].get("item"), dict)
+                    for record in records
+                )
+                >= 2
+            ):
                 break
         time.sleep(0.05)
 
