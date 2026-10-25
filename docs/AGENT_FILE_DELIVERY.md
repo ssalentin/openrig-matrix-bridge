@@ -91,6 +91,8 @@ When you create a file the owner needs (PDF, label, report, archive, export):
 1. Write it to disk and check it is a regular, non-empty file.
 2. Deliver it explicitly with
    openrig-matrix-bridge send-file --agent <your agent key> --path <absolute path> --json
+   Add --config <path> unless the default configuration path or
+   OPENRIG_MATRIX_CONFIG already points at the bridge's configuration.
    Images use send-image.
 3. A local path is never delivery evidence. Do not tell the owner a file "is at"
    a path. Only the command's JSON result counts.
