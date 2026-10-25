@@ -88,9 +88,8 @@
   explanation.
 - `doctor` lists the owner devices the bridge has verified and the latest
   verification outcome; `setup` prints the verification next step.
-- Document per-device trust and the cross-signing evaluation
-  (`docs/CROSS_SIGNING.md`): keep `matrix-nio` below 0.26, whose release has no
-  cross-signing and open SAS regressions against Element.
+- Document per-device trust and keep `matrix-nio` below 0.26; see
+  `docs/CROSS_SIGNING.md` for the 2026-10-25 evaluation.
 
 ## 0.11.0
 

@@ -66,11 +66,12 @@ real-client run records success; do not infer it from unit tests.
 
 Live Element SAS verification is not covered by the automated test suite.
 Restart interruption, timeout, cancellation, key mismatch, both confirmation
-orders, declining a non-emoji request, and confirmation state are unit-tested. Interruption and timeout notifications persist an outbox intent
-and use a stable Matrix transaction ID so startup reconciliation retries them
-exactly once. The real-client flow and cross-signing limitation remain tracked
-in [Issue #1](https://github.com/ssalentin/openrig-matrix-bridge/issues/1); do
-not describe them as fully verified until a real client check is recorded.
+orders, declining a non-emoji request, and confirmation state are unit-tested.
+Interruption and timeout notifications persist an outbox intent and use a stable
+Matrix transaction ID so startup reconciliation retries them exactly once. The
+real-client flow and cross-signing limitation remain tracked in [Issue
+#1](https://github.com/ssalentin/openrig-matrix-bridge/issues/1); do not
+describe them as fully verified until a real client check is recorded.
 
 The committed Element Web screenshots are synthetic demo evidence for visual
 rendering. They do not prove device verification or cross-signing. See
