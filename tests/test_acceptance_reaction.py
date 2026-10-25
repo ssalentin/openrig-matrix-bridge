@@ -582,3 +582,38 @@ def test_poller_recovery_never_makes_the_first_attempt_during_prompt_send(
     assert record["phase"] == "sent"
     assert record["last_error"] is None
     assert "retry_at" not in record
+
+
+def test_disabling_the_receipt_expires_pending_records_for_good(tmp_path: Path):
+    harness = AckHarness(tmp_path)
+    harness.client.fail_next = 1
+    harness.enqueue("$root", "root request", None)
+    assert harness.acks()["$root"]["phase"] == "sending"
+    sends = len(harness.client.sends)
+
+    harness.bridge.config.acceptance_reaction_enabled = False
+    asyncio.run(harness.bridge._recover_acceptance_reactions(startup=True))
+
+    record = harness.acks()["$root"]
+    assert record["phase"] == "expired"
+    assert record["last_error"] == "acceptance receipt disabled"
+
+    # Turning the switch back on later must not resurrect an old receipt.
+    harness.bridge.config.acceptance_reaction_enabled = True
+    asyncio.run(harness.bridge._recover_acceptance_reactions(startup=True))
+    recover_after_backoff(harness, "$root")
+
+    assert len(harness.client.sends) == sends
+    assert harness.client.reactions("$root") == []
+    assert harness.acks()["$root"]["phase"] == "expired"
+
+
+def test_expiring_on_disable_leaves_settled_records_alone(tmp_path: Path):
+    harness = AckHarness(tmp_path)
+    harness.enqueue("$sent", "first request", None)
+    assert harness.acks()["$sent"]["phase"] == "sent"
+
+    harness.bridge.config.acceptance_reaction_enabled = False
+    asyncio.run(harness.bridge._recover_acceptance_reactions(startup=True))
+
+    assert harness.acks()["$sent"]["phase"] == "sent"

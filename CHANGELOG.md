@@ -49,6 +49,10 @@
   the request is removed, every pending request is checked (not only the head),
   and a restart during reconciliation is idempotent. A claim is also no longer
   attempted for a qitem whose state is unknown.
+- Expire acceptance receipts that are still pending while the receipt is
+  turned off, so turning it back on never sends an old 👍, and let the
+  immediate steering admission scan match when the active request has no
+  recorded turn id (state saved before turn attribution existed).
 - Rebase the hybrid steering implementation onto current `main` release docs,
   setup guidance, artifacts, and harness changes.
 - Deliver related owner messages as one context: thread and reply relations
