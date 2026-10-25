@@ -12,6 +12,7 @@ import re
 import shutil
 import signal
 import socket
+import statistics
 import subprocess
 import sys
 import tempfile
@@ -59,6 +60,9 @@ BRIDGE_USER = "@bridge:localhost"
 OWNER_USER = "@owner:localhost"
 BRIDGE_PASSWORD = "bridge-integration-password"
 OWNER_PASSWORD = "owner-integration-password"
+STRANGER_USER = "@stranger:localhost"
+STRANGER_PASSWORD = "stranger-integration-password"
+ACCEPTANCE_REACTION_KEY = "👍"
 SESSION = "integration-agent@local"
 AGENT_KEY = "integration-agent"
 
@@ -76,6 +80,68 @@ def validate_answer_relation(raw_answer: dict[str, Any], prompt_event_id: str) -
     fallback = relation.get("m.in_reply_to")
     if not isinstance(fallback, dict) or fallback.get("event_id") != prompt_event_id:
         raise CheckFailure("final answer lacks the Matrix in-reply-to fallback")
+
+
+LATENCY_METHOD = (
+    "Per source event, the bridge persists time.time() at prompt intake (entry "
+    "into prompt enqueue, after sender, age and media checks), after the "
+    "OpenRig pane-input command returned (injection), when it first observed "
+    "the matching transcript user record (admission), and when Matrix accepted "
+    "its acceptance reaction. Values are milliseconds from intake, grouped by "
+    "kind: prompt (normal turn), steer (same-turn steering), late_steer "
+    "(steering input materialized as a later turn) and fallback (batch sent as "
+    "one normal turn)."
+)
+LATENCY_BOUNDARY = (
+    "Deterministic fake OpenRig subprocess transport and loopback Synapse; "
+    "not live Codex. Admission includes up to one bridge transcript poll "
+    "interval. Samples include crash, restart and deliberately delayed probes, "
+    "so maxima bound those paths rather than an idle seat; late_steer includes "
+    "the fake transport's intentional materialization delay."
+)
+
+
+def summarize_latency(samples: object) -> dict[str, Any]:
+    stages = (
+        ("intake_to_injection_ms", "injected_at"),
+        ("intake_to_admission_ms", "admitted_at"),
+        ("intake_to_acknowledgement_ms", "acknowledged_at"),
+    )
+    values: dict[str, dict[str, list[float]]] = {}
+    for sample in samples if isinstance(samples, list) else []:
+        if not isinstance(sample, dict):
+            continue
+        intake = sample.get("intake_at")
+        if not isinstance(intake, int | float):
+            continue
+        kind = values.setdefault(
+            str(sample.get("kind") or "unknown"),
+            {name: [] for name, _field in stages},
+        )
+        for name, field in stages:
+            moment = sample.get(field)
+            if isinstance(moment, int | float):
+                kind[name].append((float(moment) - float(intake)) * 1000)
+    by_kind = {
+        kind: {
+            name: (
+                {
+                    "count": len(series),
+                    "median": round(statistics.median(series), 1),
+                    "max": round(max(series), 1),
+                }
+                if series
+                else {"count": 0}
+            )
+            for name, series in stages_values.items()
+        }
+        for kind, stages_values in sorted(values.items())
+    }
+    return {
+        "method": LATENCY_METHOD,
+        "boundary": LATENCY_BOUNDARY,
+        "by_kind": by_kind,
+    }
 
 
 def validate_qitem_history(item: dict[str, Any]) -> None:
@@ -433,6 +499,7 @@ class IntegrationRun:
         self.config_path = self.work / "config.yaml"
         self.log_path = self.work / "bridge.log"
         self.bridge: subprocess.Popen[str] | None = None
+        self.bridge_started_ms = 0
         self.owner: MatrixOwner | None = None
         self.bridge_token = ""
         self.results: list[dict[str, Any]] = []
@@ -618,6 +685,7 @@ class IntegrationRun:
         for user, password in (
             ("bridge", BRIDGE_PASSWORD),
             ("owner", OWNER_PASSWORD),
+            ("stranger", STRANGER_PASSWORD),
         ):
             docker(
                 [
@@ -728,6 +796,7 @@ class IntegrationRun:
             environment.pop("OPENRIG_FAKE_UNRELATED_TURN", None)
         if crash_after:
             environment["OPENRIG_BRIDGE_TEST_CRASH_AFTER"] = crash_after
+        self.bridge_started_ms = int(time.time() * 1000)
         self.bridge = subprocess.Popen(
             [
                 sys.executable,
@@ -1353,7 +1422,29 @@ class IntegrationRun:
         )
 
     async def wait_for_steering_mode_ready(self, room_id: str) -> None:
+        """Wait until the current bridge process has finished startup.
+
+        The cached topic can still read ready from the previous process. Events
+        delivered in the restarted bridge's initial sync are not routed, so a
+        probe must wait for the status the new process writes after startup.
+        """
         assert self.owner is not None
+        url = (
+            f"{self.homeserver}/_matrix/client/v3/rooms/{quote(room_id)}"
+            "/state/dev.openrig.agent_status/"
+        )
+        deadline = time.monotonic() + self.args.timeout
+        async with aiohttp.ClientSession(
+            headers={"Authorization": f"Bearer {self.owner.token}"}
+        ) as session:
+            while time.monotonic() < deadline:
+                async with session.get(url) as response:
+                    value = await response.json() if response.status == 200 else {}
+                if int(value.get("updated_at") or 0) >= self.bridge_started_ms:
+                    break
+                await asyncio.sleep(0.2)
+            else:
+                raise CheckFailure("restarted bridge did not publish a fresh status")
         await self.owner.sync_until(
             lambda: str(self.owner.client.rooms[room_id].topic).startswith("🟢 bereit"),
             self.args.timeout,
@@ -1850,13 +1941,25 @@ class IntegrationRun:
             raise CheckFailure(
                 f"late-admission batch produced {len(late_answers)} Matrix answers"
             )
-        if (
+        late_source_ids = (
             late_answers[0]["source"]
             .get("content", {})
             .get("dev.openrig.source_event_ids")
-            != [late_root, late_follow]
+        )
+        if late_source_ids != [late_follow]:
+            raise CheckFailure(
+                "late-admission answer lost its follow-up source-event provenance"
+            )
+        late_relation = (
+            late_answers[0]["source"].get("content", {}).get("m.relates_to")
+        )
+        if (
+            not isinstance(late_relation, dict)
+            or late_relation.get("event_id") != late_root
         ):
-            raise CheckFailure("late-admission answer lost source-event provenance")
+            raise CheckFailure(
+                "late-admission answer lost the completed root's thread identity"
+            )
         late_qitems = [
             item
             for item in late_fake["queue"].values()
@@ -1882,8 +1985,9 @@ class IntegrationRun:
                 "without a transcript user record past the initial admission "
                 "grace, completed the root turn first, then materialized the "
                 "follow-up as a later turn. Matrix received one answer with both "
-                "source event IDs; the batch appeared exactly once in the "
-                "transcript and was never sent as a fallback prompt."
+                "the follow-up source ID and canonical completed-root thread; "
+                "the batch appeared exactly once in the transcript and was never "
+                "sent as a fallback prompt."
             ),
         )
         self.stop_bridge()
@@ -1971,6 +2075,211 @@ class IntegrationRun:
             (
                 "Owner reaction reached the fake OpenRig transport as silent "
                 "feedback and did not create a visible bot reply."
+            ),
+        )
+
+    async def bridge_acknowledgements(
+        self,
+        room_id: str,
+        event_id: str,
+    ) -> list[dict[str, Any]]:
+        """Read the homeserver's annotation relations for one event."""
+        assert self.owner is not None
+        url = (
+            f"{self.homeserver}/_matrix/client/v1/rooms/{quote(room_id)}"
+            f"/relations/{quote(event_id)}/m.annotation/m.reaction?limit=50"
+        )
+        async with (
+            aiohttp.ClientSession() as session,
+            session.get(
+                url,
+                headers={"Authorization": f"Bearer {self.owner.token}"},
+            ) as response,
+        ):
+            value = await response.json()
+            if response.status != 200:
+                raise CheckFailure(f"relations lookup failed: {value}")
+        return [
+            event
+            for event in value.get("chunk", [])
+            if event.get("sender") == BRIDGE_USER
+        ]
+
+    async def stranger_send(self, room_id: str, body: str) -> str:
+        assert self.owner is not None
+        invite = await self.owner.client.room_invite(room_id, STRANGER_USER)
+        if hasattr(invite, "status_code") and invite.status_code:
+            raise CheckFailure(f"stranger invite failed: {invite}")
+        token, _device = await self.http_login(
+            "stranger",
+            STRANGER_PASSWORD,
+            "OPENRIG_STRANGER",
+        )
+        headers = {"Authorization": f"Bearer {token}"}
+        base = f"{self.homeserver}/_matrix/client/v3/rooms/{quote(room_id)}"
+        async with aiohttp.ClientSession(headers=headers) as session:
+            async with session.post(f"{base}/join", json={}) as response:
+                if response.status != 200:
+                    raise CheckFailure(
+                        f"stranger join failed: {await response.json()}"
+                    )
+            async with session.put(
+                f"{base}/send/m.room.message/{uuid.uuid4().hex}",
+                json={"msgtype": "m.text", "body": body},
+            ) as response:
+                value = await response.json()
+                if response.status != 200:
+                    raise CheckFailure(f"stranger send failed: {value}")
+            async with session.post(f"{base}/leave", json={}) as response:
+                if response.status != 200:
+                    raise CheckFailure(
+                        f"stranger leave failed: {await response.json()}"
+                    )
+        return str(value["event_id"])
+
+    async def check_acceptance_reaction(self, room_id: str) -> None:
+        assert self.owner is not None
+        owner = self.owner
+        wait_for_json_state(
+            self.state_dir / "state.json",
+            lambda value: not value.get("pending", {}).get(AGENT_KEY),
+            self.args.timeout,
+            description="pending requests before acceptance-reaction probe",
+        )
+
+        async def answered(prompt: str) -> None:
+            await owner.sync_until(
+                lambda: any(
+                    message["sender"] == BRIDGE_USER
+                    and f"Fake integration answer: {prompt}" in str(message["body"])
+                    for message in owner.messages
+                ),
+                self.args.timeout,
+                description=f"answer for {prompt!r}",
+            )
+            wait_for_json_state(
+                self.state_dir / "state.json",
+                lambda value: not value.get("pending", {}).get(AGENT_KEY),
+                self.args.timeout,
+                description=f"pending queue to drain after {prompt!r}",
+            )
+
+        async def exactly_one(event_id: str, label: str) -> str:
+            reactions = await self.bridge_acknowledgements(room_id, event_id)
+            if len(reactions) != 1:
+                raise CheckFailure(
+                    f"{label} received {len(reactions)} bridge reactions"
+                )
+            relation = reactions[0].get("content", {}).get("m.relates_to", {})
+            if (
+                relation.get("rel_type") != "m.annotation"
+                or relation.get("key") != ACCEPTANCE_REACTION_KEY
+                or relation.get("event_id") != event_id
+            ):
+                raise CheckFailure(f"{label} reaction is malformed: {relation}")
+            return str(reactions[0]["event_id"])
+
+        plain_prompt = "acceptance reaction probe"
+        plain_event = await owner.send_text(room_id, plain_prompt)
+        await answered(plain_prompt)
+        plain_reaction = await exactly_one(plain_event, "accepted owner prompt")
+
+        self.stop_bridge()
+        self.start_bridge(crash_after="ack_send")
+        await self.wait_for_steering_mode_ready(room_id)
+        crash_prompt = "acceptance reaction crash probe"
+        crash_event = await owner.send_text(room_id, crash_prompt)
+        self.wait_for_bridge_crash()
+        crashed_state = self.bridge_state()
+        crashed_record = crashed_state.get("acceptance_reactions", {}).get(
+            crash_event,
+            {},
+        )
+        if crashed_record.get("phase") != "sending":
+            raise CheckFailure(
+                f"ack crash did not leave a pending acknowledgement: {crashed_record}"
+            )
+        before_restart = await self.bridge_acknowledgements(room_id, crash_event)
+        if len(before_restart) != 1:
+            raise CheckFailure(
+                f"ack crash probe saw {len(before_restart)} reactions before restart"
+            )
+        self.start_bridge()
+        await answered(crash_prompt)
+        crash_reaction = await exactly_one(crash_event, "crash-recovered prompt")
+        if crash_reaction != before_restart[0]["event_id"]:
+            raise CheckFailure("restart replaced the acceptance reaction")
+        recovered = self.bridge_state()["acceptance_reactions"][crash_event]
+        if recovered.get("phase") != "sent" or (
+            recovered.get("reaction_event_id") not in {None, crash_reaction}
+        ):
+            raise CheckFailure(f"ack recovery state is wrong: {recovered}")
+        if await exactly_one(plain_event, "prompt after restart") != plain_reaction:
+            raise CheckFailure("restart changed an earlier acceptance reaction")
+
+        stranger_body = "untrusted acceptance probe"
+        stranger_event = await self.stranger_send(room_id, stranger_body)
+        await owner.sync_until(
+            lambda: any(
+                message["event_id"] == stranger_event for message in owner.messages
+            ),
+            self.args.timeout,
+            description="untrusted message delivered to the room",
+        )
+        await asyncio.sleep(2.0)
+        if await self.bridge_acknowledgements(room_id, stranger_event):
+            raise CheckFailure("untrusted sender received an acceptance reaction")
+        state = self.bridge_state()
+        acknowledgements = state.get("acceptance_reactions", {})
+        if stranger_event in acknowledgements:
+            raise CheckFailure("untrusted event was recorded as accepted")
+        fake = json.loads((self.fake_state / "fake-openrig.json").read_text())
+        if any(stranger_body in str(item["prompt"]) for item in fake["prompts"]):
+            raise CheckFailure("untrusted message reached the OpenRig transport")
+
+        batches: dict[str, list[str]] = {}
+        for sample in state.get("latency_samples", []):
+            if sample.get("kind") in {"steer", "late_steer", "fallback"}:
+                batches.setdefault(str(sample.get("request_id")), []).append(
+                    str(sample.get("event_id"))
+                )
+        batch_events = [
+            event_id
+            for event_ids in batches.values()
+            if len(event_ids) > 1
+            for event_id in event_ids
+        ]
+        if len(batch_events) < 2:
+            raise CheckFailure(
+                f"no multi-event steering batch to verify: {batches}"
+            )
+        accepted = [
+            event_id
+            for event_id, record in acknowledgements.items()
+            if isinstance(record, dict)
+        ]
+        not_sent = {
+            event_id: record.get("phase")
+            for event_id, record in acknowledgements.items()
+            if isinstance(record, dict) and record.get("phase") != "sent"
+        }
+        if not_sent:
+            raise CheckFailure(f"acceptance reactions not sent: {not_sent}")
+        for event_id in sorted(set(accepted) | set(batch_events)):
+            await exactly_one(event_id, f"accepted event {event_id}")
+        self.record(
+            "acceptance-reaction",
+            "pass",
+            (
+                "Synapse's relation index showed exactly one bridge `m.annotation` "
+                f"reaction with key {ACCEPTANCE_REACTION_KEY} on each of "
+                f"{len(accepted)} accepted owner events, including "
+                f"{len(batch_events)} events joined into steering batches. A "
+                "bridge crash immediately after the reaction send left the "
+                "acknowledgement pending; restart reused the persisted "
+                "transaction and still showed one reaction. An untrusted room "
+                "member's message received no reaction, no acceptance record "
+                "and no OpenRig prompt."
             ),
         )
 
@@ -2825,6 +3134,7 @@ class IntegrationRun:
         await self.check_steering_modes(room_id)
         await self.check_steering_fallback_and_restart(room_id)
         await self.check_reaction(room_id)
+        await self.check_acceptance_reaction(room_id)
         await self.check_images(room_id)
         await self.check_files(room_id)
         await self.check_threaded_files(room_id)
@@ -2882,6 +3192,9 @@ class IntegrationRun:
                     "trust were not exercised."
                 ),
             ],
+            "steering_latency": summarize_latency(
+                state.get("latency_samples", [])
+            ),
             "bridge_state_summary": {
                 "rooms": len(state.get("rooms", {})),
                 "processed_matrix_events": len(state.get("processed_events", [])),

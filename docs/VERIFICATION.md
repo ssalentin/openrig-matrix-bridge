@@ -165,7 +165,39 @@ exact-source runs passed 20/20 checks; the persisted run completed in 54.1s with
 `evidence_valid: true`. Report:
 [`matrix-stability-report.json`](artifacts/matrix-stability-report.json).
 
-### Issue #4 hybrid steering evidence
+### 0.12.0 steering, acceptance receipt, and fail-closed evidence
+
+The 0.12.0 candidate narrows the steering contract and adds the 👍 acceptance
+receipt. The committed harness `tools/matrix_integration.py` covers them with
+these checks, all against a disposable Synapse and a deterministic fake OpenRig
+transport:
+
+| Check | What it proves |
+|---|---|
+| `steering-modes-and-batch` | `queue`, `steer`, and `auto` behavior; one ordered same-thread batch keeps every source event ID and the canonical thread root. |
+| `steering-fallback-restart` | Refused injection and crash-after-injection recovery: rescan before fallback, one durable fallback attempt only when the seat is idle without admission. |
+| `steering-late-admission` | Input that materializes as the next turn is adopted without resending; the answer keeps the follow-up source ID and the completed root's thread. |
+| `acceptance-reaction` | Exactly one bridge `m.annotation` 👍 on each accepted owner event, including batch members; a crash after the send leaves the acknowledgement pending and restart reuses the persisted transaction; an untrusted room member gets no reaction, no acceptance record, and no OpenRig prompt. |
+
+The report also carries a `steering_latency` section (median and maximum
+milliseconds per stage and kind, with `method` and `boundary` strings). It
+measures the deterministic transport, not live Codex.
+
+The bounded terminal state for a seat that stays busy without admission
+(`openrig.response_timeout_minutes`, recorded in `steering_failures`) is
+covered at the unit level in `tests/test_steering.py`; the Matrix harness does
+not wait out that timeout.
+
+**Not proven:** live Codex evidence. The cost directive for this cell forbade
+live Codex turns, so no run shows a real Codex terminal retaining, queueing, or
+admitting pane input. Exactly-once delivery after steering admission fails is
+not claimed; a late pane admission remains a documented best-effort residual
+risk because OpenRig has no acknowledged safe-boundary or turn-admission
+primitive. The source SHA, check count, and retained report for the final
+candidate are recorded in
+[`docs/artifacts/README.md`](artifacts/README.md) once QA names the SHA.
+
+### Issue #4 hybrid steering evidence (0.11.0 candidate, historical)
 
 Issue #4 source `774d1038b61f79fbf28c6709a8d7c5dfbc8dee99` passed 277 unit
 tests. Three consecutive exact-source disposable-Synapse runs passed

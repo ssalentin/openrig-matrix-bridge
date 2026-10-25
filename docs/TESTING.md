@@ -68,10 +68,11 @@ The harness uses `tools/fake_openrig.py` as a separate deterministic OpenRig CLI
 process. It exercises the bridge's real `rig ps`, `rig send`, and `rig queue`
 subprocess contracts, transcript polling, turn attribution, and final-answer
 extraction. It does not prove delivery into a live Codex terminal. For steering
-checks only, the fake transport opts into pane-style input during a busy turn
-and records that input under the active synthetic turn ID. Other checks still
-verify that a busy turn rejects a normal new prompt. That limitation is recorded
-in the report.
+checks only, the fake transport opts into pane-style input during a busy turn.
+It can record the input immediately or retain it without a transcript user
+record and materialize it as a later synthetic turn after the original
+completion. Other checks still verify that a busy turn rejects a normal new
+prompt. That limitation is recorded in the report.
 
 ### Matrix timing-failure policy
 
@@ -101,6 +102,8 @@ forward.
 | `fifo-queue-notice` | Per-agent FIFO ordering with second-send timestamp after first completion, plus the pinned queue notice |
 | `steering-modes-and-batch` | Disposable-Synapse queue/steer/auto semantics, ordered same-thread batching with all source IDs, canonical-root answer metadata, top-level/cross-thread isolation, qitem closure, and rejection of an unrelated human transcript turn |
 | `steering-fallback-restart` | Refused busy injection preserves the full batch for one normal fallback turn; a bridge crash immediately after pane injection recovers admission from the transcript without resending |
+| `steering-late-admission` | A busy-pane batch remains absent from the transcript past the initial grace and materializes after the root completion as the next turn; exactly one transcript input, one final answer, one Matrix answer, both source IDs, and both qitems are observed without fallback resend |
+| `acceptance-reaction` | Draft name, pending build.engine's commit: one owner event gets exactly one 👍 related to it, still one after restart, none for an untrusted sender, and one per event in a batch |
 | `silent-reaction-feedback` | Reaction forwarding without a visible reply |
 | `encrypted-images` | Owner-to-agent encrypted PNG storage and agent-to-owner `send-image` byte round trip |
 | `voice-status-edit` | Encrypted voice note, deterministic local transcript, one threaded progress event edited by `m.replace`, no transcript-only reply, one forwarded prompt and qitem closure |

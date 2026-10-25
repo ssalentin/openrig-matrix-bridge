@@ -104,6 +104,12 @@ AGENT_STATUS_EVENT = "dev.openrig.agent_status"
 VERIFICATION_TIMEOUT_SECONDS = 600
 _DEFAULT_THREAD_ROOT = object()
 MAX_DELIVERY_ATTEMPTS = 3
+ACCEPTANCE_REACTION_KEY = "👍"
+MAX_ACCEPTANCE_RECORDS = 2000
+MAX_ACCEPTANCE_ATTEMPTS = 8
+ACCEPTANCE_RETRY_BASE_SECONDS = 5.0
+ACCEPTANCE_RETRY_MAX_SECONDS = 300.0
+MAX_LATENCY_SAMPLES = 200
 TERMINAL_QITEM_PHASES = {"done", "failed", "canceled", "denied"}
 VOICE_STATUS_PROGRESS = "Sprachnachricht empfangen, transkribiere …"
 VOICE_STATUS_INTERRUPTED = (
@@ -483,6 +489,7 @@ class MatrixBridge:
         self._initialize_transcript_offsets()
         self._repair_decision_reply_targets()
         await self._reconcile_pending_operations()
+        await self._recover_acceptance_reactions()
         await self._refresh_agent_statuses(force=True)
         poller = asyncio.create_task(self._poll_answers(), name="openrig-matrix-poller")
         status_poller = asyncio.create_task(
@@ -1975,6 +1982,7 @@ class MatrixBridge:
         suppress_reply: bool = False,
         queue_tracked: bool = True,
     ) -> None:
+        intake_at = time.time()
         async with self.locks[agent.key]:
             pending = self.state.data["pending"].setdefault(agent.key, [])
             self.processed_events.add(event_id)
@@ -2024,6 +2032,7 @@ class MatrixBridge:
                     "urgent",
                 ),
                 "text": text,
+                "intake_at": intake_at,
                 "enqueued_at": time.time(),
                 "prompt_phase": "pending",
                 "answer_phase": None,
@@ -2050,7 +2059,15 @@ class MatrixBridge:
                     event_id=event_id,
                     text=text,
                 )
+                acknowledge = self._record_acceptance(
+                    room.room_id,
+                    event_id,
+                    queue_tracked=queue_tracked,
+                    suppress_reply=suppress_reply,
+                )
                 self.state.save()
+                if acknowledge:
+                    await self._acknowledge_acceptance(room.room_id, event_id)
                 await self._update_queue_notice(
                     agent,
                     room.room_id,
@@ -2058,6 +2075,12 @@ class MatrixBridge:
                 )
                 return
             pending.append(request)
+            acknowledge = self._record_acceptance(
+                room.room_id,
+                event_id,
+                queue_tracked=queue_tracked,
+                suppress_reply=suppress_reply,
+            )
             self.state.save()
             if len(pending) == 1:
                 await self._start_request(agent, pending[0], room.room_id)
@@ -2067,6 +2090,8 @@ class MatrixBridge:
                     room.room_id,
                     len(pending) - 1,
                 )
+            if acknowledge:
+                await self._acknowledge_acceptance(room.room_id, event_id)
 
     def _is_steering_candidate(
         self,
@@ -2128,6 +2153,7 @@ class MatrixBridge:
             "qitem_id": incoming.get("qitem_id"),
             "reply_to_event_id": incoming["reply_to_event_id"],
             "source_relation": incoming.get("source_relation"),
+            "intake_at": incoming.get("intake_at"),
             "enqueued_at": incoming["enqueued_at"],
         }
         if group is None:
@@ -2168,6 +2194,167 @@ class MatrixBridge:
             event_id,
             agent.session,
         )
+
+    def _record_acceptance(
+        self,
+        room_id: str,
+        event_id: str,
+        *,
+        queue_tracked: bool,
+        suppress_reply: bool,
+    ) -> bool:
+        """Persist the acceptance-reaction intent with the accepted request.
+
+        The caller saves state once, so the request and its pending
+        acknowledgement become durable together and a crash before the
+        reaction send is repaired by recovery instead of being lost.
+        """
+        if suppress_reply or not queue_tracked:
+            return False
+        if not getattr(self.config, "acceptance_reaction_enabled", True):
+            return False
+        acks = self.state.data.setdefault("acceptance_reactions", {})
+        record = acks.get(event_id)
+        if isinstance(record, dict):
+            return record.get("phase") == "sending"
+        acks[event_id] = {
+            "room_id": room_id,
+            "tx_id": f"ack-{event_id}",
+            "phase": "sending",
+            "attempts": 0,
+            "accepted_at": time.time(),
+            "acknowledged_at": None,
+            "reaction_event_id": None,
+            "last_error": None,
+        }
+        settled = [
+            key
+            for key, value in acks.items()
+            if not (isinstance(value, dict) and value.get("phase") == "sending")
+        ]
+        for key in settled[: max(0, len(acks) - MAX_ACCEPTANCE_RECORDS)]:
+            del acks[key]
+        return True
+
+    async def _acknowledge_acceptance(self, room_id: str, event_id: str) -> bool:
+        acks = self.state.data.get("acceptance_reactions", {})
+        record = acks.get(event_id)
+        if not isinstance(record, dict) or record.get("phase") != "sending":
+            return False
+        record["attempts"] = int(record.get("attempts") or 0) + 1
+        error: object = None
+        try:
+            response = await self.client.room_send(
+                room_id,
+                "m.reaction",
+                {
+                    "m.relates_to": {
+                        "rel_type": "m.annotation",
+                        "event_id": event_id,
+                        "key": ACCEPTANCE_REACTION_KEY,
+                    }
+                },
+                tx_id=str(record.get("tx_id") or f"ack-{event_id}"),
+                ignore_unverified_devices=True,
+            )
+        except Exception as exc:
+            LOGGER.warning(
+                "acceptance reaction for %s raised",
+                event_id,
+                exc_info=True,
+            )
+            response = None
+            error = exc
+        if isinstance(response, RoomSendResponse):
+            self._crash_after_effect("ack_send")
+            record["phase"] = "sent"
+            record["reaction_event_id"] = response.event_id
+        elif getattr(response, "status_code", None) == "M_DUPLICATE_ANNOTATION":
+            record["phase"] = "sent"
+        else:
+            record["last_error"] = str(error or response)
+            record["retry_at"] = time.time() + min(
+                ACCEPTANCE_RETRY_MAX_SECONDS,
+                ACCEPTANCE_RETRY_BASE_SECONDS * 2 ** (record["attempts"] - 1),
+            )
+            if record["attempts"] >= MAX_ACCEPTANCE_ATTEMPTS:
+                record["phase"] = "failed"
+                LOGGER.error(
+                    "giving up acceptance reaction for %s after %s attempts: %s",
+                    event_id,
+                    record["attempts"],
+                    record["last_error"],
+                )
+            self.state.save()
+            return False
+        record["acknowledged_at"] = time.time()
+        record["last_error"] = None
+        record.pop("retry_at", None)
+        self.state.save()
+        return True
+
+    async def _recover_acceptance_reactions(self) -> None:
+        acks = self.state.data.get("acceptance_reactions", {})
+        now = time.time()
+        for event_id, record in list(acks.items()):
+            if (
+                isinstance(record, dict)
+                and record.get("phase") == "sending"
+                and record.get("room_id")
+                and float(record.get("retry_at") or 0) <= now
+            ):
+                await self._acknowledge_acceptance(str(record["room_id"]), event_id)
+
+    def _mark_prompt_admitted(
+        self,
+        request: dict[str, Any],
+        turn_id: str,
+    ) -> None:
+        request["prompt_turn_id"] = turn_id
+        request["admitted_at"] = time.time()
+        self._record_latency(
+            request,
+            "fallback" if request.get("deferred_steering") else "prompt",
+        )
+
+    def _record_latency(self, request: dict[str, Any], kind: str) -> None:
+        """Keep bounded intake, injection and admission timestamps.
+
+        Admission is the bridge's observation of the transcript user record,
+        so it includes up to one transcript poll interval.
+        """
+        if request.get("latency_recorded"):
+            return
+        request["latency_recorded"] = True
+        acks = self.state.data.get("acceptance_reactions", {})
+        entries = request.get("steering_entries") or [
+            {
+                "event_id": request.get("event_id"),
+                "intake_at": request.get("intake_at"),
+            }
+        ]
+        samples = self.state.data.setdefault("latency_samples", [])
+        for entry in entries:
+            event_id = str(entry.get("event_id"))
+            ack = acks.get(event_id)
+            samples.append(
+                {
+                    "event_id": event_id,
+                    "request_id": request.get("id"),
+                    "kind": kind,
+                    "turn_id": (
+                        request.get("injection_turn_id")
+                        or request.get("prompt_turn_id")
+                    ),
+                    "intake_at": entry.get("intake_at"),
+                    "injected_at": request.get("injected_at"),
+                    "admitted_at": request.get("admitted_at"),
+                    "acknowledged_at": (
+                        ack.get("acknowledged_at") if isinstance(ack, dict) else None
+                    ),
+                }
+            )
+        self.state.data["latency_samples"] = samples[-MAX_LATENCY_SAMPLES:]
 
     async def _create_inbound_qitem(
         self,
@@ -3320,6 +3507,28 @@ class MatrixBridge:
         )
         self.state.save()
 
+    def _record_steering_failure(
+        self,
+        request: dict[str, Any],
+        reason: str,
+    ) -> None:
+        failures = self.state.data.setdefault("steering_failures", [])
+        failures.append(
+            {
+                "id": request.get("id"),
+                "source_event_ids": list(request.get("source_event_ids", [])),
+                "thread_root_event_id": request.get("thread_root_event_id"),
+                "reply_to_event_id": request.get("reply_to_event_id"),
+                "qitem_ids": self._request_qitem_ids(request),
+                "injection_attempted_at": request.get("injection_attempted_at"),
+                "injection_turn_id": request.get("injection_turn_id"),
+                "reason": reason,
+                "failed_at": time.time(),
+            }
+        )
+        self.state.data["steering_failures"] = failures[-200:]
+        self.state.save()
+
     async def _attempt_steering(
         self,
         agent: AgentConfig,
@@ -3347,6 +3556,32 @@ class MatrixBridge:
             group["last_injection_error"] = "active session identity changed"
             self.state.save()
             return
+        prompt_turn_id = active.get("prompt_turn_id")
+        if active.get("turn_attribution_required") and not prompt_turn_id:
+            try:
+                records, _new_offset = await asyncio.to_thread(
+                    read_complete_records,
+                    ref.transcript_path,
+                    int(active["offset"]),
+                )
+            except (OSError, KeyError, TypeError, ValueError):
+                records = []
+            prompt_turn_id = next(
+                (
+                    turn_id
+                    for turn_id, message in user_messages(records)
+                    if message == active.get("text")
+                ),
+                None,
+            )
+            if prompt_turn_id is None:
+                group["last_injection_error"] = (
+                    "waiting for active Matrix prompt turn identity"
+                )
+                self.state.save()
+                return
+            self._mark_prompt_admitted(active, prompt_turn_id)
+            self.state.save()
         if not await self._claim_inbound_qitem(agent, group):
             group["injection_phase"] = "fallback"
             group["last_injection_error"] = "could not claim batch qitems"
@@ -3361,19 +3596,25 @@ class MatrixBridge:
         try:
             await self.gateway.steer_prompt(ref, str(group["text"]))
         except (AgentSessionNotFound, GatewayError, OSError) as exc:
-            group["injection_phase"] = "fallback"
             group["last_injection_error"] = str(exc)
             self.state.save()
             return
         self._crash_after_effect("steering_send")
         group["injection_phase"] = "injected_unconfirmed"
+        group["injected_at"] = time.time()
         self.state.save()
-        await self._scan_steering_admission(group, ref.transcript_path)
+        await self._scan_steering_admission(
+            group,
+            ref.transcript_path,
+            expected_turn_id=str(prompt_turn_id),
+        )
 
     async def _scan_steering_admission(
         self,
         group: dict[str, Any],
         transcript_path: Path,
+        *,
+        expected_turn_id: str | None = None,
     ) -> bool:
         phase = str(group.get("injection_phase") or "")
         if phase not in {"injecting", "injected_unconfirmed"}:
@@ -3394,9 +3635,16 @@ class MatrixBridge:
         except OSError:
             return False
         for turn_id, message in user_messages(records):
-            if message == text:
+            if message == text and (
+                expected_turn_id is None or turn_id == expected_turn_id
+            ):
                 group["injection_phase"] = "admitted"
                 group["injection_turn_id"] = turn_id
+                group["admitted_at"] = time.time()
+                self._record_latency(
+                    group,
+                    "steer" if expected_turn_id is not None else "late_steer",
+                )
                 self.state.save()
                 return True
         if phase == "injecting":
@@ -3408,9 +3656,10 @@ class MatrixBridge:
                         2.0,
                     )
                 )
-            group["last_injection_error"] = (
-                "waiting for transcript admission after restart"
-            )
+            if not group.get("last_injection_error"):
+                group["last_injection_error"] = (
+                    "waiting for transcript admission after restart"
+                )
             self.state.save()
         return False
 
@@ -3475,13 +3724,42 @@ class MatrixBridge:
                         "injecting",
                         "injected_unconfirmed",
                     }:
+                        attempted_at = float(
+                            request.get("injection_attempted_at") or time.time()
+                        )
+                        timeout_seconds = max(
+                            0.0,
+                            float(
+                                getattr(
+                                    self.config,
+                                    "response_timeout_minutes",
+                                    360,
+                                )
+                            )
+                            * 60,
+                        )
+                        if time.time() - attempted_at >= timeout_seconds:
+                            reason = (
+                                "steering admission unresolved while the "
+                                "seat remained busy"
+                            )
+                            request["terminal_error"] = (
+                                "Steering-Eingabe konnte nicht bestätigt werden: "
+                                f"{reason}"
+                            )
+                            self._record_steering_failure(request, reason)
+                            await self._advance_terminal_request(
+                                agent,
+                                request,
+                                room_id,
+                                disposition="timeout",
+                                status_detail="Steering-Zeitüberschreitung",
+                            )
+                            return
                         deadline = float(
                             request.get("fallback_not_before")
                             or (
-                                float(
-                                    request.get("injection_attempted_at")
-                                    or time.time()
-                                )
+                                attempted_at
                                 + float(
                                     getattr(
                                         self.config,
@@ -3539,6 +3817,7 @@ class MatrixBridge:
             await self.gateway.send_prompt(ref, request["text"])
             self._crash_after_effect("prompt_send")
             request["prompt_phase"] = "sent"
+            request["injected_at"] = time.time()
             self.state.save()
             if not request.get("suppress_reply"):
                 await self._set_typing(room_id, True)
@@ -3603,6 +3882,7 @@ class MatrixBridge:
         while True:
             try:
                 await asyncio.sleep(self.config.poll_interval_seconds)
+                await self._recover_acceptance_reactions()
                 for agent in self.config.agents.values():
                     await self._poll_agent(agent)
             except asyncio.CancelledError:
@@ -3677,10 +3957,20 @@ class MatrixBridge:
                     "injecting",
                     "injected_unconfirmed",
                 } and request.get("transcript_path"):
-                    await self._scan_steering_admission(
-                        group,
-                        Path(str(request["transcript_path"])),
-                    )
+                    expected_turn_id = request.get("prompt_turn_id")
+                    if (
+                        not request.get("turn_attribution_required")
+                        or expected_turn_id
+                    ):
+                        await self._scan_steering_admission(
+                            group,
+                            Path(str(request["transcript_path"])),
+                            expected_turn_id=(
+                                str(expected_turn_id)
+                                if expected_turn_id
+                                else None
+                            ),
+                        )
             if request.get("started_at") is None:
                 try:
                     ref = self.resolver.resolve(agent.session)
@@ -3748,7 +4038,7 @@ class MatrixBridge:
                     )
                     if prompt_turn_id is None:
                         return
-                    request["prompt_turn_id"] = prompt_turn_id
+                    self._mark_prompt_admitted(request, prompt_turn_id)
                     self.state.save()
                 sent_commentary = request.setdefault("sent_commentary", [])
                 sent_ids = set(sent_commentary)
@@ -3972,7 +4262,9 @@ class MatrixBridge:
                 "answer_source_event_ids",
                 request.get("source_event_ids"),
             )
-            if isinstance(source_event_ids, list) and len(source_event_ids) > 1:
+            if isinstance(source_event_ids, list) and (
+                len(source_event_ids) > 1 or request.get("deferred_steering")
+            ):
                 kwargs["source_event_ids"] = [
                     str(event_id) for event_id in source_event_ids
                 ]

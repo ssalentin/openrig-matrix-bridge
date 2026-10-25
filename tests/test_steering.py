@@ -70,6 +70,8 @@ class SteeringHarness:
         self.sent_answers: list[tuple[str, str]] = []
         self.sent_source_ids: list[list[str] | None] = []
         self.steer_error: Exception | None = None
+        self.steer_turn_id = "turn-1"
+        self.record_prompt_admission = True
         self.record_steering_admission = True
         self.bridge = object.__new__(MatrixBridge)
         self.bridge.config = SimpleNamespace(
@@ -143,10 +145,11 @@ class SteeringHarness:
     async def send_prompt(self, ref, text: str):
         self.prompts.append((ref.session_id, text))
         turn_id = f"turn-{len(self.prompts)}"
-        append_records(
-            self.transcript,
-            [transcript_user_message(turn_id, text)],
-        )
+        if self.record_prompt_admission:
+            append_records(
+                self.transcript,
+                [transcript_user_message(turn_id, text)],
+            )
 
     async def steer_prompt(self, ref, text: str):
         self.steers.append(text)
@@ -155,7 +158,7 @@ class SteeringHarness:
         if self.record_steering_admission:
             append_records(
                 self.transcript,
-                [transcript_user_message("turn-1", text)],
+                [transcript_user_message(self.steer_turn_id, text)],
             )
 
     async def send(self, room_id, text, reply_to=None, **kwargs):
@@ -310,7 +313,7 @@ def test_admitted_same_turn_batch_produces_one_answer_and_closes_every_qitem(
     assert harness.bridge.state.data["pending"]["advisor"] == []
 
 
-def test_steering_error_keeps_whole_batch_for_one_normal_fallback_turn(
+def test_steering_error_waits_for_grace_then_falls_back_once(
     tmp_path: Path,
 ):
     from openrig_matrix_bridge.openrig import GatewayError
@@ -326,7 +329,7 @@ def test_steering_error_keeps_whole_batch_for_one_normal_fallback_turn(
 
     asyncio.run(harness.bridge._poll_agent(harness.agent))
 
-    assert pending[1]["injection_phase"] == "fallback"
+    assert pending[1]["injection_phase"] == "injecting"
     assert pending[1]["last_injection_error"] == "pane injection rejected"
 
     append_records(
@@ -343,6 +346,11 @@ def test_steering_error_keeps_whole_batch_for_one_normal_fallback_turn(
     asyncio.run(harness.bridge._poll_agent(harness.agent))
     harness.busy = False
     asyncio.run(harness.bridge._poll_agent(harness.agent))
+    assert pending[0]["injection_phase"] == "injecting"
+    assert [prompt[1] for prompt in harness.prompts] == ["root request"]
+
+    pending[0]["fallback_not_before"] = time.time() - 1
+    asyncio.run(harness.bridge._poll_agent(harness.agent))
 
     assert [prompt[1] for prompt in harness.prompts] == [
         "root request",
@@ -352,6 +360,101 @@ def test_steering_error_keeps_whole_batch_for_one_normal_fallback_turn(
     assert fallback_prompt.count("$follow-one") >= 1
     assert fallback_prompt.count("$follow-two") >= 1
     assert fallback_prompt.index("$follow-one") < fallback_prompt.index("$follow-two")
+
+
+def test_post_effect_steering_error_waits_for_admission_before_fallback(
+    tmp_path: Path,
+):
+    from openrig_matrix_bridge.openrig import GatewayError
+
+    harness = SteeringHarness(tmp_path, "steer")
+    harness.enqueue("$root", "root request", None)
+    harness.busy = True
+    harness.enqueue("$follow", "thread follow-up", "$root")
+    pending = harness.bridge.state.data["pending"]["advisor"]
+    group = pending[1]
+    group["injection_ready_at"] = 0
+    harness.steer_error = GatewayError("pane response was lost after input")
+    asyncio.run(harness.bridge._poll_agent(harness.agent))
+
+    assert len(harness.steers) == 1
+    assert group["injection_phase"] == "injecting"
+    assert group["last_injection_error"] == "pane response was lost after input"
+
+    append_records(
+        harness.transcript,
+        [transcript_user_message("turn-1", group["text"])],
+    )
+    asyncio.run(harness.bridge._poll_agent(harness.agent))
+
+    assert group["injection_phase"] == "admitted"
+    assert group["injection_turn_id"] == "turn-1"
+
+
+def test_steering_waits_for_active_prompt_turn_identity(
+    tmp_path: Path,
+):
+    harness = SteeringHarness(tmp_path, "auto")
+    harness.record_prompt_admission = False
+    harness.enqueue("$root", "root request", None)
+    harness.busy = True
+    harness.enqueue("$follow", "thread follow-up", "$root")
+    pending = harness.bridge.state.data["pending"]["advisor"]
+    group = pending[1]
+    group["injection_ready_at"] = 0
+    harness.steer_turn_id = "turn-human"
+    append_records(
+        harness.transcript,
+        [transcript_user_message("turn-human", "unrelated local task")],
+    )
+
+    asyncio.run(harness.bridge._poll_agent(harness.agent))
+
+    assert harness.steers == []
+    assert group["injection_phase"] == "pending"
+    assert group.get("injection_turn_id") is None
+    assert group["last_injection_error"] == (
+        "waiting for active Matrix prompt turn identity"
+    )
+
+
+def test_permanently_busy_unadmitted_batch_fails_closed_after_timeout(
+    tmp_path: Path,
+):
+    harness = SteeringHarness(tmp_path, "auto")
+    harness.enqueue("$root", "root request", None)
+    harness.busy = True
+    harness.enqueue("$follow-one", "first follow-up", "$root")
+    harness.enqueue("$follow-two", "second follow-up", "$root")
+    pending = harness.bridge.state.data["pending"]["advisor"]
+    group = pending[1]
+    group["injection_phase"] = "injected_unconfirmed"
+    group["injection_offset"] = harness.transcript.stat().st_size
+    group["injection_text"] = group["text"]
+    group["injection_attempted_at"] = (
+        time.time()
+        - harness.bridge.config.response_timeout_minutes * 60
+        - 1
+    )
+    pending.pop(0)
+
+    asyncio.run(harness.bridge._poll_agent(harness.agent))
+
+    assert [prompt[1] for prompt in harness.prompts] == ["root request"]
+    assert harness.bridge.state.data["pending"]["advisor"] == []
+    assert harness.qitem_states["$qitem-2"] == "failed"
+    assert harness.qitem_states["$qitem-3"] == "failed"
+    failure = harness.bridge.state.data["steering_failures"][-1]
+    assert failure["source_event_ids"] == ["$follow-one", "$follow-two"]
+    assert failure["thread_root_event_id"] == "$root"
+    assert failure["qitem_ids"] == ["$qitem-2", "$qitem-3"]
+    assert failure["reason"] == (
+        "steering admission unresolved while the seat remained busy"
+    )
+    assert sum(
+        "Steering-Eingabe konnte nicht bestätigt werden" in text
+        for text, _reply_to in harness.sent_answers
+    ) == 1
 
 
 def test_unrelated_human_turn_does_not_supply_the_active_answer(

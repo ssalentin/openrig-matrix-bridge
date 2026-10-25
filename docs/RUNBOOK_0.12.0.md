@@ -1,0 +1,185 @@
+# 0.12.0 release and rollback runbook
+
+Operator steps for installing and verifying the `0.12.0` candidate on an
+existing host. The Engineering Lead owns merge, tag publication, production
+deployment, and cleanup.
+
+## Release checklist
+
+The Engineering Lead walks this list in order. Record the observed value for
+each item in the acceptance record at the end of this runbook.
+
+- [ ] QA and review approve one immutable candidate SHA, and
+  `docs/artifacts/final-0.12.0-integration-report.json` names that SHA with
+  `worktree_clean: true` and `evidence_valid: true`.
+- [ ] Merge pull request #34 into `main` (milestone 0.12.0, tracker #46; it
+  closes #4 and #36).
+- [ ] CI on the merge commit in `main` is green.
+- [ ] Create the annotated tag `0.12.0` on that commit.
+- [ ] Publish the GitHub Release with the wheel, the sdist, the release notes,
+  and `SHA256SUMS`.
+- [ ] Deploy that published wheel to production with a backup and the 0.11.0
+  rollback artifact (sections 1 to 4).
+- [ ] `doctor` passes and exactly one bridge process runs (section 4).
+- [ ] Observe production using the smoke check (section 6), including the
+  thumbs-up receipt, and decide to accept or roll back (section 7).
+
+### Evidence boundary
+
+Live Codex evidence is **not proven** for this candidate. The development cell
+did not run live Codex turns, so the issue #46 criterion for a live two-follow-up
+run is open. The available evidence is deterministic unit and integration
+coverage plus real-Matrix-protocol runs against a disposable Synapse with a fake
+OpenRig transport. Section 5 is the first live-Codex observation and must happen
+on a disposable seat before production traffic.
+
+### Latency measurements
+
+Not yet measured on a live seat. QA or the builder fills this table after
+running section 5, with the method and boundary stated. The Matrix harness
+report has a `steering_latency` section with the same stages for the
+deterministic transport; that is not live-Codex latency and must not be copied
+into this table.
+
+| Boundary | Runs | Median | Max | Method |
+|---|---|---|---|---|
+| Bridge intake to pane injection | | | | |
+| Bridge intake to transcript admission | | | | |
+| Bridge intake to 👍 acceptance reaction | | | | |
+
+## 1. Record the approved candidate
+
+Use the exact commit SHA, wheel, and `SHA256SUMS` named in the QA/review handoff.
+Do not install a rebuild with the same version if its digest differs.
+
+```bash
+sha256sum -c SHA256SUMS
+sha256sum openrig_matrix_bridge-0.12.0-py3-none-any.whl
+python -m pip show openrig-matrix-bridge
+/opt/openrig-matrix/venv/bin/openrig-matrix-bridge --version
+```
+
+Expected console version: `0.12.0`.
+
+## 2. Back up state before upgrading
+
+Stop the service and confirm that only one bridge process exists:
+
+```bash
+sudo systemctl stop openrig-matrix-bridge.service
+pgrep -af openrig_matrix_bridge || true
+```
+
+Back up the service definition, configuration, and complete state directory:
+
+```bash
+timestamp="$(date -u +%Y%m%dT%H%M%SZ)"
+backup="/var/backups/openrig-matrix-bridge-${timestamp}"
+sudo install -d -m700 "$backup"
+sudo cp -a /etc/openrig-matrix-bridge "$backup/etc"
+sudo cp -a /var/lib/openrig-matrix-bridge "$backup/state"
+sudo cp -a /etc/systemd/system/openrig-matrix-bridge.service "$backup/service"
+```
+
+Retain the known-good 0.11.0 wheel and the backup until rollout is accepted.
+Do not delete or recreate the Matrix crypto store as part of the upgrade.
+
+## 3. Install the exact wheel
+
+```bash
+/opt/openrig-matrix/venv/bin/python -m pip install --force-reinstall \
+  /path/to/openrig_matrix_bridge-0.12.0-py3-none-any.whl
+/opt/openrig-matrix/venv/bin/openrig-matrix-bridge --version
+```
+
+The installed version alone does not prove the commit. Keep the approved wheel
+digest and provenance record beside the backup.
+
+## 4. Check configuration and start one process
+
+Ensure the token is supplied by the existing secret mechanism without printing
+it:
+
+```bash
+MATRIX_ACCESS_TOKEN="$(systemctl show-environment | sed -n 's/^MATRIX_ACCESS_TOKEN=//p')" \
+  /opt/openrig-matrix/venv/bin/openrig-matrix-bridge doctor \
+  --config /etc/openrig-matrix-bridge/config.yaml
+```
+
+If `systemctl` does not provide the token, run the same command in the
+service's configured secret environment. Do not paste the token onto a command
+line that is captured in shell history.
+
+Start and inspect:
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl start openrig-matrix-bridge.service
+sudo systemctl status openrig-matrix-bridge.service --no-pager
+pgrep -af openrig_matrix_bridge
+journalctl -u openrig-matrix-bridge.service --since '10 minutes ago'
+```
+
+Expected: exactly one bridge process, no authentication/configuration crash, and
+the Matrix rooms return to `bereit`.
+
+## 5. Verify steering on a disposable seat first
+
+Before production ownership traffic, use a dedicated disposable Codex seat:
+
+1. Start a deliberately long tool turn.
+2. Send two quick Matrix replies in that turn's existing thread.
+3. Confirm both source event IDs appear in the same injected batch.
+4. Confirm each transcript user message appears once and the batch receives one
+   Matrix answer.
+5. Repeat after a bridge restart and retain redacted timing evidence.
+
+Do not use the OpenRig production bridge or this project-cell seat as the
+disposable target.
+
+## 6. Production smoke check
+
+After release approval, send one ordinary Matrix prompt and then two rapid
+same-thread follow-ups while the seat is working. Record:
+
+- Matrix intake time for each event;
+- pane-injection time when available;
+- transcript admission time and turn ID;
+- number of transcript user records and Matrix answers;
+- qitem closure for every source event;
+- exactly one 👍 on each of your own messages once it is accepted, and none on
+  a message from an untrusted sender (the 👍 means accepted, not finished); and
+- any remaining inability to observe a pane boundary.
+
+A duplicate transcript input, duplicate side effect, missing qitem, multiple
+answers for one batch, or wrong thread root is a rollout failure.
+
+## 7. Roll back
+
+```bash
+sudo systemctl stop openrig-matrix-bridge.service
+sudo mv /var/lib/openrig-matrix-bridge /var/lib/openrig-matrix-bridge.0.12.0-failed
+sudo cp -a "$backup/state" /var/lib/openrig-matrix-bridge
+sudo cp -a "$backup/etc/." /etc/openrig-matrix-bridge/
+/opt/openrig-matrix/venv/bin/python -m pip install --force-reinstall \
+  /path/to/openrig_matrix_bridge-0.11.0-py3-none-any.whl
+sudo systemctl start openrig-matrix-bridge.service
+```
+
+Verify the restored version, doctor result, one-process invariant, room status,
+and one encrypted Matrix round trip. Preserve failed state and logs for
+diagnosis.
+
+## 8. Acceptance record
+
+| Item | Observed value |
+|---|---|
+| Candidate commit SHA | |
+| Wheel SHA-256 | |
+| Installed version | |
+| Doctor result | |
+| One-process check | |
+| Disposable live-Codex steering result | |
+| Production smoke result | |
+| Backup path | |
+| Rollback decision | |

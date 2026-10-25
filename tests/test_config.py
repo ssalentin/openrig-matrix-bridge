@@ -49,6 +49,7 @@ def test_loads_minimal_config(tmp_path: Path):
     assert config.steering_max_chars == 2000
     assert config.steering_batch_window_seconds == 0.5
     assert config.steering_admission_timeout_seconds == 2.0
+    assert config.acceptance_reaction_enabled is True
     assert config.reaction_feedback_enabled is True
     assert config.mirror_commentary is True
     assert config.avatars.enabled is True

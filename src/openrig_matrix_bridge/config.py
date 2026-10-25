@@ -100,6 +100,7 @@ class BridgeConfig:
     steering_max_chars: int
     steering_batch_window_seconds: float
     steering_admission_timeout_seconds: float
+    acceptance_reaction_enabled: bool
     reaction_feedback_enabled: bool
     mirror_commentary: bool
     poll_interval_seconds: float
@@ -231,6 +232,9 @@ def load_config(path: str | Path) -> BridgeConfig:
         raise ConfigError(
             "openrig.steering_admission_timeout_seconds must be positive"
         )
+    acceptance_reaction_enabled = bool(
+        transport.get("acceptance_reaction_enabled", True)
+    )
     reaction_feedback_enabled = bool(transport.get("reaction_feedback_enabled", True))
     mirror_commentary = bool(transport.get("mirror_commentary", True))
     poll_interval = float(transport.get("poll_interval_seconds", 0.2))
@@ -274,6 +278,7 @@ def load_config(path: str | Path) -> BridgeConfig:
         steering_max_chars=steering_max_chars,
         steering_batch_window_seconds=steering_batch_window_seconds,
         steering_admission_timeout_seconds=steering_admission_timeout_seconds,
+        acceptance_reaction_enabled=acceptance_reaction_enabled,
         reaction_feedback_enabled=reaction_feedback_enabled,
         mirror_commentary=mirror_commentary,
         poll_interval_seconds=poll_interval,

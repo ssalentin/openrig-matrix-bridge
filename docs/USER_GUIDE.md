@@ -56,6 +56,73 @@ The automated integration harness and its observed boundaries are documented
 in [Verification and evidence](VERIFICATION.md). Unit tests alone do not prove
 live Matrix delivery.
 
+## Acceptance receipt
+
+When the bridge has durably accepted a message from an allowed user, it adds
+one 👍 reaction to that message. The 👍 means *accepted*: the OpenRig queue item
+exists and the request is either queued behind the active work or joined to a
+steering batch. It does not mean the agent has started or finished. The final
+answer in the thread remains the completion signal.
+
+- Every event in a steering batch gets its own single 👍.
+- Retries, bridge restarts, and duplicate polls never add a second 👍. The
+  reaction uses the deterministic transaction ID `ack-<source event ID>`, and the
+  bridge records sent receipts in `acceptance_reactions` in `state.json`.
+- Messages from untrusted senders, ignored or duplicate events, and events
+  rejected before durable acceptance (for example when the queue item cannot be
+  created) get no 👍.
+- If Matrix keeps rejecting the reaction, the bridge retries a bounded number of
+  times and then records `phase: failed` in `acceptance_reactions`. The request
+  itself is still processed and answered; only the receipt is missing.
+- Set `openrig.acceptance_reaction_enabled: false` to turn the receipt off. It is
+  on by default.
+
+## Follow-ups and steering
+
+`openrig.steering_mode` controls how a follow-up behaves while the seat is
+working:
+
+- `queue` keeps all requests FIFO.
+- `steer` attempts best-effort delivery for eligible same-thread follow-ups.
+- `auto` is the default and uses the same strict eligibility rule.
+
+A follow-up is eligible only when it is in the active request's exact thread,
+is no longer than `openrig.steering_max_chars` (2000 by default), and arrives
+while the original turn is active. Top-level prompts and prompts in another
+thread remain separate FIFO requests. Events received inside
+`openrig.steering_batch_window_seconds` (0.5 by default) form one ordered batch.
+Every source event keeps its event ID, qitem, and canonical thread root; an
+admitted batch receives one answer carrying all source event IDs.
+
+Before pane input, the bridge records the complete batch and the exact
+transcript boundary. It adopts steering only after the matching user message and
+turn appear in the Codex transcript, and it rescans from that boundary before
+any fallback, including after a restart. During
+`openrig.steering_admission_timeout_seconds` (2.0 by default) it waits for that
+admission. While the seat stays busy it keeps waiting instead of resending, which
+covers input that Codex queues and materializes as the next turn. If the seat is
+idle and no matching admission exists, the intact batch makes one durable
+fallback attempt as a normal queued turn.
+
+If the seat stays busy and admission is never observed, the wait is bounded by
+`openrig.response_timeout_minutes` (360 by default). After that the bridge stops
+waiting, ends the request in a terminal timeout state, closes its qitems as failed
+instead of dropping them, and posts one failure notice in the original thread
+that contains `Steering-Eingabe konnte nicht bestätigt werden`. The seat status
+reads `Steering-Zeitüberschreitung`. The timeout is measured from the batch's
+`injection_attempted_at` and applies only to a batch already typed into the pane. It records the source event IDs, qitem IDs,
+thread root, and reason in the `steering_failures` list of `state.json` (the
+newest 200 entries are kept). It does not resend the input.
+
+OpenRig currently provides pane delivery, not an acknowledged safe model/tool
+boundary or admission-turn token. Steering is therefore best effort. The bridge
+does not claim a guaranteed mid-turn interruption point, guaranteed application
+before the next turn, or exactly-once delivery after admission cannot be proven.
+If the pane retains input and Codex admits it only after the fallback deadline,
+the runtime can receive it in addition to the fallback. This late-admission case
+is a documented residual risk. Every source request remains durable until one
+answer is delivered or an explicit failure is recorded.
+
 ## OpenRig queue behavior
 
 Configured agent keys map one-to-one to live Codex sessions. Duplicate sessions
