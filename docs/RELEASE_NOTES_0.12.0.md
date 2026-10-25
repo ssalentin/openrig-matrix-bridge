@@ -111,7 +111,6 @@ the configuration and complete state directory before replacing the service.
   downloading or being transcribed; there is no separate timeout beyond the
   download and transcription failure paths.
 - Matrix device SAS and complete cross-signing remain tracked by Issue #1.
-- Legacy pending-state reconciliation remains tracked by Issue #41.
 - The duplicate activity card seen on the 0.11 line (#39) came from an initial
   card send without a stable transaction ID. 0.12.0 sends it as
   `activity-card-<request>`, so Matrix returns the existing card when a send is
