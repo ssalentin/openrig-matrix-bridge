@@ -12,8 +12,14 @@ each item in the acceptance record at the end of this runbook.
 - [ ] QA and review approve one immutable candidate SHA, and
   `docs/artifacts/final-0.12.0-integration-report.json` names that SHA with
   `worktree_clean: true` and `evidence_valid: true`.
-- [ ] Merge pull request #34 into `main` (milestone 0.12.0, tracker #46; it
-  closes #4 and #36).
+- [ ] Confirm every pull request of milestone 0.12.0 (tracker #46) is merged into
+  `main`: #34 (steering, #4 and #36), #49 (👍 receipt, #46), #51 (typing and
+  status, #47), #53 (harness timing, #52), #57 and #61 (galleries and related
+  messages, #54), #35 (queue card, #24), #40 (setup, #37), #66 (activity card,
+  #39), #59 (file delivery, #55), #58 (finish reconciliation, #56), #67 (0.10
+  pending requests, #41), #68 (#48), #63 (#50), #78 (harness hotfix). PLACEHOLDER:
+  add #69 (device verification, #1), #81 (decision polls, #80), the pull request
+  for #70 and the harness hardening pull request (#65) when they merge.
 - [ ] CI on the merge commit in `main` is green.
 - [ ] Create the annotated tag `0.12.0` on that commit.
 - [ ] Publish the GitHub Release with the wheel, the sdist, the release notes,

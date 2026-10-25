@@ -255,6 +255,9 @@ Which events belong together:
   A top-level event never joins a thread by timing, and edits stay on their own.
 - `openrig.burst_inactivity_seconds: 0` turns timing correlation off; thread and
   reply relations still apply.
+- The bridge refuses to start if `openrig.burst_inactivity_seconds` is negative or
+  `openrig.burst_max_span_seconds` is smaller than
+  `openrig.burst_inactivity_seconds`, and names the setting in the error.
 
 How the agent receives it:
 
