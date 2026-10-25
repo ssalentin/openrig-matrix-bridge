@@ -58,10 +58,10 @@ a less busy host. They are not a performance benchmark.
 
 | Boundary (harness) | Median | Max |
 |---|---|---|
-| Prompt: intake to injection | 429.9 ms | 6733.2 ms |
-| Prompt: intake to admission | 989.3 ms | 7072.1 ms |
-| Prompt: intake to 👍 | 776.1 ms | 2779.4 ms |
-| Steer: intake to admission | 1101.0 ms | 2928.8 ms |
+| Prompt: intake to injection | 266.5 ms | 5842.6 ms |
+| Prompt: intake to admission | 643.6 ms | 6060.7 ms |
+| Prompt: intake to 👍 | 433.8 ms | 1605.8 ms |
+| Steer: intake to admission | 1351.9 ms | 1873.6 ms |
 
 ## 1. Record the approved candidate
 

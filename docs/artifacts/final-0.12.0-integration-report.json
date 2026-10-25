@@ -4,7 +4,7 @@
     "rejected_rooms": 1,
     "rooms": 0
   },
-  "duration_seconds": 173.4,
+  "duration_seconds": 173.0,
   "environment": {
     "command": "python tools/matrix_integration.py",
     "element_sas": "not exercised; requires a human client action",
@@ -14,7 +14,7 @@
     "voice_model": "not downloaded or executed"
   },
   "evidence_valid": true,
-  "generated_at": "2026-10-25T07:55:22.670067+00:00",
+  "generated_at": "2026-10-25T08:25:37.881550+00:00",
   "known_gaps": [
     "Real Codex prompt delivery and native transcript completion are represented by the fake OpenRig subprocess transport.",
     "The Parakeet model and real voice transcription were not run.",
@@ -36,7 +36,7 @@
     },
     {
       "automated": true,
-      "evidence": "`setup` wrote one agent room; `doctor` exited 0 (wrote /tmp/openrig-matrix-integration.vi7f9l1g/config.yaml with 1 agent room(s))",
+      "evidence": "`setup` wrote one agent room; `doctor` exited 0 (wrote /tmp/openrig-matrix-integration.v1vugr1q/config.yaml with 1 agent room(s))",
       "id": "setup-and-doctor",
       "status": "pass"
     },
@@ -54,7 +54,7 @@
     },
     {
       "automated": true,
-      "evidence": "An encrypted owner prompt already in m.thread survived a bridge restart while the fake seat was busy. Commentary and final answer were each delivered once under the canonical thread root, and the single Matrix qitem completed pending -> in-progress -> done.",
+      "evidence": "An encrypted owner prompt already in m.thread survived a bridge restart while the fake seat was busy. Commentary and final answer were each delivered once under the canonical thread root, and the single Matrix qitem completed pending -> in-progress -> done. Bridge typing was observed for the reply inside the existing thread; SIGTERM stopped the running bridge gracefully (exit 0) and the restarted bridge restored typing before the answer.",
       "id": "threaded-prompt-restart",
       "status": "pass"
     },
@@ -72,7 +72,7 @@
     },
     {
       "automated": true,
-      "evidence": "A second owner message arrived during a deliberately slow first turn; Matrix showed the pinned queue notice and the fake OpenRig transport received the second prompt only after recording completion of the first (1792914787.0218492 < 1792914787.6335716).",
+      "evidence": "A second owner message arrived during a deliberately slow first turn; Matrix showed the pinned queue notice and the fake OpenRig transport received the second prompt only after recording completion of the first (1792916610.7928958 < 1792916611.1701999). Between the two answers the owner timeline showed no ready status and no gap in the bridge typing indicator.",
       "id": "fifo-queue-notice",
       "status": "pass"
     },
@@ -90,7 +90,7 @@
     },
     {
       "automated": true,
-      "evidence": "The deterministic transport retained a busy-pane follow-up without a transcript user record past the initial admission grace, completed the root turn first, then materialized the follow-up as a later turn. Matrix received one answer with both the follow-up source ID and canonical completed-root thread; the batch appeared exactly once in the transcript and was never sent as a fallback prompt.",
+      "evidence": "The deterministic transport retained a busy-pane follow-up without a transcript user record past the initial admission grace, completed the root turn first, then materialized the follow-up as a later turn. Matrix received one answer with both the follow-up source ID and canonical completed-root thread; the batch appeared exactly once in the transcript and was never sent as a fallback prompt. Between the root answer and the follow-up answer the room never turned ready and bridge typing never stopped.",
       "id": "steering-late-admission",
       "status": "pass"
     },
@@ -187,69 +187,69 @@
       "fallback": {
         "intake_to_acknowledgement_ms": {
           "count": 2,
-          "max": 394.6,
-          "median": 337.5
+          "max": 328.0,
+          "median": 284.1
         },
         "intake_to_admission_ms": {
           "count": 2,
-          "max": 6508.2,
-          "median": 6427.8
+          "max": 5985.0,
+          "median": 5926.1
         },
         "intake_to_injection_ms": {
           "count": 2,
-          "max": 6080.0,
-          "median": 5999.6
+          "max": 5776.5,
+          "median": 5717.6
         }
       },
       "late_steer": {
         "intake_to_acknowledgement_ms": {
           "count": 1,
-          "max": 793.9,
-          "median": 793.9
+          "max": 395.5,
+          "median": 395.5
         },
         "intake_to_admission_ms": {
           "count": 1,
-          "max": 7589.7,
-          "median": 7589.7
+          "max": 7105.1,
+          "median": 7105.1
         },
         "intake_to_injection_ms": {
           "count": 1,
-          "max": 1411.6,
-          "median": 1411.6
+          "max": 932.0,
+          "median": 932.0
         }
       },
       "prompt": {
         "intake_to_acknowledgement_ms": {
-          "count": 26,
-          "max": 2779.4,
-          "median": 776.1
+          "count": 25,
+          "max": 1605.8,
+          "median": 433.8
         },
         "intake_to_admission_ms": {
-          "count": 28,
-          "max": 7072.1,
-          "median": 989.3
+          "count": 27,
+          "max": 6060.7,
+          "median": 643.6
         },
         "intake_to_injection_ms": {
-          "count": 28,
-          "max": 6733.2,
-          "median": 429.9
+          "count": 27,
+          "max": 5842.6,
+          "median": 266.5
         }
       },
       "steer": {
         "intake_to_acknowledgement_ms": {
           "count": 4,
-          "max": 557.5,
-          "median": 378.0
+          "max": 611.0,
+          "median": 320.6
         },
         "intake_to_admission_ms": {
           "count": 4,
-          "max": 2928.8,
-          "median": 1101.0
+          "max": 1873.6,
+          "median": 1351.9
         },
         "intake_to_injection_ms": {
           "count": 3,
-          "max": 1172.8,
-          "median": 1010.8
+          "max": 1386.3,
+          "median": 1290.3
         }
       }
     },
@@ -258,7 +258,7 @@
   "target": {
     "package": "openrig-matrix-bridge",
     "source": {
-      "commit": "badd15887538bbf7209bb240d61f89928f860259",
+      "commit": "44c28323acfa435efd807709438b5be6798d8b49",
       "source": "git",
       "worktree_clean": true
     },
