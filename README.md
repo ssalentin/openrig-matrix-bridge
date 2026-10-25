@@ -21,10 +21,10 @@ final answers, encrypted attachments, and decisions. The bridge routes work
 through the live OpenRig seat and records Matrix requests as durable OpenRig
 queue items.
 
-![Element Web thread showing a synthetic owner request, OpenRig activity, and a concise release-status answer](docs/screenshots/element-web-thread.png)
+![Generic Agent inbox in Element X, with seven role-specific OpenRig agents and an OpenRig status capsule](docs/screenshots/agent-inbox-generic.png)
 
-*A real Element Web render against disposable Synapse with synthetic data.
-See [screenshot provenance](docs/screenshots/README.md).*
+*Edited product illustration based on a real Element X render with synthetic
+data. See [screenshot provenance](docs/screenshots/README.md).*
 
 ## What you get
 

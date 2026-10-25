@@ -125,7 +125,7 @@ def test_landing_page_is_concise_and_links_durable_docs():
     assert "second agent process" in readme
     assert "## Quick start" in readme
     assert "## Current boundaries" in readme
-    assert "docs/screenshots/element-web-thread.png" in readme
+    assert "docs/screenshots/agent-inbox-generic.png" in readme
     assert "docs/screenshots/element-web-queue.png" in readme
 
 

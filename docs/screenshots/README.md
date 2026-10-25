@@ -4,6 +4,17 @@ These are genuine Element Web renders captured against disposable Synapse with
 synthetic accounts and a deterministic OpenRig transport. They are product
 illustrations, not live-Codex proof and not device-verification evidence.
 
+## `agent-inbox-generic.png`
+
+![Generic Agent inbox in Element X, with seven role-specific OpenRig agents and an OpenRig status capsule](agent-inbox-generic.png)
+
+This 1200 x 2608 README hero is an edited marketing illustration derived from
+the owner-provided Element X chat-list screenshot. The visible role names,
+previews, timestamps, and top status capsule were replaced with generic text
+and an OpenRig/Relay mark. The seven agent avatars, dark interface, and core
+layout remain visible. It is not an unedited verification artifact and must not
+be cited as evidence for Matrix protocol behavior.
+
 ## `element-web-thread.png`
 
 ![Element Web thread showing a synthetic owner request, OpenRig activity, and a concise release-status answer](element-web-thread.png)
