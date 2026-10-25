@@ -31,6 +31,9 @@ without starting a second agent or allowing concurrent Codex turns.
   accepted, not finished; the final answer remains the completion signal.
   Retries, restarts, duplicate polls, and batch members never
   duplicate it, and untrusted, ignored, duplicate, or rejected events get none.
+- The pinned queue card lists the active request and the ordered waiting
+  requests with source, thread marker and a sanitized preview. See
+  [The queue card](USER_GUIDE.md#the-queue-card).
 - The hybrid steering implementation is integrated with the current setup,
   attachments, voice, activity-card, restart, and release documentation from
   `main`.

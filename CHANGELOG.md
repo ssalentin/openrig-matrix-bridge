@@ -24,6 +24,12 @@
   `steering_failures`, without resending.
 - Do not claim exactly-once delivery after steering admission fails; a late pane
   admission remains a documented best-effort residual risk.
+- Show the pending Matrix prompts in the pinned queue card: the active request
+  is distinguished from the ordered waiting entries, each with its source,
+  thread marker and a sanitized, truncated preview. The card is edited in place,
+  rebuilt after a restart, counts a steered follow-up in the active batch
+  instead of as a separate turn, and never shows local paths, secrets or hidden
+  output. Files, images and galleries show their filename or caption.
 - Rebase the hybrid steering implementation onto current `main` release docs,
   setup guidance, artifacts, and harness changes.
 

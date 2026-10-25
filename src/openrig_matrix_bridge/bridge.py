@@ -222,7 +222,11 @@ QUEUE_SOURCE_LABELS = {
     "audio": "Audio",
     "reaction": "Reaktion",
     "decision": "Entscheidung",
+    "gallery": "Galerie",
 }
+QUEUE_FILENAME_LINE = re.compile(r"^Originaldateiname: (\".*\")$", re.MULTILINE)
+QUEUE_CAPTION_LINE = re.compile(r"^Bildunterschrift: (.+)$", re.MULTILINE)
+QUEUE_GALLERY_ITEM_LINE = re.compile(r"^\d+\. \".*\"", re.MULTILINE)
 
 
 def queue_preview(text: object, limit: int = 96) -> str:
@@ -232,6 +236,35 @@ def queue_preview(text: object, limit: int = 96) -> str:
     if len(summary) > limit:
         return summary[: limit - 1].rstrip() + "…"
     return summary
+
+
+def queue_request_preview(request: dict[str, Any]) -> str:
+    """Return a safe one-line description of what a queued request contains.
+
+    File, image and gallery prompts embed local inbox paths for the agent, so their
+    previews are built from the original filename or caption, never the prompt.
+    """
+    text = str(request.get("text") or "")
+    label = str(request.get("source_label") or "message")
+    caption_match = QUEUE_CAPTION_LINE.search(text)
+    caption = caption_match.group(1) if caption_match else ""
+    if label == "attachment":
+        match = QUEUE_FILENAME_LINE.search(text)
+        if match:
+            try:
+                return queue_preview(json.loads(match.group(1)))
+            except ValueError:
+                pass
+        return ""
+    if label == "image":
+        return queue_preview(caption)
+    if label == "gallery":
+        count = len(QUEUE_GALLERY_ITEM_LINE.findall(text))
+        parts = [f"{count} {'Datei' if count == 1 else 'Dateien'}"] if count else []
+        if caption:
+            parts.append(caption)
+        return queue_preview(" · ".join(parts))
+    return queue_preview(text)
 
 
 def queue_request_context(request: dict[str, Any]) -> str:
@@ -255,8 +288,9 @@ def queue_request_entry(request: dict[str, Any]) -> str:
             )
         )
     else:
-        preview = queue_preview(request.get("text"))
-    return f'{queue_request_context(request)} · "{preview}"'
+        preview = queue_request_preview(request)
+    context = queue_request_context(request)
+    return f'{context} · "{preview}"' if preview else context
 
 
 def queue_notice_text(

@@ -256,7 +256,7 @@ def test_queue_card_reveals_fallback_steering_batch_as_waiting(
     assert "second follow-up" in card
 
 
-def test_steering_fallback_refreshes_queue_card(tmp_path: Path):
+def test_refused_steering_refreshes_queue_card_and_keeps_batch_active(tmp_path: Path):
     harness = SteeringHarness(tmp_path, "auto")
     harness.enqueue("$root", "root request", None)
     harness.busy = True
@@ -269,8 +269,16 @@ def test_steering_fallback_refreshes_queue_card(tmp_path: Path):
 
     asyncio.run(harness.bridge._poll_agent(harness.agent))
 
-    assert group["injection_phase"] == "fallback"
+    # A refused pane injection waits for the admission grace before any fallback,
+    # so the follow-ups stay part of the active batch and are not shown as a
+    # separate waiting turn. The phase change refreshes the card exactly once.
+    assert group["injection_phase"] == "injecting"
+    assert group["last_injection_error"] == "pane refused"
     assert len(harness.queue_updates) == 1
+    card = queue_notice_text(harness.bridge.state.data["pending"]["advisor"])
+    assert card is not None
+    assert "0 Nachrichten warten" in card
+    assert "**Aktiv (3 Eingaben):**" in card
 
 
 def test_queue_card_marks_busy_unstarted_request_as_next(tmp_path: Path):

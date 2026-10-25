@@ -1613,7 +1613,8 @@ class IntegrationRun:
             "pass",
             (
                 "A second owner message arrived during a deliberately slow "
-                "first turn; Matrix showed the pinned queue notice and the "
+                "first turn; Matrix showed one pinned queue card with the active "
+                "prompt followed by the ordered waiting preview, and the "
                 "fake OpenRig transport received the second prompt only after "
                 "recording completion of the first "
                 f"({first['completed_at']} < {second['sent_at']}). Between the "

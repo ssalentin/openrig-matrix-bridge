@@ -3424,3 +3424,105 @@ def test_rejects_verification(text):
 
 def test_ignores_other_messages():
     assert verification_decision("Was ist der Status?") is None
+
+
+def _media_card(*requests):
+    card = queue_notice_text(list(requests))
+    assert card is not None
+    return card
+
+
+def test_queue_notice_shows_the_original_filename_of_a_queued_file_not_its_path():
+    prompt = (
+        "Datei von @owner:matrix.example.org via Matrix empfangen.\n\n"
+        "Lokale Datei: /home/agent/.openrig/media-inbox/advisor/0123abcd.pdf\n"
+        'Originaldateiname: "Quarterly report.pdf"\n'
+        "Medientyp: application/pdf\n"
+        "Größe: 4096 Bytes"
+    )
+
+    card = _media_card(
+        queued_request("$active", "Active prompt"),
+        queued_request("$file", prompt, source_label="attachment"),
+    )
+
+    assert '1. Datei · "Quarterly report.pdf"' in card
+    assert "redacted" not in card
+    assert "/home/agent" not in card
+    assert "0123abcd" not in card
+
+
+def test_queue_notice_shows_an_image_caption_and_never_its_local_path():
+    prompt = (
+        "Bild von @owner:matrix.example.org via Matrix empfangen.\n"
+        "Bildunterschrift: Defekte Stelle am Kabel\n\n"
+        "Lokale Datei: /home/agent/.openrig/media-inbox/advisor/9f.png\n"
+        "Format: image/png, 2048 Bytes"
+    )
+
+    card = _media_card(
+        queued_request("$active", "Active prompt"),
+        queued_request("$image", prompt, source_label="image"),
+    )
+
+    assert '1. Bild · "Defekte Stelle am Kabel"' in card
+    assert "/home/agent" not in card
+
+
+def test_queue_notice_shows_an_image_without_caption_without_empty_quotes():
+    prompt = (
+        "Bild von @owner:matrix.example.org via Matrix empfangen.\n\n"
+        "Lokale Datei: /home/agent/.openrig/media-inbox/advisor/9f.png\n"
+        "Format: image/png, 2048 Bytes"
+    )
+
+    card = _media_card(
+        queued_request("$active", "Active prompt"),
+        queued_request("$image", prompt, source_label="image"),
+    )
+
+    assert "1. Bild\n" in card + "\n"
+    assert '""' not in card
+    assert "redacted" not in card
+
+
+def test_queue_notice_summarizes_a_gallery_burst_without_paths_or_filenames():
+    prompt = (
+        "Galerie von @owner:matrix.example.org via Matrix empfangen: "
+        "drei Elemente in Originalreihenfolge.\n"
+        "Bildunterschrift: Alle Seiten\n\n"
+        '1. "IMG_1.jpg" — image/jpeg, 10 Bytes\n'
+        "   Lokale Datei: /home/agent/.openrig/media-inbox/advisor/a1.jpg\n"
+        "   Vorschau: keine in der Galerie enthalten\n\n"
+        '2. "IMG_2.jpg" — image/jpeg, 10 Bytes\n'
+        "   Lokale Datei: /home/agent/.openrig/media-inbox/advisor/a2.jpg\n"
+        "   Vorschau: keine in der Galerie enthalten\n\n"
+        '3. "IMG_3.jpg" — nicht übernommen: zu groß'
+    )
+
+    card = _media_card(
+        queued_request("$active", "Active prompt"),
+        queued_request("$gallery", prompt, source_label="gallery"),
+    )
+
+    assert '1. Galerie · "3 Dateien · Alle Seiten"' in card
+    assert "/home/agent" not in card
+    assert "IMG_" not in card
+    assert "gallery" not in card
+
+
+def test_queue_notice_redacts_a_secret_in_a_caption_or_filename():
+    secret_file = (
+        "Datei von @owner:matrix.example.org via Matrix empfangen.\n\n"
+        "Lokale Datei: /home/agent/.openrig/media-inbox/advisor/0.txt\n"
+        'Originaldateiname: "token=sk-live-abcdefghijklmnopqrstuvwxyz123456.txt"\n'
+        "Medientyp: text/plain\nGröße: 1 Bytes"
+    )
+
+    card = _media_card(
+        queued_request("$active", "Active prompt"),
+        queued_request("$file", secret_file, source_label="attachment"),
+    )
+
+    assert "sk-live" not in card
+    assert '1. Datei · "[redacted unsafe commentary]"' in card
