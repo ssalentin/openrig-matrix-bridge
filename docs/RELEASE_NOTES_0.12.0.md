@@ -6,8 +6,9 @@ without starting a second agent or allowing concurrent Codex turns.
 ## What changed
 
 - `queue`, `steer`, and default `auto` modes are supported.
-- `auto` steers only short follow-ups in the exact active Matrix thread.
-  Top-level prompts and prompts in another thread remain separate FIFO work.
+- `auto` steers only short follow-ups in the exact active Matrix thread, and
+  parts of a related exchange (below) whatever their length. Other top-level
+  prompts and prompts in another thread remain separate FIFO work.
 - Rapid same-thread follow-ups form one ordered batch. Every Matrix event keeps
   its source ID and OpenRig qitem, and the batch is answered once under the
   canonical thread root.
@@ -39,6 +40,19 @@ without starting a second agent or allowing concurrent Codex turns.
   thread failure notice and keeps the request at the head of the queue until
   Matrix accepts that notice; earlier builds dropped it silently. See Known
   limits.
+- Related owner messages reach the agent as one context. A thread or reply
+  relation always links parts; top-level events from the same owner link while
+  each gap stays within `openrig.burst_inactivity_seconds` (45 s) and the whole
+  exchange within `openrig.burst_max_span_seconds` (300 s), when the new event
+  or the previous one carries an attachment. Two plain texts never link. A
+  later part joins the waiting request, steers into the active turn, or arrives
+  as a continuation that restates every earlier part, so a gallery and the text
+  written 30 s later are answered together in the gallery's thread.
+- Source order holds while a voice note is transcribed or an attachment
+  downloads, interrupted image and file downloads resume after a restart, and
+  every stored attachment, gallery item and preview is listed with its SHA-256.
+- Element X galleries (`dm.filament.gallery`, `m.gallery`) are stored item by
+  item in order, with explicit per-item failures (PR #57).
 - The hybrid steering implementation is integrated with the current setup,
   attachments, voice, activity-card, restart, and release documentation from
   `main`.
@@ -75,6 +89,13 @@ the configuration and complete state directory before replacing the service.
   message is not delivered and, with the receipt enabled, gets no 👍, which
   makes the gap visible to the owner. This predates 0.12.0 and is also present
   on `main`.
+- Timing correlation is a heuristic: an unrelated top-level message sent
+  within the inactivity boundary before or after a voice note, image, file or
+  gallery joins that exchange. Use a thread to keep it apart, or set
+  `openrig.burst_inactivity_seconds: 0` to turn timing correlation off.
+- A related part waits for earlier parts of its exchange that are still
+  downloading or being transcribed; there is no separate timeout beyond the
+  download and transcription failure paths.
 - Matrix device SAS and complete cross-signing remain tracked by Issue #1.
 - Legacy pending-state reconciliation remains tracked by Issue #41.
 - The duplicate activity card seen on the 0.11 line (#39) came from an initial

@@ -830,6 +830,7 @@ def test_room_message_preserves_source_relation_for_reply_resolution(
     )
     bridge.room_agents = {"!advisor:matrix.example.org": "advisor"}
     bridge.processed_events = set()
+    bridge.state = SimpleNamespace(save=lambda: None, data={})
     captured = {}
 
     async def enqueue(*args, **kwargs):

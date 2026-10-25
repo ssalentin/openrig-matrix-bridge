@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import hashlib
 import io
 import json
 import os
@@ -69,6 +70,44 @@ STRANGER_PASSWORD = "stranger-integration-password"
 ACCEPTANCE_REACTION_KEY = "👍"
 SESSION = "integration-agent@local"
 AGENT_KEY = "integration-agent"
+# The bridge's default openrig.burst_inactivity_seconds.
+RELATED_BOUNDARY_SECONDS = 45
+# Related checks send many events between owner syncs; a wide timeline keeps
+# every status change visible.
+RELATED_TIMELINE_LIMIT = 500
+# Check order matters: later checks build on room and steering state.
+CHECKS = (
+    "room",
+    "chat_and_queue",
+    "threaded_reply",
+    "qitem_claim_crash_recovery",
+    "answer_crash_recovery",
+    "activity_card_crash_recovery",
+    "fifo",
+    "steering_modes",
+    "steering_fallback_and_restart",
+    "reaction",
+    "acceptance_reaction",
+    "acceptance_reaction_default_off",
+    "images",
+    "files",
+    "threaded_files",
+    "gallery",
+    "gallery_restart",
+    "audio_gap",
+    "voice_status_edit",
+    "decision_and_poll",
+    "proactive_message",
+    "related_gallery_text",
+    "related_voice_text_attachments",
+    "related_galleries_and_files",
+    "related_restart",
+    "related_unrelated_isolation",
+    "related_thread",
+    "restart",
+    "doctor_failure",
+    "room_rejection",
+)
 
 
 class CheckFailure(RuntimeError):
@@ -239,6 +278,78 @@ def validate_fifo_records(
         )
 
 
+def thread_relation(root_event_id: str) -> dict[str, Any]:
+    """An Element-style thread reply to `root_event_id`."""
+    return {
+        "rel_type": "m.thread",
+        "event_id": root_event_id,
+        "is_falling_back": True,
+        "m.in_reply_to": {"event_id": root_event_id},
+    }
+
+
+def agent_inputs(fake: dict[str, Any]) -> list[dict[str, Any]]:
+    """Every prompt and steering input the fake transport received, in send order."""
+    inputs = [
+        {"kind": "prompt", **item} for item in fake.get("prompts", [])
+    ] + [{"kind": "steer", **item} for item in fake.get("steers", [])]
+    return sorted(inputs, key=lambda item: float(item.get("sent_at") or 0))
+
+
+def verify_attachment_digests(prompt: str) -> int:
+    """Each `Lokale Datei:` path must be a non-empty file matching its SHA-256 line."""
+    blocks = prompt.split("Lokale Datei: ")[1:]
+    for block in blocks:
+        path = Path(block.split()[0])
+        match = re.search(r"SHA-256: ([0-9a-f]{64})", block.split("Lokale Datei: ")[0])
+        if match is None:
+            raise CheckFailure(f"agent input names {path} without a SHA-256 digest")
+        data = path.read_bytes() if path.is_file() else b""
+        if not data:
+            raise CheckFailure(f"agent input names a missing or empty file: {path}")
+        if hashlib.sha256(data).hexdigest() != match.group(1):
+            raise CheckFailure(f"SHA-256 of {path} does not match the agent input")
+    return len(blocks)
+
+
+def validate_linked_inputs(
+    inputs: list[dict[str, Any]],
+    anchor_event_id: str,
+    markers: list[str],
+) -> list[str]:
+    """Check that related parts reach the agent completely, in order and linked.
+
+    `markers` are unique strings of each part in source order; the first part
+    is the anchor. Returns the delivery kind ("prompt" or "steer") that first
+    carried each part.
+    """
+    kinds: list[str] = []
+    for index, marker in enumerate(markers):
+        carrying = [item for item in inputs if marker in str(item["prompt"])]
+        if not carrying:
+            raise CheckFailure(f"part {index + 1} never reached the agent")
+        if index and not all(
+            anchor_event_id in str(item["prompt"]) or markers[0] in str(item["prompt"])
+            for item in carrying
+        ):
+            raise CheckFailure(
+                f"part {index + 1} reached the agent without a link to the first part"
+            )
+        # A part may be restated later only together with a newer part.
+        for item in carrying[1:]:
+            if not any(later in str(item["prompt"]) for later in markers[index + 1 :]):
+                raise CheckFailure(f"part {index + 1} reached the agent twice as new")
+        kinds.append(str(carrying[0]["kind"]))
+    for item in inputs:
+        prompt = str(item["prompt"])
+        # Event ids also appear in a leading source list; each part's own block
+        # is its last occurrence.
+        positions = [prompt.rindex(marker) for marker in markers if marker in prompt]
+        if positions != sorted(positions):
+            raise CheckFailure("related parts reached the agent out of source order")
+    return kinds
+
+
 def validate_source_provenance(
     head_commit: str,
     tracked_status: str,
@@ -346,6 +457,9 @@ class MatrixOwner:
         # arrived with it.
         self.timeline: list[dict[str, Any]] = []
         self.sync_batch = 0
+        # When the owner last sent an event, so related-context checks can
+        # start beyond the bridge's inactivity boundary.
+        self.last_sent_at = 0.0
         self.client.add_event_callback(self._on_message, RoomMessageText)
         self.client.add_event_callback(
             self._on_image,
@@ -440,9 +554,25 @@ class MatrixOwner:
         if hasattr(response, "status_code") and response.status_code >= 400:
             raise CheckFailure(f"owner could not join invited room: {response}")
 
-    async def sync_once(self, timeout_ms: int = 5000) -> None:
+    async def sync_once(
+        self,
+        timeout_ms: int = 5000,
+        *,
+        timeline_limit: int | None = None,
+    ) -> None:
+        """Sync once; `timeline_limit` widens the per-room timeline so that a
+        long gap since the previous sync drops no events."""
         self.sync_batch += 1
-        response = await self.client.sync(timeout=timeout_ms, full_state=True)
+        sync_filter = (
+            {"room": {"timeline": {"limit": timeline_limit}}}
+            if timeline_limit
+            else None
+        )
+        response = await self.client.sync(
+            timeout=timeout_ms,
+            full_state=True,
+            sync_filter=sync_filter,
+        )
         if hasattr(response, "status_code") and response.status_code >= 400:
             raise CheckFailure(f"owner sync failed: {response}")
         for room_id in list(self.client.invited_rooms):
@@ -494,6 +624,7 @@ class MatrixOwner:
         )
         if not isinstance(response, RoomSendResponse):
             raise CheckFailure(f"owner text send failed: {response}")
+        self.last_sent_at = time.monotonic()
         return response.event_id
 
     async def send_encrypted_file(
@@ -528,6 +659,7 @@ class MatrixOwner:
         )
         if not isinstance(response, RoomSendResponse):
             raise CheckFailure(f"owner encrypted file send failed: {response}")
+        self.last_sent_at = time.monotonic()
         return response.event_id
 
     async def upload_encrypted(
@@ -554,16 +686,25 @@ class MatrixOwner:
         items: list[dict[str, Any]],
         *,
         body: str,
+        relates_to: dict[str, Any] | None = None,
     ) -> str:
         """Send one Element X style dm.filament.gallery event."""
+        content: dict[str, Any] = {
+            "msgtype": "dm.filament.gallery",
+            "body": body,
+            "itemtypes": items,
+        }
+        if relates_to:
+            content["m.relates_to"] = relates_to
         response = await self.client.room_send(
             room_id,
             "m.room.message",
-            {"msgtype": "dm.filament.gallery", "body": body, "itemtypes": items},
+            content,
             ignore_unverified_devices=True,
         )
         if not isinstance(response, RoomSendResponse):
             raise CheckFailure(f"owner gallery send failed: {response}")
+        self.last_sent_at = time.monotonic()
         return response.event_id
 
     async def download_media(self, event: Any) -> bytes:
@@ -871,7 +1012,13 @@ class IntegrationRun:
         # The acceptance receipt is opt-in; enable it so `acceptance-reaction`
         # proves the opt-in path. `acceptance-reaction-default-off` removes
         # the key again to prove the default.
-        self.set_openrig_options(acceptance_reaction_enabled=True)
+        # The single-message checks send unrelated attachments seconds apart;
+        # timing correlation is off for them so each stays one request. The
+        # related-context checks restore the production defaults.
+        self.set_openrig_options(
+            acceptance_reaction_enabled=True,
+            burst_inactivity_seconds=0,
+        )
         doctor = self.cli("doctor")
         if doctor.returncode != 0:
             raise CheckFailure(f"bridge doctor failed: {doctor.stdout}{doctor.stderr}")
@@ -893,7 +1040,10 @@ class IntegrationRun:
             (
                 f"`setup` wrote one agent room; `doctor` exited 0 "
                 f"({setup.stdout.splitlines()[0]}); a second `setup` without "
-                "`--replace-config` failed with that next step"
+                "`--replace-config` failed with that next step. Single-message "
+                "checks run with timing correlation off "
+                "(burst_inactivity_seconds: 0); the related-context checks run "
+                "with the production defaults."
             ),
         )
         owner_store = self.work / "owner-store"
@@ -913,6 +1063,7 @@ class IntegrationRun:
         late_steer_seconds: float | None = None,
         unrelated_turn: bool = False,
         hold_seconds: float | None = None,
+        transcribe_seconds: float | None = None,
     ) -> None:
         if self.bridge is not None and self.bridge.poll() is None:
             raise CheckFailure("bridge is already running")
@@ -934,6 +1085,10 @@ class IntegrationRun:
             environment["OPENRIG_FAKE_HOLD_SECONDS"] = str(hold_seconds)
         else:
             environment.pop("OPENRIG_FAKE_HOLD_SECONDS", None)
+        if transcribe_seconds is not None:
+            environment["OPENRIG_FAKE_TRANSCRIBE_SECONDS"] = str(transcribe_seconds)
+        else:
+            environment.pop("OPENRIG_FAKE_TRANSCRIBE_SECONDS", None)
         if crash_after:
             environment["OPENRIG_BRIDGE_TEST_CRASH_AFTER"] = crash_after
         self.bridge_started_ms = int(time.time() * 1000)
@@ -3214,6 +3369,508 @@ class IntegrationRun:
             ),
         )
 
+    async def origin_ts(self, room_id: str, event_id: str) -> int:
+        assert self.owner is not None
+        return int((await self.owner.raw_event(room_id, event_id))["origin_server_ts"])
+
+    async def use_production_bursts(self, room_id: str, **bridge_options: Any) -> None:
+        """Restart on the production burst defaults with the 👍 receipt off.
+
+        Every related-context scenario also starts beyond the inactivity
+        boundary after the owner's previous event, so scenarios never join.
+        """
+        self.set_openrig_options(
+            burst_inactivity_seconds=None,
+            burst_max_span_seconds=None,
+            acceptance_reaction_enabled=None,
+        )
+        self.stop_bridge()
+        self.start_bridge(**bridge_options)
+        await self.wait_for_steering_mode_ready(room_id)
+        await self.isolate_burst()
+
+    async def isolate_burst(self) -> None:
+        assert self.owner is not None
+        await self.sync_for(
+            self.owner.last_sent_at + RELATED_BOUNDARY_SECONDS + 1 - time.monotonic()
+        )
+
+    async def sync_for(self, seconds: float) -> None:
+        """Wait while the owner keeps syncing, so no timeline event is skipped."""
+        assert self.owner is not None
+        deadline = time.monotonic() + seconds
+        while (remaining := deadline - time.monotonic()) > 0:
+            await self.owner.sync_once(
+                timeout_ms=max(1, int(min(remaining, 1.0) * 1000)),
+                timeline_limit=RELATED_TIMELINE_LIMIT,
+            )
+
+    def scenario_start(self) -> dict[str, Any]:
+        assert self.owner is not None
+        return {"since": time.time(), "timeline": len(self.owner.timeline)}
+
+    def fake_transport(self) -> dict[str, Any]:
+        return json.loads((self.fake_state / "fake-openrig.json").read_text())
+
+    async def wait_for_parts_done(self, part_event_ids: list[str]) -> dict[str, Any]:
+        """Wait until every part completed exactly one qitem and the queue drained.
+
+        The owner keeps syncing meanwhile: a long gap between syncs returns a
+        limited timeline and would hide intermediate status events.
+        """
+        assert self.owner is not None
+
+        def part_qitems(fake: dict[str, Any], event_id: str) -> list[dict[str, Any]]:
+            return [
+                item
+                for item in fake["queue"].values()
+                if f"Event: {event_id}\n" in str(item.get("body") or "")
+            ]
+
+        def complete(value: dict[str, Any]) -> bool:
+            if value.get("pending", {}).get(AGENT_KEY):
+                return False
+            fake = self.fake_transport()
+            return all(
+                [item.get("state") for item in part_qitems(fake, event_id)] == ["done"]
+                for event_id in part_event_ids
+            )
+
+        deadline = time.monotonic() + self.args.timeout
+        while True:
+            await self.owner.sync_once(
+                timeout_ms=500,
+                timeline_limit=RELATED_TIMELINE_LIMIT,
+            )
+            with suppress(FileNotFoundError, json.JSONDecodeError):
+                if complete(self.bridge_state()):
+                    break
+            if time.monotonic() > deadline:
+                raise CheckFailure(
+                    "every related part did not complete exactly one qitem within "
+                    f"{self.args.timeout}s"
+                )
+        fake = self.fake_transport()
+        for event_id in part_event_ids:
+            validate_qitem_history(part_qitems(fake, event_id)[0])
+        return fake
+
+    def bridge_answers(self, under: list[str]) -> list[dict[str, Any]]:
+        assert self.owner is not None
+        return [
+            message
+            for message in self.owner.messages
+            if message["sender"] == BRIDGE_USER
+            and str(message["body"]).startswith(
+                ("Fake integration answer", "Late steering answer")
+            )
+            and (message["source"].get("content", {}).get("m.relates_to") or {}).get(
+                "event_id"
+            )
+            in under
+        ]
+
+    async def verify_related_exchange(
+        self,
+        room_id: str,
+        anchor_event_id: str,
+        part_event_ids: list[str],
+        markers: list[str],
+        start: dict[str, Any],
+    ) -> tuple[list[str], list[dict[str, Any]]]:
+        """Prove a related exchange reached the agent whole, in order and once.
+
+        Every part completes exactly one qitem; the agent inputs since `start`
+        carry every part in source order and linked to the first; every named
+        file matches its SHA-256; every answer is threaded under the anchor and
+        one answer names all parts as its sources; the room status showed the
+        work and returned to ready, typing ended, and no 👍 receipt was sent
+        (it is off by default).
+        """
+        assert self.owner is not None
+        owner = self.owner
+        fake = await self.wait_for_parts_done(part_event_ids)
+        inputs = [
+            item
+            for item in agent_inputs(fake)
+            if float(item.get("sent_at") or 0) >= start["since"]
+            and any(marker in str(item["prompt"]) for marker in markers)
+        ]
+        kinds = validate_linked_inputs(inputs, anchor_event_id, markers)
+        for item in inputs:
+            verify_attachment_digests(str(item["prompt"]))
+
+        def covering(message: dict[str, Any]) -> bool:
+            content = message["source"].get("content", {})
+            sources = content.get("dev.openrig.source_event_ids") or []
+            return set(part_event_ids) <= set(sources)
+
+        def last_status() -> str | None:
+            return next(
+                (
+                    entry["state"]
+                    for entry in reversed(owner.timeline[start["timeline"] :])
+                    if entry["kind"] == "status"
+                ),
+                None,
+            )
+
+        await owner.sync_until(
+            lambda: any(covering(item) for item in self.bridge_answers(part_event_ids))
+            and str(owner.client.rooms[room_id].topic).startswith("🟢 bereit")
+            and last_status() == "ready",
+            self.args.timeout,
+            description="an answer for every related part and a ready room",
+        )
+        for message in self.bridge_answers(part_event_ids):
+            relation = message["source"]["content"]["m.relates_to"]
+            if relation.get("event_id") != anchor_event_id:
+                raise CheckFailure(
+                    "an answer to a related part was threaded under "
+                    f"{relation.get('event_id')}, not under the first part"
+                )
+        # Typing is ephemeral and short fake turns can start and end between
+        # owner syncs; the status is a timeline state event and is never missed.
+        feedback = owner.timeline[start["timeline"] :]
+        statuses = [entry["state"] for entry in feedback if entry["kind"] == "status"]
+        if "busy" not in statuses or statuses[-1] != "ready":
+            raise CheckFailure(f"room status did not go busy -> ready: {statuses}")
+        typing = [entry for entry in feedback if entry["kind"] == "typing"]
+        if typing and typing[-1]["bridge"]:
+            raise CheckFailure("bridge typing stayed on after the exchange finished")
+        receipts = [
+            reaction
+            for reaction in owner.reactions
+            if reaction.reacts_to in part_event_ids
+            and reaction.key == ACCEPTANCE_REACTION_KEY
+        ]
+        if receipts:
+            raise CheckFailure("the opt-in 👍 receipt appeared although it is off")
+        return kinds, inputs
+
+    async def check_related_gallery_text(self, room_id: str) -> None:
+        assert self.owner is not None
+        await self.use_production_bursts(room_id)
+        outcomes: dict[str, Any] = {}
+        for tag, gap in (("related-1s", 1.0), ("related-30s", 30.0)):
+            await self.isolate_burst()
+            start = self.scenario_start()
+            items, expected = await self.build_gallery(tag)
+            gallery_id = await self.owner.send_gallery(room_id, items, body="")
+            await (self.sync_for(gap) if gap > 5 else asyncio.sleep(gap))
+            text = f"{tag}: please describe these photos"
+            text_id = await self.owner.send_text(room_id, text)
+            kinds, inputs = await self.verify_related_exchange(
+                room_id,
+                gallery_id,
+                [gallery_id, text_id],
+                [expected[0][0], text],
+                start,
+            )
+            if gap > 15:
+                carrying = [item for item in inputs if text in str(item["prompt"])]
+                if kinds[1] != "prompt" or not all(
+                    name in str(carrying[0]["prompt"]) for name, *_rest in expected
+                ):
+                    raise CheckFailure(
+                        "text after the gallery turn ended was not a continuation "
+                        "restating every gallery item"
+                    )
+            outcomes[tag] = {
+                "origin_gap_ms": await self.origin_ts(room_id, text_id)
+                - await self.origin_ts(room_id, gallery_id),
+                "text_delivered_by": kinds[1],
+            }
+        self.record(
+            "related-gallery-then-text",
+            "pass",
+            (
+                "With the production defaults (45 s inactivity, 300 s span), a "
+                "top-level four-item gallery followed by a top-level text about "
+                "1 s and about 30 s later reached the agent as one related "
+                "exchange each time: the text was linked to the gallery, every "
+                "item and the text arrived in source order, every local path "
+                "matched its SHA-256, each event completed exactly one qitem, and "
+                "every answer was threaded under the gallery. After 30 s the "
+                "gallery turn had ended, so the text arrived as a continuation "
+                "restating all four items."
+            ),
+            details=outcomes,
+        )
+
+    async def check_related_voice_text_attachments(self, room_id: str) -> None:
+        assert self.owner is not None
+        owner = self.owner
+        transcribe_seconds = 4.0
+        await self.use_production_bursts(room_id, transcribe_seconds=transcribe_seconds)
+        start = self.scenario_start()
+        voice_id = await owner.send_encrypted_file(
+            room_id,
+            b"OggS-related-voice-note",
+            msgtype="m.audio",
+            filename="voice.ogg",
+            mimetype="audio/ogg",
+            body="voice.ogg",
+            extra_content={"org.matrix.msc3245.voice": {}},
+        )
+        await asyncio.sleep(1)
+        text = "related-voice: and this listing too"
+        text_id = await owner.send_text(room_id, text)
+        await asyncio.sleep(1)
+        image_id = await owner.send_encrypted_file(
+            room_id,
+            b"\x89PNG\r\n\x1a\n" + b"related voice image",
+            msgtype="m.image",
+            filename="related-voice.png",
+            mimetype="image/png",
+            body="related-voice.png",
+        )
+        await asyncio.sleep(1)
+        file_id = await owner.send_encrypted_file(
+            room_id,
+            b"%PDF-1.4\nrelated voice label\n%%EOF\n",
+            msgtype="m.file",
+            filename="related-voice.pdf",
+            mimetype="application/pdf",
+            body="related-voice.pdf",
+        )
+        kinds, _inputs = await self.verify_related_exchange(
+            room_id,
+            voice_id,
+            [voice_id, text_id, image_id, file_id],
+            ["Deterministic local transcript", text, image_id, file_id],
+            start,
+        )
+        self.record(
+            "related-voice-text-attachments",
+            "pass",
+            (
+                f"A voice note with {transcribe_seconds:g} s injected transcription "
+                "latency, then a text, an image and a PDF one second apart reached "
+                "the agent in source order: the text and attachments waited for "
+                "the transcript instead of overtaking it, every path matched its "
+                "SHA-256, each event completed exactly one qitem, and every "
+                "answer was threaded under the voice note."
+            ),
+            details={"delivered_by": kinds},
+        )
+
+    async def check_related_galleries_and_files(self, room_id: str) -> None:
+        assert self.owner is not None
+        owner = self.owner
+        await self.use_production_bursts(room_id)
+        start = self.scenario_start()
+        first_items, first_expected = await self.build_gallery("related-multi-a")
+        first_id = await owner.send_gallery(room_id, first_items, body="")
+        await asyncio.sleep(2)
+        pdf_id = await owner.send_encrypted_file(
+            room_id,
+            b"%PDF-1.4\nrelated multi label\n%%EOF\n",
+            msgtype="m.file",
+            filename="related-multi.pdf",
+            mimetype="application/pdf",
+            body="related-multi.pdf",
+        )
+        second_items, _second_expected = await self.build_gallery("related-multi-b")
+        second_id = await owner.send_gallery(room_id, second_items, body="")
+        await asyncio.sleep(2)
+        csv_id = await owner.send_encrypted_file(
+            room_id,
+            b"sku,price\nwatch-cable,15\n",
+            msgtype="m.file",
+            filename="related-multi.csv",
+            mimetype="text/csv",
+            body="related-multi.csv",
+        )
+        await asyncio.sleep(2)
+        text = "related-multi: list everything above"
+        text_id = await owner.send_text(room_id, text)
+        kinds, _inputs = await self.verify_related_exchange(
+            room_id,
+            first_id,
+            [first_id, pdf_id, second_id, csv_id, text_id],
+            [first_expected[0][0], pdf_id, second_id, csv_id, text],
+            start,
+        )
+        self.record(
+            "related-galleries-and-files",
+            "pass",
+            (
+                "Two four-item galleries, a PDF, a CSV and a text sent as one "
+                "exchange reached the agent linked to the first gallery, in source "
+                "order, with every gallery item and file path matching its "
+                "SHA-256; each event completed exactly one qitem and every answer "
+                "was threaded under the first gallery."
+            ),
+            details={"delivered_by": kinds},
+        )
+
+    async def check_related_restart(self, room_id: str) -> None:
+        assert self.owner is not None
+        owner = self.owner
+        await self.use_production_bursts(room_id)
+        start = self.scenario_start()
+        items, expected = await self.build_gallery("related-restart")
+        gallery_id = await owner.send_gallery(room_id, items, body="")
+        await self.wait_for_parts_done([gallery_id])
+        # Restart between parts, then crash while the next part downloads.
+        self.stop_bridge()
+        self.start_bridge(crash_after="media_intake")
+        await self.wait_for_steering_mode_ready(room_id)
+        pdf = b"%PDF-1.4\nrelated restart label\n%%EOF\n"
+        pdf_id = await owner.send_encrypted_file(
+            room_id,
+            pdf,
+            msgtype="m.file",
+            filename="related-restart.pdf",
+            mimetype="application/pdf",
+            body="related-restart.pdf",
+        )
+        self.wait_for_bridge_crash()
+        parts = [
+            part
+            for burst in self.bridge_state().get("bursts", {}).values()
+            for part in burst.get("parts", [])
+            if part.get("event_id") == pdf_id
+        ]
+        if len(parts) != 1 or parts[0].get("phase") != "processing" or not parts[0].get(
+            "media"
+        ):
+            raise CheckFailure(f"the interrupted download was not persisted: {parts}")
+        self.start_bridge()
+        await self.wait_for_steering_mode_ready(room_id)
+        text = "related-restart: anything missing?"
+        text_id = await owner.send_text(room_id, text)
+        kinds, _inputs = await self.verify_related_exchange(
+            room_id,
+            gallery_id,
+            [gallery_id, pdf_id, text_id],
+            [expected[0][0], pdf_id, text],
+            start,
+        )
+        inbox = self.state_dir / "media-inbox" / AGENT_KEY
+        copies = [path for path in inbox.iterdir() if path.read_bytes() == pdf]
+        if len(copies) != 1:
+            raise CheckFailure(f"the resumed PDF is stored {len(copies)} times")
+        self.record(
+            "related-restart",
+            "pass",
+            (
+                "After a gallery completed, the bridge restarted; the next part, a "
+                "PDF, crashed the bridge right after its intake was persisted and "
+                "before its download. On restart the download resumed once (one "
+                "stored copy), and the PDF and a later text reached the agent "
+                "linked to the gallery, in order, with digests verified, one "
+                "completed qitem per event, and every answer under the gallery."
+            ),
+            details={"delivered_by": kinds},
+        )
+
+    async def check_related_unrelated_isolation(self, room_id: str) -> None:
+        assert self.owner is not None
+        owner = self.owner
+        await self.use_production_bursts(room_id)
+        start = self.scenario_start()
+        first = "related-isolation: first question"
+        second = "related-isolation: second question"
+        reply = "related-isolation: more on the first"
+        first_id = await owner.send_text(room_id, first)
+        await asyncio.sleep(2)
+        second_id = await owner.send_text(room_id, second)
+        await asyncio.sleep(2)
+        reply_id = await owner.send_text(
+            room_id,
+            reply,
+            relates_to=thread_relation(first_id),
+        )
+        fake = await self.wait_for_parts_done([first_id, second_id, reply_id])
+        inputs = [
+            str(item["prompt"])
+            for item in agent_inputs(fake)
+            if float(item.get("sent_at") or 0) >= start["since"]
+        ]
+        if second not in inputs:
+            raise CheckFailure("the second top-level text was not its own prompt")
+        if any(second in prompt and (first in prompt or reply in prompt) for prompt in inputs):
+            raise CheckFailure("an unrelated top-level text joined another request")
+        await owner.sync_until(
+            lambda: bool(self.bridge_answers([second_id]))
+            and bool(self.bridge_answers([first_id])),
+            self.args.timeout,
+            description="answers for both unrelated texts",
+        )
+        for message in self.bridge_answers([first_id, second_id]):
+            sources = message["source"]["content"].get("dev.openrig.source_event_ids")
+            if second_id in (sources or []) and first_id in (sources or []):
+                raise CheckFailure("one answer claimed both unrelated texts")
+        self.record(
+            "related-unrelated-isolation",
+            "pass",
+            (
+                "Two plain top-level texts two seconds apart, inside the inactivity "
+                "boundary, stayed separate requests with their own answers; a "
+                "thread reply to the first joined only the first text's thread."
+            ),
+        )
+
+    async def check_related_thread(self, room_id: str) -> None:
+        assert self.owner is not None
+        owner = self.owner
+        await self.use_production_bursts(room_id)
+        start = self.scenario_start()
+        root = "related-thread: listing thread start"
+        root_id = await owner.send_text(room_id, root)
+        await self.wait_for_parts_done([root_id])
+        # Beyond the timing boundary: only the thread relation links what follows.
+        await self.sync_for(RELATED_BOUNDARY_SECONDS + 5)
+        unrelated = "related-thread: unrelated top-level message"
+        unrelated_id = await owner.send_text(room_id, unrelated)
+        await asyncio.sleep(1)
+        items, expected = await self.build_gallery("related-thread")
+        gallery_id = await owner.send_gallery(
+            room_id,
+            items,
+            body="",
+            relates_to=thread_relation(root_id),
+        )
+        await asyncio.sleep(1)
+        text = "related-thread: please use these photos"
+        text_id = await owner.send_text(
+            room_id,
+            text,
+            relates_to=thread_relation(root_id),
+        )
+        kinds, inputs = await self.verify_related_exchange(
+            room_id,
+            root_id,
+            [root_id, gallery_id, text_id],
+            [root, expected[0][0], text],
+            start,
+        )
+        if any(unrelated in str(item["prompt"]) for item in inputs):
+            raise CheckFailure("the unrelated top-level message joined the thread")
+        await self.wait_for_parts_done([unrelated_id])
+        await owner.sync_until(
+            lambda: bool(self.bridge_answers([unrelated_id])),
+            self.args.timeout,
+            description="the unrelated message's own answer",
+        )
+        gap_ms = await self.origin_ts(room_id, gallery_id) - await self.origin_ts(
+            room_id, root_id
+        )
+        self.record(
+            "related-thread",
+            "pass",
+            (
+                "A gallery and a text sent into an existing thread more than 45 s "
+                "after its root joined the root's context by relation: all three "
+                "reached the agent in order, linked, digest-verified, once each, "
+                "with every answer in the thread. A top-level message sent in "
+                "between stayed a separate request with its own answer."
+            ),
+            details={"root_to_gallery_ms": gap_ms, "delivered_by": kinds},
+        )
+
     async def check_threaded_files(self, room_id: str) -> None:
         assert self.owner is not None
         owner = self.owner
@@ -3718,6 +4375,15 @@ class IntegrationRun:
             "`doctor` exited non-zero and told the owner to create a new token.",
         )
 
+    def selected_checks(self) -> tuple[str, ...]:
+        only = getattr(self.args, "only", None)
+        if not only:
+            return CHECKS
+        unknown = sorted(set(only) - set(CHECKS))
+        if unknown:
+            raise CheckFailure(f"unknown checks for --only: {', '.join(unknown)}")
+        return tuple(name for name in CHECKS if name in only)
+
     async def execute(self) -> None:
         self.args.report.parent.mkdir(parents=True, exist_ok=True)
         await self.start_synapse()
@@ -3733,32 +4399,13 @@ class IntegrationRun:
         await self.setup_bridge()
         self.start_bridge()
         room_id = await self.join_agent_room()
-        await self.check_room(room_id)
-        await self.check_chat_and_queue(room_id)
-        await self.check_threaded_reply(room_id)
-        await self.check_qitem_claim_crash_recovery(room_id)
-        await self.check_answer_crash_recovery(room_id)
-        await self.check_activity_card_crash_recovery(room_id)
-        await self.check_fifo(room_id)
-        await self.check_steering_modes(room_id)
-        await self.check_steering_fallback_and_restart(room_id)
-        await self.check_reaction(room_id)
-        await self.check_acceptance_reaction(room_id)
-        await self.check_acceptance_reaction_default_off(room_id)
-        await self.check_images(room_id)
-        await self.check_files(room_id)
-        await self.check_threaded_files(room_id)
-        await self.check_gallery(room_id)
-        await self.check_gallery_restart(room_id)
-        await self.check_audio_gap(room_id)
-        await self.check_voice_status_edit(room_id)
-        await self.check_decision_and_poll(room_id)
-        await self.check_proactive_message(room_id)
-        await self.check_restart(room_id)
-        await self.check_doctor_failure()
-        await self.check_room_rejection(room_id)
+        for name in self.selected_checks():
+            check = getattr(self, f"check_{name}")
+            await (check() if name == "doctor_failure" else check(room_id))
 
     def report(self, status: str, error: str | None = None) -> None:
+        # A run restricted with --only is a development aid, never evidence.
+        partial = bool(getattr(self.args, "only", None))
         state: dict[str, Any] = {}
         with suppress(FileNotFoundError, json.JSONDecodeError):
             state = self.bridge_state()
@@ -3766,8 +4413,14 @@ class IntegrationRun:
             "schema_version": REPORT_SCHEMA_VERSION,
             "generated_at": datetime.now(UTC).isoformat(),
             "duration_seconds": round(time.monotonic() - self.started_at, 1),
-            "status": "invalid" if self.source_provenance_error else status,
-            "evidence_valid": self.source_provenance_error is None,
+            "status": (
+                "invalid"
+                if self.source_provenance_error
+                else "partial"
+                if partial and status == "pass"
+                else status
+            ),
+            "evidence_valid": self.source_provenance_error is None and not partial,
             "target": {
                 "package": "openrig-matrix-bridge",
                 "version": __version__,
@@ -3813,6 +4466,8 @@ class IntegrationRun:
                 "rejected_rooms": len(state.get("rejected_rooms", {})),
             },
         }
+        if partial:
+            report["checks_selected"] = list(self.selected_checks())
         if error:
             report["error"] = error
         if self.source_provenance_error:
@@ -3886,6 +4541,15 @@ def build_parser() -> argparse.ArgumentParser:
         "--keep-workdir",
         action="store_true",
         help="retain bridge state and logs for inspection",
+    )
+    parser.add_argument(
+        "--only",
+        nargs="+",
+        metavar="CHECK",
+        help=(
+            "development aid: run only these checks (names from CHECKS, without "
+            "the check_ prefix); the report is marked partial and not evidence"
+        ),
     )
     return parser
 
