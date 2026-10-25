@@ -89,6 +89,11 @@ def test_credentials_are_replaced_by_a_category_marker(text, secret, marker):
             f"{COOKIE} gesetzt",
         ),
         (
+            "Cookie: a='x y'; sid=SECRETSIDVALUE123456 gesetzt",
+            "SECRETSIDVALUE123456",
+            f"{COOKIE} gesetzt",
+        ),
+        (
             "Cookie: theme=dark; connect.sid=s%3AabcSECRET gesetzt",
             "abcSECRET",
             f"{COOKIE} gesetzt",
