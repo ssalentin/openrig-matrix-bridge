@@ -540,6 +540,8 @@ def run_setup(args: argparse.Namespace) -> None:
             "steering_max_chars": 2000,
             "steering_batch_window_seconds": 0.5,
             "steering_admission_timeout_seconds": 2.0,
+            "burst_inactivity_seconds": 45,
+            "burst_max_span_seconds": 300,
             "poll_interval_seconds": 0.2,
             "human_queue_poll_seconds": 2.0,
             "max_message_age_minutes": 60,

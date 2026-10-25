@@ -91,6 +91,14 @@ forward.
 
 ### Automated integration coverage
 
+The single-message checks send unrelated attachments seconds apart, so they run
+with timing correlation off (`openrig.burst_inactivity_seconds: 0`). The
+`related-*` checks restart the bridge on the production defaults (45 s
+inactivity, 300 s span, receipt off) and start each scenario more than 45 s
+after the previous owner event, which makes a full run several minutes longer.
+`--only CHECK ...` runs selected checks for development; such a report is
+`partial` with `evidence_valid: false` and is never release evidence.
+
 | Check | What is exercised |
 |---|---|
 | `setup-and-doctor` | Public `setup` and `doctor` commands against Synapse and the fake OpenRig transport, plus a second `setup` without `--replace-config` that must fail with that next step |
@@ -111,6 +119,14 @@ forward.
 | `voice-status-edit` | Encrypted voice note, deterministic local transcript, one threaded progress event edited by `m.replace`, no transcript-only reply, one forwarded prompt and qitem closure |
 | `encrypted-files` | Encrypted PDF and unknown-binary transfer in both directions; markerless audio fallback; generated safe inbox paths; private admitted snapshots; `m.file` metadata and byte-preserving decryption |
 | `attachment-restart-recovery` | A generic-file request queued while stopped is delivered exactly once after restart from its snapshot after the source is changed, and records the observed Matrix event ID |
+| `element-x-gallery` | One encrypted `dm.filament.gallery` with four HEIC-labelled items and JPEG previews reaches the agent as one prompt and one completed qitem, items in source order with filename, MIME type, size and dimensions, originals and previews decrypted byte-for-byte |
+| `gallery-restart` | A crash after the first of four gallery items was stored resumes the other three without downloading the first again; one prompt, one qitem |
+| `related-gallery-then-text` | Production defaults: a top-level gallery and a top-level text about 1 s and about 30 s later reach the agent linked, in source order, digest-verified, one qitem per event, every answer under the gallery; after 30 s the text is a continuation restating every item |
+| `related-voice-text-attachments` | Voice note with injected transcription latency, then text, image and PDF one second apart: nothing overtakes the transcript; order, digests, qitems and threading as above |
+| `related-galleries-and-files` | Two galleries, a PDF, a CSV and a text in one exchange arrive linked to the first gallery in source order with every path digest-verified |
+| `related-restart` | Restart between parts, then a crash after a PDF's intake was persisted and before its download: the download resumes once (one stored copy) and the PDF and a later text arrive linked to the gallery |
+| `related-unrelated-isolation` | Two plain top-level texts two seconds apart stay separate requests with their own answers; a thread reply joins only its thread |
+| `related-thread` | A gallery and a text sent into a thread more than 45 s after its root join the root's context by relation; a top-level message sent in between stays separate |
 | `voice-disabled-path` | A voice-message-marked encrypted audio event reaches transcription handling while voice is deliberately disabled |
 | `decision-and-poll` | Pinned decision brief, MSC3381 poll, encrypted response, prompt forwarding, unpin |
 | `proactive-message` | Explicit encrypted `send-message` |

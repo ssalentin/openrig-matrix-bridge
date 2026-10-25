@@ -56,6 +56,13 @@ from .avatar_pool import (
     avatar_pool_fingerprint,
     profile_png,
 )
+from .bursts import (
+    KIND_LABELS,
+    assign_part,
+    deliverable_parts,
+    is_linked,
+    render_burst,
+)
 from .config import AgentConfig, BridgeConfig, safe_agent_directory
 from .decisions import (
     POLL_RESPONSE_TYPE,
@@ -223,10 +230,12 @@ QUEUE_SOURCE_LABELS = {
     "reaction": "Reaktion",
     "decision": "Entscheidung",
     "gallery": "Galerie",
+    "related": "Zusammenhang",
 }
 QUEUE_FILENAME_LINE = re.compile(r"^Originaldateiname: (\".*\")$", re.MULTILINE)
 QUEUE_CAPTION_LINE = re.compile(r"^Bildunterschrift: (.+)$", re.MULTILINE)
 QUEUE_GALLERY_ITEM_LINE = re.compile(r"^\d+\. \".*\"", re.MULTILINE)
+QUEUE_RELATED_PART_LINE = re.compile(r"^Teil \d+ · ([^·\n]+?) · ", re.MULTILINE)
 
 
 def queue_preview(text: object, limit: int = 96) -> str:
@@ -236,6 +245,15 @@ def queue_preview(text: object, limit: int = 96) -> str:
     if len(summary) > limit:
         return summary[: limit - 1].rstrip() + "…"
     return summary
+
+
+def queue_related_preview(text: str) -> str | None:
+    """Summarize a related-context prompt by its parts, never its paths or IDs."""
+    kinds = QUEUE_RELATED_PART_LINE.findall(text)
+    if not kinds:
+        return None
+    count = f"{len(kinds)} {'Teil' if len(kinds) == 1 else 'Teile'}"
+    return queue_preview(f"{count} · " + ", ".join(kind.strip() for kind in kinds))
 
 
 def queue_request_preview(request: dict[str, Any]) -> str:
@@ -258,6 +276,8 @@ def queue_request_preview(request: dict[str, Any]) -> str:
         return ""
     if label == "image":
         return queue_preview(caption)
+    if label == "related":
+        return queue_related_preview(text) or ""
     if label == "gallery":
         count = len(QUEUE_GALLERY_ITEM_LINE.findall(text))
         parts = [f"{count} {'Datei' if count == 1 else 'Dateien'}"] if count else []
@@ -280,12 +300,13 @@ def queue_request_context(request: dict[str, Any]) -> str:
 def queue_request_entry(request: dict[str, Any]) -> str:
     steering_entries = request.get("steering_entries")
     if isinstance(steering_entries, list) and steering_entries:
+        texts = [
+            str(entry.get("text") or "")
+            for entry in steering_entries
+            if isinstance(entry, dict)
+        ]
         preview = queue_preview(
-            "; ".join(
-                str(entry.get("text") or "")
-                for entry in steering_entries
-                if isinstance(entry, dict)
-            )
+            "; ".join(queue_related_preview(text) or text for text in texts)
         )
     else:
         preview = queue_request_preview(request)
@@ -549,6 +570,11 @@ def gallery_items(content: dict[str, Any]) -> list[dict[str, Any]]:
     return items
 
 
+def media_stem(event_id: str) -> str:
+    """Inbox file stem for one Matrix media event, stable across restarts."""
+    return uuid.uuid5(uuid.NAMESPACE_URL, f"matrix-media:{event_id}").hex
+
+
 def voice_transaction_id(voice_event_id: str, operation: str) -> str:
     return str(
         uuid.uuid5(
@@ -736,6 +762,7 @@ class MatrixBridge:
         self._repair_decision_reply_targets()
         await self._reconcile_pending_operations()
         await self._resume_galleries()
+        await self._resume_bursts()
         await self._recover_acceptance_reactions(startup=True)
         await self._restore_queue_notices()
         await self._restore_activity_feedback()
@@ -1946,6 +1973,7 @@ class MatrixBridge:
         if await self._handle_verification_reply(room, event, text):
             return
         relates_to = message_relation(event)
+        self._intake_part(agent, room.room_id, event, "text")
         await self._enqueue_prompt(
             agent,
             room,
@@ -2316,116 +2344,214 @@ class MatrixBridge:
         suppress_reply: bool = False,
         queue_tracked: bool = True,
     ) -> None:
-        intake_at = time.time()
-        async with self.locks[agent.key]:
-            pending = self.state.data["pending"].setdefault(agent.key, [])
-            self.processed_events.add(event_id)
-            self.state.data["processed_events"] = list(self.processed_events)[-2000:]
-            target = (
-                ResponseTarget(reply_to_event_id, reply_to_event_id)
-                if reply_to_event_id
-                else resolve_response_target(event_id, relates_to)
+        found = self._processing_part(event_id)
+        if found is not None and queue_tracked and not suppress_reply:
+            # An owner event that took its place in a burst at intake: its
+            # prompt is ready, and the burst decides how it reaches the agent.
+            burst, _part = found
+            await self._complete_part(
+                burst["id"],
+                event_id,
+                text,
+                source_label or "message",
             )
-            qitem_id = None
-            if queue_tracked:
-                try:
+            return
+        intake_at = time.time()
+        target = (
+            ResponseTarget(reply_to_event_id, reply_to_event_id)
+            if reply_to_event_id
+            else resolve_response_target(event_id, relates_to)
+        )
+        async with self.locks[agent.key]:
+            await self._enqueue_locked(
+                agent,
+                room.room_id,
+                [(event_id, text)],
+                text,
+                source_label or "message",
+                target,
+                relates_to=relates_to,
+                suppress_reply=suppress_reply,
+                queue_tracked=queue_tracked,
+                intake_at=intake_at,
+            )
+
+    async def _enqueue_locked(
+        self,
+        agent: AgentConfig,
+        room_id: str,
+        parts: list[tuple[str, str]],
+        text: str,
+        source_label: str,
+        target: ResponseTarget,
+        *,
+        relates_to: dict[str, Any] | None,
+        suppress_reply: bool = False,
+        queue_tracked: bool = True,
+        intake_at: float,
+        linked: bool = False,
+        burst: dict[str, Any] | None = None,
+        burst_parts: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any] | None:
+        """Admit one request carrying `parts` (event id, own text) as `text`.
+
+        Each part gets its own qitem. A linked request (a burst with an
+        attachment) may steer regardless of steering_max_chars, so related
+        context is never truncated. `burst_parts` are marked delivered in the
+        same state save that admits the request.
+        """
+        pending = self.state.data["pending"].setdefault(agent.key, [])
+        event_ids = [event_id for event_id, _text in parts]
+        for event_id in event_ids:
+            self.processed_events.add(event_id)
+        self.state.data["processed_events"] = list(self.processed_events)[-2000:]
+        qitem_ids: list[str] = []
+        if queue_tracked:
+            try:
+                for event_id, part_text in parts:
                     qitem_id = await self._create_inbound_qitem(
                         agent,
                         event_id=event_id,
-                        text=text,
-                        source_label=source_label or "message",
+                        text=part_text,
+                        source_label=source_label,
                     )
-                except (GatewayError, OSError) as exc:
-                    LOGGER.exception(
-                        "could not create durable qitem for Matrix event %s",
-                        event_id,
-                    )
-                    await self._send(
-                        room.room_id,
-                        "OpenRig konnte das Queue-Item für diese Anfrage nicht "
-                        f"anlegen. Die Anfrage wurde nicht an den Agenten gesendet: {exc}",
-                        target.reply_to_event_id,
-                        thread_root=target.thread_root_event_id,
-                    )
-                    return
-            request = {
-                "id": uuid.uuid4().hex,
-                "event_id": event_id,
-                "reply_to_event_id": target.reply_to_event_id,
-                "thread_root_event_id": target.thread_root_event_id,
-                "source_event_ids": [event_id],
-                "source_relation": dict(relates_to) if relates_to else None,
-                "source_label": source_label or "message",
-                "qitem_id": qitem_id,
-                "qitem_ids": [qitem_id] if qitem_id else [],
-                "queue_tracked": queue_tracked,
-                "suppress_reply": suppress_reply,
-                "priority": getattr(
-                    self.config,
-                    "inbound_message_priority",
-                    "urgent",
-                ),
-                "text": text,
-                "intake_at": intake_at,
-                "enqueued_at": time.time(),
-                "prompt_phase": "pending",
-                "answer_phase": None,
-                "qitem_phase": "pending" if qitem_id else "not_tracked",
-                "qitem_phases": ({qitem_id: "pending"} if qitem_id else {}),
-                "started_at": None,
-                "session_id": None,
-                "transcript_path": None,
-                "offset": None,
-                "answer_text": None,
-                "turn_attribution_required": True,
-            }
-            if self._is_steering_candidate(
-                pending,
-                text,
-                target,
-                suppress_reply=suppress_reply,
-                queue_tracked=queue_tracked,
+                    if qitem_id:
+                        qitem_ids.append(qitem_id)
+            except (GatewayError, OSError) as exc:
+                LOGGER.exception(
+                    "could not create durable qitem for Matrix event %s",
+                    event_ids[-1],
+                )
+                for part in burst_parts or []:
+                    part["phase"] = "failed"
+                    part["error"] = "OpenRig-Queue-Item konnte nicht angelegt werden"
+                self.state.save()
+                await self._send(
+                    room_id,
+                    "OpenRig konnte das Queue-Item für diese Anfrage nicht "
+                    f"anlegen. Die Anfrage wurde nicht an den Agenten gesendet: {exc}",
+                    target.reply_to_event_id,
+                    thread_root=target.thread_root_event_id,
+                )
+                return None
+        qitem_id = qitem_ids[0] if qitem_ids else None
+        request = {
+            "id": uuid.uuid4().hex,
+            "event_id": event_ids[-1],
+            "reply_to_event_id": target.reply_to_event_id,
+            "thread_root_event_id": target.thread_root_event_id,
+            "source_event_ids": list(event_ids),
+            "source_relation": dict(relates_to) if relates_to else None,
+            "source_label": source_label,
+            "qitem_id": qitem_id,
+            "qitem_ids": list(qitem_ids),
+            "queue_tracked": queue_tracked,
+            "suppress_reply": suppress_reply,
+            "priority": getattr(
+                self.config,
+                "inbound_message_priority",
+                "urgent",
+            ),
+            "text": text,
+            "intake_at": intake_at,
+            "enqueued_at": time.time(),
+            "prompt_phase": "pending",
+            "answer_phase": None,
+            "qitem_phase": "pending" if qitem_id else "not_tracked",
+            "qitem_phases": {value: "pending" for value in qitem_ids},
+            "started_at": None,
+            "session_id": None,
+            "transcript_path": None,
+            "offset": None,
+            "answer_text": None,
+            "turn_attribution_required": True,
+        }
+        if burst is not None:
+            request["burst_id"] = burst["id"]
+            request["burst_part_ids"] = list(event_ids)
+            if linked and len(burst["parts"]) > 1:
+                # The answer names every related part as its source.
+                request["source_event_ids"] = [
+                    part["event_id"]
+                    for part in burst["parts"]
+                    if part.get("phase") in {"delivered", "reported"}
+                    or part["event_id"] in event_ids
+                ]
+        for part in burst_parts or []:
+            part["phase"] = "reported" if part.get("phase") == "failed" else "delivered"
+            part["request_id"] = request["id"]
+        if self._is_steering_candidate(
+            pending,
+            text,
+            target,
+            suppress_reply=suppress_reply,
+            queue_tracked=queue_tracked,
+            linked=linked,
+        ):
+            if linked and burst is not None:
+                self._steer_burst_parts(agent, pending, request, burst)
+            for index, (event_id, part_text) in enumerate(
+                [] if linked and burst is not None else parts
             ):
+                part_qitem = qitem_ids[index] if index < len(qitem_ids) else None
                 self._append_steering_followup(
                     agent,
                     pending,
-                    request,
+                    {
+                        **request,
+                        "id": uuid.uuid4().hex,
+                        "event_id": event_id,
+                        "source_event_ids": [event_id],
+                        "qitem_id": part_qitem,
+                        "qitem_ids": [part_qitem] if part_qitem else [],
+                        "qitem_phase": "pending" if part_qitem else "not_tracked",
+                        "qitem_phases": ({part_qitem: "pending"} if part_qitem else {}),
+                    },
                     event_id=event_id,
-                    text=text,
+                    text=part_text,
                 )
-                acknowledge = self._record_acceptance(
-                    room.room_id,
+            acknowledge = [
+                event_id
+                for event_id in event_ids
+                if self._record_acceptance(
+                    room_id,
                     event_id,
                     queue_tracked=queue_tracked,
                     suppress_reply=suppress_reply,
                 )
-                self.state.save()
-                if acknowledge:
-                    await self._acknowledge_acceptance(room.room_id, event_id)
-                await self._update_queue_notice(
-                    agent,
-                    room.room_id,
-                    max(0, len(pending) - 1),
-                )
-                return
-            pending.append(request)
-            acknowledge = self._record_acceptance(
-                room.room_id,
+            ]
+            self.state.save()
+            for event_id in acknowledge:
+                await self._acknowledge_acceptance(room_id, event_id)
+            await self._update_queue_notice(
+                agent,
+                room_id,
+                max(0, len(pending) - 1),
+            )
+            return request
+        pending.append(request)
+        acknowledge = [
+            event_id
+            for event_id in event_ids
+            if self._record_acceptance(
+                room_id,
                 event_id,
                 queue_tracked=queue_tracked,
                 suppress_reply=suppress_reply,
             )
-            self.state.save()
-            if len(pending) == 1:
-                await self._start_request(agent, pending[0], room.room_id)
-            if not request.get("suppress_reply"):
-                await self._update_queue_notice(
-                    agent,
-                    room.room_id,
-                    max(0, len(pending) - 1),
-                )
-            if acknowledge:
-                await self._acknowledge_acceptance(room.room_id, event_id)
+        ]
+        self.state.save()
+        if len(pending) == 1:
+            await self._start_request(agent, pending[0], room_id)
+        if not request.get("suppress_reply"):
+            await self._update_queue_notice(
+                agent,
+                room_id,
+                max(0, len(pending) - 1),
+            )
+        for event_id in acknowledge:
+            await self._acknowledge_acceptance(room_id, event_id)
+        return request
 
     def _is_steering_candidate(
         self,
@@ -2435,6 +2561,7 @@ class MatrixBridge:
         *,
         suppress_reply: bool,
         queue_tracked: bool,
+        linked: bool = False,
     ) -> bool:
         mode = str(getattr(self.config, "steering_mode", "auto"))
         if mode not in {"steer", "auto"}:
@@ -2442,7 +2569,7 @@ class MatrixBridge:
         if suppress_reply or not queue_tracked or not target.thread_root_event_id:
             return False
         max_chars = int(getattr(self.config, "steering_max_chars", 2000))
-        if len(text) > max_chars:
+        if len(text) > max_chars and not linked:
             return False
         if not pending:
             return False
@@ -2514,10 +2641,7 @@ class MatrixBridge:
             active["steering_group_id"] = group["id"]
         else:
             group["steering_entries"].append(entry)
-            group["source_event_ids"].append(event_id)
-            if incoming.get("qitem_id"):
-                group.setdefault("qitem_ids", []).append(incoming["qitem_id"])
-                group.setdefault("qitem_phases", {})[incoming["qitem_id"]] = "pending"
+            self._extend_steering_group(group, incoming)
         entries = group["steering_entries"]
         group["text"] = steering_batch_text(
             str(active["thread_root_event_id"]),
@@ -3245,6 +3369,410 @@ class MatrixBridge:
         await self._abandon_terminal_qitem(agent, request, room_id)
         return True
 
+    def _burst_settings(self) -> tuple[float, float]:
+        return (
+            float(getattr(self.config, "burst_inactivity_seconds", 45)),
+            float(getattr(self.config, "burst_max_span_seconds", 300)),
+        )
+
+    def _intake_part(
+        self,
+        agent: AgentConfig,
+        room_id: str,
+        event: Any,
+        kind: str,
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        """Give an inbound event its place in a burst, in timeline order.
+
+        Handlers call this before their first await, so the order of parts is
+        the order nio delivered the events, not the order their downloads or
+        transcriptions finish. The caller saves state.
+        """
+        relation = message_relation(event)
+        target = resolve_response_target(event.event_id, relation)
+        inactivity, max_span = self._burst_settings()
+        burst, part = assign_part(
+            self.state.data.setdefault("bursts", {}),
+            agent_key=agent.key,
+            room_id=room_id,
+            sender=str(event.sender),
+            event_id=event.event_id,
+            kind=kind,
+            server_ts=int(event.server_timestamp),
+            relation=relation,
+            thread_root_event_id=target.thread_root_event_id,
+            reply_to_event_id=target.reply_to_event_id,
+            inactivity_seconds=inactivity,
+            max_span_seconds=max_span,
+        )
+        part["relates_to"] = relation
+        return burst, part
+
+    def _mark_processed(self, event_id: str) -> None:
+        self.processed_events.add(event_id)
+        self.state.data["processed_events"] = list(self.processed_events)[-2000:]
+
+    def _processing_part(
+        self,
+        event_id: str,
+    ) -> tuple[dict[str, Any], dict[str, Any]] | None:
+        for burst in self.state.data.get("bursts", {}).values():
+            for part in burst.get("parts", []):
+                if part.get("event_id") == event_id:
+                    return (burst, part) if part.get("phase") == "processing" else None
+        return None
+
+    async def _fail_event_part(self, event_id: str, error: object) -> None:
+        found = self._processing_part(event_id)
+        if found is not None:
+            await self._fail_part(found[0]["id"], event_id, error)
+
+    def _burst_part(
+        self,
+        burst_id: str,
+        event_id: str,
+    ) -> tuple[dict[str, Any], dict[str, Any]] | None:
+        burst = self.state.data.get("bursts", {}).get(burst_id)
+        if not isinstance(burst, dict):
+            return None
+        part = next(
+            (item for item in burst["parts"] if item.get("event_id") == event_id),
+            None,
+        )
+        return (burst, part) if part is not None else None
+
+    async def _complete_part(
+        self,
+        burst_id: str,
+        event_id: str,
+        text: str,
+        source_label: str,
+    ) -> None:
+        found = self._burst_part(burst_id, event_id)
+        if found is None:
+            return
+        _burst, part = found
+        part.update(phase="ready", text=text, label=source_label)
+        part.pop("media", None)
+        self._mark_processed(event_id)
+        self.state.save()
+        await self._advance_burst(burst_id)
+
+    async def _fail_part(self, burst_id: str, event_id: str, error: object) -> None:
+        found = self._burst_part(burst_id, event_id)
+        if found is None:
+            return
+        _burst, part = found
+        part.update(phase="failed", error=display_text(error, 300))
+        part.pop("media", None)
+        self._mark_processed(event_id)
+        self.state.save()
+        await self._advance_burst(burst_id)
+
+    async def _advance_burst(self, burst_id: str) -> None:
+        burst = self.state.data.get("bursts", {}).get(burst_id)
+        if not isinstance(burst, dict):
+            return
+        agent = self.config.agents.get(str(burst.get("agent_key")))
+        if agent is None or not self._burst_has_delivery(burst):
+            return
+        async with self.locks[agent.key]:
+            await self._advance_burst_locked(agent, burst)
+
+    @staticmethod
+    def _burst_has_delivery(burst: dict[str, Any]) -> bool:
+        """Whether the burst has settled parts that may reach the agent now.
+
+        Failures alone wait: their Matrix notices went out, and the agent hears
+        about them with the burst's first usable part.
+        """
+        new = deliverable_parts(burst)
+        return any(part["phase"] == "ready" for part in new) or (
+            bool(new)
+            and any(
+                part.get("phase") in {"delivered", "reported"}
+                for part in burst["parts"]
+            )
+        )
+
+    async def _advance_burst_locked(
+        self,
+        agent: AgentConfig,
+        burst: dict[str, Any],
+    ) -> None:
+        """Deliver the burst's settled parts in order, as soon as they may go.
+
+        Text-only bursts keep per-message delivery. A burst with an attachment
+        is one linked context: new parts join the burst's request that has not
+        been sent yet, steer into its active turn, or become a continuation
+        that restates every earlier part.
+        """
+        if not self._burst_has_delivery(burst):
+            return
+        new = deliverable_parts(burst)
+        delivered = [
+            part
+            for part in burst["parts"]
+            if part.get("phase") in {"delivered", "reported"}
+        ]
+        room_id = str(burst["room_id"])
+        intake_at = time.time()
+        if not is_linked(burst):
+            for part in new:
+                if part["phase"] == "failed":
+                    # The owner was told it was not sent; plain chat keeps that.
+                    part["phase"] = "reported"
+                    self.state.save()
+                    continue
+                await self._enqueue_locked(
+                    agent,
+                    room_id,
+                    [(part["event_id"], str(part.get("text") or ""))],
+                    str(part.get("text") or ""),
+                    str(part.get("label") or "message"),
+                    resolve_response_target(part["event_id"], part.get("relates_to")),
+                    relates_to=part.get("relates_to"),
+                    intake_at=intake_at,
+                    burst=burst,
+                    burst_parts=[part],
+                )
+            return
+
+        inactivity, _max_span = self._burst_settings()
+        new_ids = [part["event_id"] for part in new]
+        own_texts = [(part["event_id"], self._part_text(part)) for part in new]
+        pending = self.state.data["pending"].setdefault(agent.key, [])
+        live = next(
+            (
+                request
+                for request in reversed(pending)
+                if request.get("burst_id") == burst["id"]
+                and not request.get("deferred_steering")
+            ),
+            None,
+        )
+        if (
+            live is not None
+            and live.get("prompt_phase") == "pending"
+            and live.get("started_at") is None
+        ):
+            await self._merge_into_request(
+                agent,
+                burst,
+                live,
+                new,
+                own_texts,
+                inactivity=inactivity,
+            )
+            return
+        if not delivered and len(new) == 1:
+            part = new[0]
+            text = str(part.get("text") or "")
+            label = str(part.get("label") or "message")
+        else:
+            text = render_burst(burst, new_ids, inactivity_seconds=inactivity)
+            label = "related"
+        await self._enqueue_locked(
+            agent,
+            room_id,
+            own_texts,
+            text,
+            label,
+            ResponseTarget(
+                burst.get("thread_root_event_id"),
+                str(burst.get("reply_to_event_id") or burst["anchor_event_id"]),
+            ),
+            relates_to=new[0].get("relates_to"),
+            intake_at=intake_at,
+            linked=True,
+            burst=burst,
+            burst_parts=new,
+        )
+
+    @staticmethod
+    def _part_text(part: dict[str, Any]) -> str:
+        if part.get("phase") == "failed":
+            label = KIND_LABELS.get(str(part.get("kind")), "Nachricht")
+            return (
+                f"{label} {part['event_id']} konnte nicht übernommen werden: "
+                f"{part.get('error')}"
+            )
+        return str(part.get("text") or "")
+
+    async def _merge_into_request(
+        self,
+        agent: AgentConfig,
+        burst: dict[str, Any],
+        request: dict[str, Any],
+        new: list[dict[str, Any]],
+        own_texts: list[tuple[str, str]],
+        *,
+        inactivity: float,
+    ) -> None:
+        """Add parts to a request that has not reached the agent yet."""
+        room_id = str(burst["room_id"])
+        qitem_ids: list[str] = []
+        if request.get("queue_tracked", True):
+            try:
+                for event_id, text in own_texts:
+                    qitem_id = await self._create_inbound_qitem(
+                        agent,
+                        event_id=event_id,
+                        text=text,
+                        source_label="related",
+                    )
+                    if qitem_id:
+                        qitem_ids.append(qitem_id)
+            except (GatewayError, OSError) as exc:
+                LOGGER.exception("could not create durable qitem for a related part")
+                for part in new:
+                    part["phase"] = "failed"
+                    part["error"] = "OpenRig-Queue-Item konnte nicht angelegt werden"
+                self.state.save()
+                await self._send(
+                    room_id,
+                    "OpenRig konnte das Queue-Item für diese Anfrage nicht "
+                    f"anlegen. Die Anfrage wurde nicht an den Agenten gesendet: {exc}",
+                    self._reply_target(request),
+                    **self._delivery_kwargs(request),
+                )
+                return
+        new_ids = [event_id for event_id, _text in own_texts]
+        for event_id in new_ids:
+            self.processed_events.add(event_id)
+        self.state.data["processed_events"] = list(self.processed_events)[-2000:]
+        carried = [*request.get("burst_part_ids", []), *new_ids]
+        request["burst_part_ids"] = carried
+        request["source_event_ids"] = list(
+            dict.fromkeys([*request.get("source_event_ids", []), *new_ids])
+        )
+        request["event_id"] = new_ids[-1]
+        if qitem_ids:
+            if not request.get("qitem_id"):
+                request["qitem_id"] = qitem_ids[0]
+                request["qitem_phase"] = "pending"
+            request["qitem_ids"] = [*self._request_qitem_ids(request), *qitem_ids]
+            phases = request.setdefault("qitem_phases", {})
+            for qitem_id in qitem_ids:
+                phases[qitem_id] = "pending"
+        for part in new:
+            part["phase"] = "reported" if part.get("phase") == "failed" else "delivered"
+            part["request_id"] = request["id"]
+        request["text"] = render_burst(burst, carried, inactivity_seconds=inactivity)
+        request["source_label"] = "related"
+        acknowledge = [
+            event_id
+            for event_id in new_ids
+            if self._record_acceptance(
+                room_id,
+                event_id,
+                queue_tracked=bool(request.get("queue_tracked", True)),
+                suppress_reply=bool(request.get("suppress_reply")),
+            )
+        ]
+        self.state.save()
+        LOGGER.info(
+            "merged Matrix events %s into the waiting request for %s",
+            ", ".join(new_ids),
+            agent.session,
+        )
+        for event_id in acknowledge:
+            await self._acknowledge_acceptance(room_id, event_id)
+
+    def _steer_burst_parts(
+        self,
+        agent: AgentConfig,
+        pending: list[dict[str, Any]],
+        request: dict[str, Any],
+        burst: dict[str, Any],
+    ) -> None:
+        """Steer new burst parts as one entry that restates the whole burst.
+
+        Pane input may be admitted into the active turn, materialize as the
+        next turn, or fall back to its own turn; in every case the agent sees
+        the complete related context and the answer names every source event.
+        A burst keeps one entry per batch, updated in place as parts arrive.
+        """
+        inactivity, _max_span = self._burst_settings()
+        group = self._steering_group(pending, pending[0])
+        entry = next(
+            (
+                item
+                for item in (group or {}).get("steering_entries", [])
+                if item.get("burst_id") == burst["id"]
+            ),
+            None,
+        )
+        new_ids = [*(entry or {}).get("new_event_ids", []), *request["burst_part_ids"]]
+        text = render_burst(burst, new_ids, inactivity_seconds=inactivity)
+        if group is not None and entry is not None:
+            entry.update(event_id=new_ids[-1], text=text, new_event_ids=new_ids)
+            self._extend_steering_group(group, request)
+            group["text"] = steering_batch_text(
+                str(pending[0]["thread_root_event_id"]),
+                group["steering_entries"],
+            )
+            return
+        self._append_steering_followup(
+            agent,
+            pending,
+            {**request, "id": uuid.uuid4().hex},
+            event_id=new_ids[-1],
+            text=text,
+        )
+        group = self._steering_group(pending, pending[0])
+        if group is not None:
+            group["steering_entries"][-1].update(
+                burst_id=burst["id"],
+                new_event_ids=new_ids,
+            )
+
+    def _extend_steering_group(
+        self,
+        group: dict[str, Any],
+        incoming: dict[str, Any],
+    ) -> None:
+        group["source_event_ids"] = list(
+            dict.fromkeys(
+                [
+                    *group.get("source_event_ids", []),
+                    *incoming.get("source_event_ids", [incoming["event_id"]]),
+                ]
+            )
+        )
+        qitem_ids = group.setdefault("qitem_ids", [])
+        phases = group.setdefault("qitem_phases", {})
+        for qitem_id in self._request_qitem_ids(incoming):
+            if qitem_id not in qitem_ids:
+                qitem_ids.append(qitem_id)
+                phases[qitem_id] = "pending"
+
+    async def _resume_bursts(self) -> None:
+        """Finish parts a restart interrupted, then deliver what is settled."""
+        bursts = self.state.data.get("bursts", {})
+        for burst_id, burst in list(bursts.items()):
+            for part in list(burst.get("parts", [])):
+                if part.get("phase") != "processing":
+                    continue
+                if part.get("kind") in {"image", "file"} and isinstance(
+                    part.get("media"), dict
+                ):
+                    await self._process_media_part(burst_id, part["event_id"])
+                elif part.get("kind") == "voice":
+                    await self._fail_part(
+                        burst_id,
+                        part["event_id"],
+                        VOICE_STATUS_INTERRUPTED,
+                    )
+                else:
+                    await self._fail_part(
+                        burst_id,
+                        part["event_id"],
+                        "Verarbeitung wurde durch einen Bridge-Neustart unterbrochen",
+                    )
+        for burst_id in list(bursts):
+            await self._advance_burst(burst_id)
+
     async def _handle_audio(
         self,
         room: MatrixRoom,
@@ -3293,6 +3821,7 @@ class MatrixBridge:
             "state": "sending-status",
             "updated_at": int(time.time() * 1000),
         }
+        self._intake_part(agent, room.room_id, event, "voice")
         self.processed_events.add(event.event_id)
         self.state.data["processed_events"] = list(self.processed_events)[-2000:]
         self.state.save()
@@ -3302,6 +3831,10 @@ class MatrixBridge:
                 "Sprachnachricht-Status konnte nicht erstellt werden. "
                 "Bitte erneut senden.",
                 "failed",
+            )
+            await self._fail_event_part(
+                event.event_id,
+                "Sprachnachricht-Status konnte nicht erstellt werden",
             )
             return
         try:
@@ -3319,6 +3852,7 @@ class MatrixBridge:
                     event.hashes["sha256"],
                     event.iv,
                 )
+            audio_digest = hashlib.sha256(audio).hexdigest()
             text = await asyncio.to_thread(
                 self.transcriber.transcribe, audio, event.body
             )
@@ -3329,12 +3863,20 @@ class MatrixBridge:
                 f"Sprachnachricht konnte nicht transkribiert werden: {exc}",
                 "failed",
             )
+            await self._fail_event_part(
+                event.event_id,
+                f"Sprachnachricht konnte nicht transkribiert werden: {exc}",
+            )
             return
         if not text:
             await self._finish_voice_status(
                 event.event_id,
                 "In der Sprachnachricht wurde kein Text erkannt.",
                 "no-speech",
+            )
+            await self._fail_event_part(
+                event.event_id,
+                "In der Sprachnachricht wurde kein Text erkannt",
             )
             return
         await self._finish_voice_status(
@@ -3347,7 +3889,10 @@ class MatrixBridge:
             room,
             event.event_id,
             event.server_timestamp,
-            f"Sprachnachricht von {event.sender} via Matrix (lokal transkribiert):\n\n{text}",
+            (
+                f"Sprachnachricht von {event.sender} via Matrix (lokal transkribiert, "
+                f"Audio-SHA-256: {audio_digest}):\n\n{text}"
+            ),
             "audio",
             relates_to=message_relation(event),
         )
@@ -3627,14 +4172,97 @@ class MatrixBridge:
                 )
                 return
 
-        self.processed_events.add(event.event_id)
-        self.state.data["processed_events"] = list(self.processed_events)[-2000:]
-        self.state.save()
+        self._intake_media(
+            agent,
+            room.room_id,
+            event,
+            "image",
+            encrypted=isinstance(event, RoomEncryptedImage),
+        )
         await self._send_to_event(
             room.room_id,
             "Bild empfangen, lade und entschlüssele …",
             event,
         )
+        await self._store_image(
+            agent,
+            room.room_id,
+            event,
+            encrypted=isinstance(event, RoomEncryptedImage),
+        )
+
+    def _intake_media(
+        self,
+        agent: AgentConfig,
+        room_id: str,
+        event: Any,
+        kind: str,
+        *,
+        encrypted: bool,
+    ) -> None:
+        """Persist what is needed to download the media again after a restart.
+
+        The part and the processed marker are saved together, so a restart
+        during the download resumes it instead of losing the event.
+        """
+        _burst, part = self._intake_part(agent, room_id, event, kind)
+        content = event.source.get("content", {})
+        part["media"] = {
+            "encrypted": encrypted,
+            "url": getattr(event, "url", None),
+            "key": getattr(event, "key", None),
+            "hashes": getattr(event, "hashes", None),
+            "iv": getattr(event, "iv", None),
+            "body": str(getattr(event, "body", "") or ""),
+            "mimetype": getattr(event, "mimetype", None),
+            "content": dict(content) if isinstance(content, dict) else {},
+            "sender": event.sender,
+            "server_timestamp": int(event.server_timestamp),
+        }
+        self.processed_events.add(event.event_id)
+        self.state.data["processed_events"] = list(self.processed_events)[-2000:]
+        self.state.save()
+        self._crash_after_effect("media_intake")
+
+    async def _process_media_part(self, burst_id: str, event_id: str) -> None:
+        """Resume an image or file download that a restart interrupted."""
+        found = self._burst_part(burst_id, event_id)
+        if found is None:
+            return
+        burst, part = found
+        media = part.get("media")
+        agent = self.config.agents.get(str(burst.get("agent_key")))
+        if agent is None or not isinstance(media, dict):
+            await self._fail_part(burst_id, event_id, "Medienangaben fehlen")
+            return
+        event = SimpleNamespace(
+            event_id=event_id,
+            sender=media.get("sender"),
+            server_timestamp=media.get("server_timestamp"),
+            url=media.get("url"),
+            key=media.get("key"),
+            hashes=media.get("hashes"),
+            iv=media.get("iv"),
+            body=media.get("body"),
+            mimetype=media.get("mimetype"),
+            source={"content": media.get("content") or {}},
+        )
+        store = self._store_image if part.get("kind") == "image" else self._store_file
+        await store(
+            agent,
+            str(burst["room_id"]),
+            event,
+            encrypted=bool(media.get("encrypted")),
+        )
+
+    async def _store_image(
+        self,
+        agent: AgentConfig,
+        room_id: str,
+        event: Any,
+        *,
+        encrypted: bool,
+    ) -> None:
         try:
             download = await self.client.download(mxc=event.url)
             body = getattr(download, "body", None)
@@ -3643,7 +4271,7 @@ class MatrixBridge:
             if len(body) > self.config.media.max_image_bytes:
                 raise MediaError("encrypted image exceeds the configured size limit")
             image = body
-            if isinstance(event, RoomEncryptedImage):
+            if encrypted:
                 image = decrypt_attachment(
                     body,
                     event.key["k"],
@@ -3655,40 +4283,41 @@ class MatrixBridge:
                 raise MediaError("unsupported image type; use PNG, JPEG, GIF, or WebP")
             if len(image) > self.config.media.max_image_bytes:
                 raise MediaError("image exceeds the configured size limit")
-            agent_inbox = safe_agent_directory(self.config.media.inbox_dir, agent.key)
-            agent_inbox.mkdir(parents=True, exist_ok=True, mode=0o700)
-            stored = agent_inbox / f"{uuid.uuid4().hex}{image_type.suffix}"
-
-            def write_image() -> None:
-                with stored.open("xb") as handle:
-                    handle.write(image)
-                stored.chmod(0o600)
-
-            await asyncio.to_thread(write_image)
+            stored = await self._write_inbox_file(
+                agent,
+                image,
+                f"image{image_type.suffix}",
+                stem=media_stem(event.event_id),
+            )
         except Exception as exc:
             LOGGER.exception("image download failed")
             await self._send_to_event(
-                room.room_id,
+                room_id,
                 f"Bild konnte nicht übernommen werden: {exc}",
                 event,
             )
+            await self._fail_event_part(
+                event.event_id,
+                f"Bild konnte nicht übernommen werden: {exc}",
+            )
             return
 
-        caption = event.body.strip()
+        caption = str(event.body or "").strip()
         caption_line = f"\nBildunterschrift: {caption}" if caption else ""
         await self._send_to_event(
-            room.room_id,
+            room_id,
             f"Bild gespeichert als `{stored.name}`.",
             event,
         )
         await self._enqueue_prompt(
             agent,
-            room,
+            SimpleNamespace(room_id=room_id),
             event.event_id,
             event.server_timestamp,
             f"Bild von {event.sender} via Matrix empfangen.{caption_line}\n\n"
             f"Lokale Datei: {stored}\n"
-            f"Format: {image_type.mime_type}, {len(image)} Bytes",
+            f"Format: {image_type.mime_type}, {len(image)} Bytes\n"
+            f"SHA-256: {hashlib.sha256(image).hexdigest()}",
             "image",
             relates_to=message_relation(event),
         )
@@ -3727,14 +4356,23 @@ class MatrixBridge:
                 )
                 return
 
-        self.processed_events.add(event.event_id)
-        self.state.data["processed_events"] = list(self.processed_events)[-2000:]
-        self.state.save()
+        encrypted = isinstance(event, (RoomEncryptedAudio, RoomEncryptedFile))
+        self._intake_media(agent, room.room_id, event, "file", encrypted=encrypted)
         await self._send_to_event(
             room.room_id,
             "Datei empfangen, lade und entschlüssele …",
             event,
         )
+        await self._store_file(agent, room.room_id, event, encrypted=encrypted)
+
+    async def _store_file(
+        self,
+        agent: AgentConfig,
+        room_id: str,
+        event: Any,
+        *,
+        encrypted: bool,
+    ) -> None:
         try:
             content = event.source.get("content", {})
             filename = str(content.get("filename") or event.body or "attachment")
@@ -3767,7 +4405,7 @@ class MatrixBridge:
                     f"{self.config.media.max_file_bytes} Bytes"
                 )
             attachment = body
-            if isinstance(event, (RoomEncryptedAudio, RoomEncryptedFile)):
+            if encrypted:
                 attachment = decrypt_attachment(
                     body,
                     event.key["k"],
@@ -3787,31 +4425,41 @@ class MatrixBridge:
                     f"Bytes überein ({declared_size} statt {len(attachment)})"
                 )
 
-            stored = await self._write_inbox_file(agent, attachment, filename)
+            stored = await self._write_inbox_file(
+                agent,
+                attachment,
+                filename,
+                stem=media_stem(event.event_id),
+            )
         except Exception as exc:
             LOGGER.exception("file download failed")
             await self._send_to_event(
-                room.room_id,
+                room_id,
                 f"Datei konnte nicht übernommen werden: {exc}",
                 event,
+            )
+            await self._fail_event_part(
+                event.event_id,
+                f"Datei konnte nicht übernommen werden: {exc}",
             )
             return
 
         await self._send_to_event(
-            room.room_id,
+            room_id,
             f"Datei gespeichert als `{stored.name}`.",
             event,
         )
         await self._enqueue_prompt(
             agent,
-            room,
+            SimpleNamespace(room_id=room_id),
             event.event_id,
             event.server_timestamp,
             f"Datei von {event.sender} via Matrix empfangen.\n\n"
             f"Lokale Datei: {stored}\n"
             f"Originaldateiname: {json.dumps(filename, ensure_ascii=False)}\n"
             f"Medientyp: {mime_type}\n"
-            f"Größe: {len(attachment)} Bytes",
+            f"Größe: {len(attachment)} Bytes\n"
+            f"SHA-256: {hashlib.sha256(attachment).hexdigest()}",
             "attachment",
             relates_to=message_relation(event),
         )
@@ -3821,17 +4469,25 @@ class MatrixBridge:
         agent: AgentConfig,
         data: bytes,
         filename: str,
+        *,
+        stem: str | None = None,
     ) -> Path:
-        """Store bytes under a generated name in the agent inbox, atomically."""
+        """Store bytes under a generated name in the agent inbox, atomically.
+
+        A `stem` derived from the source event makes the write idempotent, so a
+        download resumed after a restart replaces, never duplicates, the file.
+        """
         suffix = Path(filename).suffix
         if not re.fullmatch(r"\.[A-Za-z0-9]{1,10}", suffix):
             suffix = ".bin"
         agent_inbox = safe_agent_directory(self.config.media.inbox_dir, agent.key)
         agent_inbox.mkdir(parents=True, exist_ok=True, mode=0o700)
-        stored = agent_inbox / f"{uuid.uuid4().hex}{suffix.lower()}"
+        stored = agent_inbox / f"{stem or uuid.uuid4().hex}{suffix.lower()}"
         temporary = agent_inbox / f".{stored.name}.part"
 
         def write_file() -> None:
+            if stem:
+                temporary.unlink(missing_ok=True)
             try:
                 with temporary.open("xb") as handle:
                     handle.write(data)
@@ -3927,6 +4583,7 @@ class MatrixBridge:
                 event,
             )
             return
+        self._intake_part(agent, room.room_id, event, "gallery")
         self.state.data.setdefault("galleries", {})[event.event_id] = {
             "room_id": room.room_id,
             "agent_key": agent.key,
@@ -3959,6 +4616,7 @@ class MatrixBridge:
         if agent is None:
             record["phase"] = "failed"
             self.state.save()
+            await self._fail_event_part(event_id, "Agent ist nicht mehr konfiguriert")
             return
         for item in record["items"]:
             if item.get("phase") != "pending":
@@ -4009,6 +4667,10 @@ class MatrixBridge:
                 ),
                 event,
                 tx_id=f"gallery-failed-{event_id}",
+            )
+            await self._fail_event_part(
+                event_id,
+                "Galerie: kein Element ließ sich speichern",
             )
             return
         await self._send_to_event(
@@ -4063,6 +4725,7 @@ class MatrixBridge:
         stored = await self._write_inbox_file(agent, data, filename)
         item["stored_path"] = str(stored)
         item["size"] = len(data)
+        item["sha256"] = hashlib.sha256(data).hexdigest()
         thumbnail = item.get("thumbnail_source") or {}
         if not thumbnail:
             return
@@ -4085,6 +4748,7 @@ class MatrixBridge:
             return
         item["preview_path"] = str(path)
         item["preview_mimetype"] = preview_type.mime_type
+        item["preview_sha256"] = hashlib.sha256(preview).hexdigest()
 
     @staticmethod
     def _gallery_prompt(record: dict[str, Any]) -> str:
@@ -4110,18 +4774,24 @@ class MatrixBridge:
             if item.get("width") and item.get("height"):
                 details += f", {item['width']}×{item['height']}"
             if item.get("preview_path"):
+                kind = "JPEG" if item.get("preview_mimetype") == "image/jpeg" else "Bild"
+                digest = (
+                    f", SHA-256 {item['preview_sha256']}"
+                    if item.get("preview_sha256")
+                    else ""
+                )
                 preview = (
-                    f"{item['preview_path']} "
-                    f"({'JPEG' if item.get('preview_mimetype') == 'image/jpeg' else 'Bild'}"
-                    "-Vorschau aus der Galerie)"
+                    f"{item['preview_path']} ({kind}-Vorschau aus der Galerie{digest})"
                 )
             elif item.get("preview_error"):
                 preview = f"nicht verfügbar ({item['preview_error']})"
             else:
                 preview = "keine in der Galerie enthalten"
+            digest = f"   SHA-256: {item['sha256']}\n" if item.get("sha256") else ""
             blocks.append(
                 f"{title} — {details}\n"
                 f"   Lokale Datei: {item['stored_path']}\n"
+                f"{digest}"
                 f"   Vorschau: {preview}"
             )
         return "\n\n".join(blocks)

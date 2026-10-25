@@ -19,6 +19,14 @@ openrig:
   steering_max_chars: 2000
   steering_batch_window_seconds: 0.5
   steering_admission_timeout_seconds: 2.0
+  # Related top-level messages: a voice note, image, file or gallery and the
+  # owner's messages around it join one context while each gap stays within
+  # burst_inactivity_seconds (0 disables) and the whole exchange within
+  # burst_max_span_seconds. Thread and reply relations ignore the inactivity gap
+  # but stay within burst_max_span_seconds;
+  # two plain texts never join each other.
+  burst_inactivity_seconds: 45
+  burst_max_span_seconds: 300
   # Optional, off by default. true adds one 👍 to each human message once it is
   # durably accepted (queued or steered); it means accepted, not finished.
   acceptance_reaction_enabled: false

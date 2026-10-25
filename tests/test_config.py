@@ -228,3 +228,54 @@ def test_safe_agent_directory_rejects_symlink_escape(tmp_path: Path):
 
 def test_safe_agent_directory_returns_key_below_root(tmp_path: Path):
     assert safe_agent_directory(tmp_path, "advisor") == (tmp_path / "advisor").resolve()
+
+
+def with_openrig_keys(path: Path, lines: str) -> Path:
+    path.write_text(
+        path.read_text(encoding="utf-8").replace(
+            '  human_destinations: ["owner@external"]',
+            '  human_destinations: ["owner@external"]\n' + lines,
+        ),
+        encoding="utf-8",
+    )
+    return path
+
+
+def test_related_message_boundary_defaults_cover_a_thirty_second_gap(tmp_path: Path):
+    config = load_config(write_config(tmp_path / "config.yaml"))
+
+    assert config.burst_inactivity_seconds == 45
+    assert config.burst_max_span_seconds == 300
+
+
+def test_related_message_boundary_can_be_tuned_or_disabled(tmp_path: Path):
+    path = with_openrig_keys(
+        write_config(tmp_path / "config.yaml"),
+        "  burst_inactivity_seconds: 0\n  burst_max_span_seconds: 0",
+    )
+
+    config = load_config(path)
+
+    assert config.burst_inactivity_seconds == 0
+    assert config.burst_max_span_seconds == 0
+
+
+@pytest.mark.parametrize(
+    ("lines", "message"),
+    [
+        ("  burst_inactivity_seconds: -1", "burst_inactivity_seconds"),
+        (
+            "  burst_inactivity_seconds: 60\n  burst_max_span_seconds: 30",
+            "burst_max_span_seconds",
+        ),
+    ],
+)
+def test_rejects_invalid_related_message_boundary(
+    tmp_path: Path,
+    lines: str,
+    message: str,
+):
+    path = with_openrig_keys(write_config(tmp_path / "config.yaml"), lines)
+
+    with pytest.raises(ConfigError, match=message):
+        load_config(path)

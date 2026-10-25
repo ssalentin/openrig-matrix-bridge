@@ -17,6 +17,10 @@ repository currently proves.
 - State, the Matrix encryption store, and media inbox contain sensitive data.
   Keep the state directory private (`0700` directories and `0600` files) and
   back it up securely.
+- While an inbound image, file, or gallery item is downloading, `state.json`
+  holds its Matrix media URL and attachment decryption key so a restart can
+  resume it. The bridge removes them once the item is stored or has failed;
+  treat a `state.json` copy taken mid-download as containing those keys.
 - Losing the Matrix encryption store can make previously encrypted history
   unreadable even if the room still exists.
 - Matrix homeserver administrators can still see room membership and message

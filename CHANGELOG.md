@@ -43,6 +43,20 @@
   and hold are unbounded; see Issue #62.
 - Rebase the hybrid steering implementation onto current `main` release docs,
   setup guidance, artifacts, and harness changes.
+- Deliver related owner messages as one context: thread and reply relations
+  first, then top-level events within `openrig.burst_inactivity_seconds` (45)
+  and `openrig.burst_max_span_seconds` (300) when one side carries an
+  attachment. Later parts join the waiting request, steer into the active turn,
+  or arrive as a continuation restating every earlier part; answers are
+  threaded under the first part and name every source event.
+- Keep source order while a voice note is transcribed or an attachment
+  downloads; a later text or file no longer overtakes it.
+- Resume an image or file download interrupted by a restart instead of losing
+  the event; galleries already resumed per item.
+- Add the SHA-256 of every stored attachment, gallery item and preview, and of
+  received voice audio, to the agent prompt.
+- Handle Element X `dm.filament.gallery` (and `m.gallery`) albums: every item
+  stored in order with explicit per-item failures (PR #57).
 
 ## 0.11.0
 

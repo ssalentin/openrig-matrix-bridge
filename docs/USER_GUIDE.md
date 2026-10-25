@@ -122,7 +122,9 @@ working:
 
 A follow-up is eligible only when it is in the active request's exact thread,
 is no longer than `openrig.steering_max_chars` (2000 by default), and arrives
-while the original turn is active. Top-level prompts and prompts in another
+while the original turn is active. Parts of a related exchange (see
+[Related messages](#related-messages-galleries-and-voice-notes)) are steered
+whatever their length. Top-level prompts and prompts in another
 thread remain separate FIFO requests. Events received inside
 `openrig.steering_batch_window_seconds` (0.5 by default) form one ordered batch.
 Every source event keeps its event ID, qitem, and canonical thread root; an
@@ -195,6 +197,72 @@ Aktiv: Text · "Draft the release notes"
   card and starts the next request. The failed request stays at the head of the
   queue, and later requests wait, until Matrix accepts that notice. This hold has
   no time limit yet (Issue #62).
+
+## Related messages, galleries, and voice notes
+
+Owners often send one thought as several Matrix events: an Element X gallery
+and then the text about it, a voice note followed by a photo and a PDF, or
+several parts inside one thread. The bridge delivers such an exchange to the
+agent as one related context.
+
+Which events belong together:
+
+- A reply inside a thread belongs to that thread's exchange with no inactivity
+  limit, as long as it arrives within `openrig.burst_max_span_seconds` (300 by
+  default) of the exchange's first event. A later thread reply starts a new
+  exchange in the same thread: its answer stays in the thread, but earlier parts
+  are not restated. A rich reply belongs to the exchange of the event it
+  answers, within the same span. Inside the span, relations win over timing.
+- Top-level events from the same owner in the same room join while each gap
+  stays within `openrig.burst_inactivity_seconds` (45 by default), the whole
+  exchange stays within `openrig.burst_max_span_seconds` (300 by default), and
+  the new event or the one before it carries an attachment (voice note, image,
+  file, or gallery). A text sent just before or just after a gallery therefore
+  joins it.
+- Two plain texts never join each other; they stay separate requests as before.
+  A top-level event never joins a thread by timing, and edits stay on their own.
+- `openrig.burst_inactivity_seconds: 0` turns timing correlation off; thread and
+  reply relations still apply.
+
+How the agent receives it:
+
+- Each event is placed in its exchange when it arrives, before any download or
+  transcription. A part never overtakes an earlier part of the same exchange
+  that is still downloading or being transcribed, and nothing waits for a part
+  that has not been sent yet.
+- A part joins the exchange's request if that request has not reached the agent
+  yet. If the agent is working on the exchange, the part is steered into that
+  turn through the normal steering path; related context is not subject to
+  `openrig.steering_max_chars`. If that turn has ended, the part arrives as a
+  continuation. Steered input and continuations both restate every earlier
+  part, marked `bereits zugestellt`, so the context stays complete even when
+  the runtime admits steered input only as the next turn or the bridge falls
+  back to a separate turn.
+- A related prompt starts with the number of parts, the source event IDs in
+  order and the reason they belong together, followed by one block per part:
+  `Teil <n> · <Art> · <Event-ID>`. Attachments list the local path, MIME type,
+  size, dimensions where known, and SHA-256 of the stored bytes; voice notes
+  carry the transcript and the SHA-256 of the received audio.
+- A part that could not be processed is named with its reason
+  (`Nicht übernommen: …`) next to the parts that worked; the bridge never
+  passes on a subset silently. The room also gets the usual failure notice.
+- Every answer for the exchange is threaded under its first event (or the
+  thread root) and names all source event IDs. Each event keeps its own
+  OpenRig qitem.
+
+Element X galleries (`dm.filament.gallery`, also `m.gallery`) arrive as one
+event with ordered items. Each image, file, video, or audio item is decrypted,
+digest-checked and stored in order; an item labelled HEIC whose bytes are JPEG
+is stored as `.jpg`. A JPEG preview from the gallery is stored next to it when
+present, and the prompt says when no preview was included. A gallery holds at
+most 60 items.
+
+After a restart, image and file downloads that were interrupted resume from the
+saved event and write to the same stable inbox name, so no second copy appears.
+Galleries resume item by item. A voice note interrupted mid-transcription keeps
+its interrupted status message and is named as not processed in the related
+prompt. Events sent while the bridge is stopped are not routed (see the release
+notes' known limits).
 
 ## OpenRig queue behavior
 
