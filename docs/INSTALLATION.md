@@ -245,14 +245,15 @@ This command:
 
 The command above is the complete non-interactive setup path when OpenRig and
 Matrix are already working. If an argument is omitted, `setup` prompts for the
-missing value and prints where to find the corresponding Matrix ID.
+missing value unless the access token supplies it, and prints where to find the
+corresponding Matrix ID.
 
 ### What setup infers and what you provide
 
 | Value | Source |
 |---|---|
 | Homeserver URL, owner Matrix user ID | You provide them (flag or prompt); setup cannot infer them. |
-| Bot user ID and device ID | You provide them, but when `MATRIX_ACCESS_TOKEN` is set setup takes both from the homeserver `whoami` answer for that token and prints a note if they differ from yours. |
+| Bot user ID and device ID | Inferred from `MATRIX_ACCESS_TOKEN` through the homeserver `whoami` answer. Setup prompts for them only when no token is set (or `whoami` omits one), and prints a note if a flag you passed differs from the token. |
 | Codex seats and their sessions | Discovered from `rig ps --nodes -A --json`. |
 | Access token | Only from the environment. Setup checks it with `whoami`, never accepts it as an argument, and never prints or writes it. |
 
