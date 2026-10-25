@@ -107,6 +107,10 @@ answer in the thread remains the completion signal.
 - If Matrix keeps rejecting the reaction, the bridge retries a bounded number of
   times and then records `phase: failed` in `acceptance_reactions`. The request
   itself is still processed and answered; only the receipt is missing.
+- Turning the receipt off expires any receipt that was still pending: the
+  bridge records `phase: expired` for it, and turning the receipt back on later
+  does not send a 👍 for a message accepted long before. Receipts already sent
+  or failed are left as they are.
 - Behavior is the same whenever the receipt is enabled: at most one 👍 per
   accepted event, eight attempts with backoff from 5s to 300s, none for
   untrusted or rejected events.

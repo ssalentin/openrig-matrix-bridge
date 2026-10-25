@@ -67,6 +67,8 @@ without starting a second agent or allowing concurrent Codex turns.
   each request's OpenRig qitem first. Requests whose qitem is already closed are
   removed without resending the prompt or answer (a canceled, failed or denied
   qitem produces one notice), instead of repeating claim errors.
+- A 👍 that was still pending when the acceptance receipt was turned off is
+  expired instead of being sent if the receipt is turned on again later.
 - The hybrid steering implementation is integrated with the current setup,
   attachments, voice, activity-card, restart, and release documentation from
   `main`.

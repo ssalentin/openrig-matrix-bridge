@@ -2763,9 +2763,22 @@ class MatrixBridge:
         At startup no accepting path is still running, so every pending record
         is retried at once; afterwards a record waits for its retry_at.
         """
-        if not getattr(self.config, "acceptance_reaction_enabled", False):
-            return
         acks = self.state.data.get("acceptance_reactions", {})
+        if not getattr(self.config, "acceptance_reaction_enabled", False):
+            # A receipt still pending while the switch is off would be sent
+            # long after its message was accepted if the switch came back on.
+            expired = [
+                record
+                for record in acks.values()
+                if isinstance(record, dict) and record.get("phase") == "sending"
+            ]
+            for record in expired:
+                record["phase"] = "expired"
+                record["last_error"] = "acceptance receipt disabled"
+                record.pop("retry_at", None)
+            if expired:
+                self.state.save()
+            return
         now = time.time()
         for event_id, record in list(acks.items()):
             if (
@@ -5045,7 +5058,7 @@ class MatrixBridge:
         await self._scan_steering_admission(
             group,
             ref.transcript_path,
-            expected_turn_id=str(prompt_turn_id),
+            expected_turn_id=str(prompt_turn_id) if prompt_turn_id else None,
         )
 
     async def _scan_steering_admission(

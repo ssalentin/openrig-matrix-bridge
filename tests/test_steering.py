@@ -1229,3 +1229,23 @@ def test_queue_card_refreshes_when_a_waiting_head_request_starts(tmp_path: Path)
     assert after is not None
     assert '**Aktiv:** Text · "first request"' in after
     assert '1. Text · "second request"' in after
+
+
+def test_legacy_pending_state_admits_steering_on_the_immediate_scan(tmp_path: Path):
+    harness = SteeringHarness(tmp_path, "steer")
+    harness.enqueue("$root", "root request", None)
+    harness.busy = True
+    harness.enqueue("$follow", "thread follow-up", "$root")
+    pending = harness.bridge.state.data["pending"]["advisor"]
+    active, group = pending[0], pending[1]
+    # State saved before turn attribution existed: no prompt turn id, none required.
+    active.pop("prompt_turn_id", None)
+    active.pop("turn_attribution_required", None)
+    group["injection_ready_at"] = 0
+
+    # The immediate scan inside the attempt itself, not a later poll's scan.
+    asyncio.run(harness.bridge._attempt_steering(harness.agent, active, group))
+
+    assert len(harness.steers) == 1
+    assert group["injection_phase"] == "admitted"
+    assert group["injection_turn_id"] == "turn-1"
