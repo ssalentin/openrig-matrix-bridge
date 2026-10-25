@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import struct
 import sys
 import tarfile
 from pathlib import Path
@@ -12,16 +13,35 @@ LINK_CHECKER = ROOT / "tools" / "check_markdown_links.py"
 RELEASE_VERIFIER = ROOT / "tools" / "verify_release.py"
 
 PUBLISHED_DOCS = {
+    "docs/INSTALLATION.md",
     "docs/POSITIONING.md",
+    "docs/RELEASE_NOTES_0.11.0.md",
     "docs/RELEASE_PLAN.md",
+    "docs/RUNBOOK_0.11.0.md",
+    "docs/SECURITY.md",
     "docs/TESTING.md",
+    "docs/USER_GUIDE.md",
     "docs/VERIFICATION.md",
     "docs/artifacts/README.md",
+    "docs/artifacts/final-0.11.0-integration-report.json",
+    "docs/screenshots/README.md",
+    "docs/screenshots/element-web-queue.png",
+    "docs/screenshots/element-web-thread.png",
 }
 RELAY_PREVIEWS = {
     "docs/branding/artifacts/relay-avatar-light-bg-preview.png",
     "docs/branding/artifacts/relay-avatar-dark-bg-preview.png",
 }
+SCREENSHOTS = {
+    "docs/screenshots/element-web-thread.png": (316, 610),
+    "docs/screenshots/element-web-queue.png": (1010, 270),
+}
+
+
+def png_dimensions(path: Path) -> tuple[int, int]:
+    data = path.read_bytes()
+    assert data.startswith(b"\x89PNG\r\n\x1a\n")
+    return struct.unpack(">II", data[16:24])
 
 
 def load_module(path: Path, name: str):
@@ -80,6 +100,47 @@ def test_release_verifier_requires_relay_preview_assets():
     verifier = load_module(RELEASE_VERIFIER, "release_artifact_verifier_brand")
 
     assert RELAY_PREVIEWS <= set(verifier.SDIST_SUPPORT_FILES)
+
+
+def test_release_verifier_requires_documentation_screenshots():
+    verifier = load_module(RELEASE_VERIFIER, "release_artifact_verifier_screenshots")
+
+    assert set(SCREENSHOTS) <= set(verifier.SDIST_SUPPORT_FILES)
+
+
+def test_landing_page_is_concise_and_links_durable_docs():
+    readme_path = ROOT / "README.md"
+    readme = readme_path.read_text(encoding="utf-8")
+
+    assert 160 <= len(readme.splitlines()) <= 220
+    for target in (
+        "docs/USER_GUIDE.md",
+        "docs/INSTALLATION.md",
+        "docs/SECURITY.md",
+        "docs/VERIFICATION.md",
+        "docs/branding/README.md",
+        "docs/screenshots/README.md",
+    ):
+        assert f"]({target})" in readme
+    assert "second agent process" in readme
+    assert "## Quick start" in readme
+    assert "## Current boundaries" in readme
+    assert "docs/screenshots/agent-inbox-generic.png" in readme
+    assert "docs/screenshots/element-web-queue.png" in readme
+
+
+def test_docs_screenshots_match_documented_dimensions():
+    provenance = (ROOT / "docs" / "screenshots" / "README.md").read_text(
+        encoding="utf-8"
+    )
+
+    for relative, dimensions in SCREENSHOTS.items():
+        assert png_dimensions(ROOT / relative) == dimensions
+        width, height = dimensions
+        assert f"{width} x {height}" in provenance
+    assert "No MXID is visible" in provenance
+    assert "hover tooltips" in provenance
+    assert "not a live Codex model turn" in provenance
 
 
 def make_sdist(path: Path, verifier, names: set[str]) -> None:

@@ -126,8 +126,8 @@ forward.
   devices are outside this local harness.
 - Attachment malware scanning, client-specific previews, and operator-managed
   inbox retention are not implemented.
-- The integration OpenRig transport is deterministic; crash-after-send
-  idempotency remains a separate issue #11 gate.
+- The integration OpenRig transport is deterministic. It exercises the bridge's
+  crash boundaries, but a live Codex process crash remains unverified.
 
 ## Report schema
 

@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.11.0
+
+- Add encrypted arbitrary-file attachments in both directions, including
+  markerless audio routing, private admission snapshots, original metadata,
+  safe generated storage paths, and restart-safe outbound delivery.
+- Edit each voice-note status message into the local transcript or an explicit
+  terminal failure instead of posting a separate progress transcript.
+- Preserve canonical Matrix thread roots for text, image, generic-file and
+  voice prompts, including prompts that are already thread replies.
+- Harden restart recovery for prompts, answers, attachments and OpenRig qitems;
+  requests whose prompt-send effect became ambiguous fail closed instead of
+  being replayed.
+- Reject unsafe Matrix endpoints, unsafe agent path components and credential
+  material in URLs.
+- Redact activity-card content and bound commentary, terminal-card and
+  delivery-failure recovery.
+- Add accessible setup documentation, the Relay symbol and theme-safe avatar
+  assets while retaining the OpenRig Matrix Bridge product name.
+- Add deterministic documentation, link, package, clean-install and exact-source
+  Matrix release gates.
+- Add an operator runbook for candidate installation, single-instance checks,
+  live attribution smoke tests, rollback and exact artifact provenance.
+
 ## 0.10.0
 
 - Add default `auto`, explicit `steer`, and strict FIFO `queue` modes for
@@ -9,8 +32,6 @@
   best-effort pane injection is unavailable or ambiguous.
 - Treat an owner leaving or rejecting an agent room as a durable opt-out instead
   of recreating the room on restart.
-- Use the owner-selected Relay symbol for the README, Matrix bot profile, and
-  released brand assets while retaining the OpenRig Matrix Bridge product name.
 
 ## 0.9.0
 

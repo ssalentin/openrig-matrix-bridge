@@ -25,6 +25,10 @@ TRANSCRIPT_RECORD = {
 }
 
 
+class TransportBusy(RuntimeError):
+    pass
+
+
 def state_root() -> Path:
     raw = os.environ.get("OPENRIG_FAKE_STATE")
     if not raw:
@@ -132,6 +136,11 @@ def print_json(value: Any) -> None:
     print(json.dumps(value, sort_keys=True))
 
 
+def response_copy(variable: str, default: str, prompt: str) -> str:
+    template = os.environ.get(variable, default)
+    return template.replace("{prompt}", prompt)
+
+
 def option(args: list[str], name: str) -> str | None:
     try:
         return args[args.index(name) + 1]
@@ -153,7 +162,11 @@ def complete_prompt(root: Path, prompt: str, prompt_id: str) -> None:
         root,
         turn_id,
         "commentary",
-        f"Fake transport received: {prompt[:80]}",
+        response_copy(
+            "OPENRIG_FAKE_COMMENTARY",
+            "Fake transport received: {prompt}",
+            prompt[:80],
+        ),
     )
     time.sleep(0.15)
 
@@ -173,7 +186,11 @@ def complete_prompt(root: Path, prompt: str, prompt_id: str) -> None:
             "final_answer",
             "Unrelated human answer that must not reach Matrix.",
         )
-    answer = f"Fake integration answer: {prompt[:120]}"
+    answer = response_copy(
+        "OPENRIG_FAKE_ANSWER",
+        "Fake integration answer: {prompt}",
+        prompt[:120],
+    )
     append_agent_message(root, turn_id, "final_answer", answer)
 
 
@@ -190,27 +207,27 @@ def handle_send(root: Path, args: list[str]) -> None:
     )
     prompt_id = uuid.uuid4().hex
     turn_id = str(uuid.uuid4())
-    state = read_state(root)
-    busy = float(state.get("busy_until", 0)) > time.time()
-    if busy:
-        if os.environ.get("OPENRIG_FAKE_ALLOW_STEERING") != "1":
-            raise SystemExit(
-                f"agent is busy; refusing concurrent send to {destination}"
-            )
-        active = next(
-            (
-                item
-                for item in reversed(state["prompts"])
-                if item.get("completed_at") is None
-            ),
-            None,
-        )
-        if active is None:
-            raise SystemExit("agent is busy without an active turn")
-        append_user_message(root, str(active["turn_id"]), prompt)
+    steered_turn_id: str | None = None
 
-        def record_steer(current: dict[str, Any]) -> None:
-            current.setdefault("steers", []).append(
+    def record(state: dict[str, Any]) -> None:
+        nonlocal steered_turn_id
+        if float(state.get("busy_until", 0)) > time.time():
+            if os.environ.get("OPENRIG_FAKE_ALLOW_STEERING") != "1":
+                raise TransportBusy(
+                    f"agent is busy; refusing concurrent send to {destination}"
+                )
+            active = next(
+                (
+                    item
+                    for item in reversed(state["prompts"])
+                    if item.get("completed_at") is None
+                ),
+                None,
+            )
+            if active is None:
+                raise TransportBusy("agent is busy without an active turn")
+            steered_turn_id = str(active["turn_id"])
+            state.setdefault("steers", []).append(
                 {
                     "destination": destination,
                     "prompt": prompt,
@@ -218,19 +235,7 @@ def handle_send(root: Path, args: list[str]) -> None:
                     "sent_at": time.time(),
                 }
             )
-
-        update_state(root, record_steer)
-        print_json(
-            {
-                "delivered": True,
-                "steered": True,
-                "session": destination,
-                "turnId": active["turn_id"],
-            }
-        )
-        return
-
-    def record(state: dict[str, Any]) -> None:
+            return
         state["prompts"].append(
             {
                 "id": prompt_id,
@@ -243,7 +248,21 @@ def handle_send(root: Path, args: list[str]) -> None:
         )
         state["busy_until"] = time.time() + delay
 
-    update_state(root, record)
+    try:
+        update_state(root, record)
+    except TransportBusy as exc:
+        raise SystemExit(str(exc)) from exc
+    if steered_turn_id is not None:
+        append_user_message(root, steered_turn_id, prompt)
+        print_json(
+            {
+                "delivered": True,
+                "steered": True,
+                "session": destination,
+                "turnId": steered_turn_id,
+            }
+        )
+        return
     append_user_message(root, turn_id, prompt)
     process = subprocess.Popen(
         [sys.executable, __file__, "_complete", prompt, prompt_id],

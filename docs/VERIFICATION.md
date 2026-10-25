@@ -23,9 +23,10 @@ behavior, owner-observed client behavior, and real device trust.
 |---|---|---|---|
 | Encrypted rooms, messages and thread relations | Automated integration | Disposable Synapse and a real `matrix-nio` client completed the committed protocol checks. | Does not prove Element rendering or JavaScript-client behavior. |
 | Element X threaded replies | Manual, owner-observed | The owner manually exercised Element X threaded replies successfully on 2026-10-24. | No screenshot is available, Element X version/device details are not recorded, and this is not screenshot-backed evidence. |
-| Nested thread-reply prompts | Unverified; open bug | Issue #16 tracks the production failure. Automated nested-thread protocol coverage is pending. | The earlier owner observation does not cover a prompt that is itself already a thread reply. |
+| Prompts already inside a thread | Automated integration and unit | The canonical input root is preserved, including across bridge restart; threaded text, image, file and voice replies keep the original root. Relation normalization also covers rich replies that do not declare `m.thread`. | A complete owner-screenshot matrix for every Element X nested-reply UI state is still absent. |
 | Element device SAS and removed unverified-device warnings | Manual, unverified | Pending issue #1. Persisted restart/timeout state is unit-tested, not live approved. | A synthetic protocol client or mock must not be presented as owner-device trust. |
 | Element Web SAS | Manual, unverified | A real Element Web session against disposable Synapse displayed `(User verification unavailable)` for the bridge account on 2026-10-24. | Cross-signing/device trust must be implemented and verified against a real client before claiming success. |
+| Element Web thread and queue rendering | Manual, screenshot-backed | The synthetic owner-to-agent flow and pinned queue card rendered in Element Web 1.12.32 against disposable Synapse. | The screenshots illustrate rendering only; the OpenRig transport was deterministic, device trust remained unverified, and historical-device warnings were excluded from the committed crops. |
 
 The owner observation means only that the exercised Element X reply flow
 rendered and behaved correctly in that session. It does not establish SAS,
@@ -34,13 +35,10 @@ version.
 
 ## Provenance
 
-The clean combined source under test is
-`88dccb3c92329918c62b68f871022d0972377cd8`. It contains the product base
-`78ae4be5128d632a0b1b6df5ac4b0c3afc69cb0d`, the engine evidence fix
-`aac588a16219736d34cf7b16e04ca2474b0838a8`, the engine test portability fix
-`bda0e5d`, and the positioning correction.
-The integration report records this source commit and
-`target.source.worktree_clean: true`.
+The final 0.11.0 source under test is
+`3b21b72330a9b0810457a3ee4d11fdd2c144ae90`. It is a descendant of `main`
+and includes the accepted runbook. The final Matrix report records this source
+commit and `target.source.worktree_clean: true`.
 
 The commit that publishes these evidence edits follows the tested source
 commit. A commit cannot contain the hash it will derive after changing its own
@@ -67,7 +65,7 @@ binds its verdict to the source SHA recorded here and in the report.
 | FIFO prompt queue and pinned queue card | Per-agent `asyncio.Lock` and pending lists serialize prompts; one queue notice is edited and unpinned as the count changes. | [`test_queue_notice_is_one_updated_and_pinned_message`](../tests/test_bridge.py#L904). | While the first fake turn was held, a second prompt appeared in the pinned queue notice and the transport received both in FIFO order. | **Verified on disposable Synapse with fake transport.** |
 | Best-effort hybrid queue/steering | `queue`, `steer`, and default `auto` modes keep one active turn; only short follow-ups in the exact active Matrix thread are candidates. An ordered fallback request and one qitem per source event persist before pane injection. Transcript session/turn evidence is required before admission, and unrelated human turns are ignored. | [`test_steering.py`](../tests/test_steering.py) covers mode semantics, same-thread batching, top-level/cross-thread isolation, qitem closure, steering error, completion fallback, restart adoption/ambiguity, and unrelated-turn attribution. | The disposable-Synapse checks exercise queue/steer/auto, canonical-root answer source metadata, busy rejection fallback, and crash-after-injection recovery. | **Integration evidence is recorded for the narrowed best-effort contract only; OpenRig exposes no acknowledged safe-boundary or admission-turn API.** |
 | Markdown and safe rich-text rendering | Markdown becomes Matrix HTML; raw HTML is escaped; remote images are rendered as references instead of fetched. | [`test_renders_gfm_table_as_matrix_html`](../tests/test_formatting.py#L4), [`test_escapes_raw_html`](../tests/test_formatting.py#L14), [`test_does_not_embed_remote_markdown_images`](../tests/test_formatting.py#L21). | Client rendering is not automated. Matrix event content can be captured. | **Unit-verified.** |
-| Selected Relay identity | Relay is the only shipped symbol. The README embeds local light/dark 256px PNGs with an accessible name; the bot profile uses the contained 256px cross-theme avatar; 32px exports and editable SVGs are packaged under the repository MIT license. | [`test_brand_assets.py`](../tests/test_brand_assets.py), [`test_avatar_pool.py`](../tests/test_avatar_pool.py), [`test_assigns_unique_repo_avatars_and_profile`](../tests/test_bridge.py#L49). | Synapse accepts the Relay profile upload in the Matrix integration harness. Client-specific favicon rendering is not separately automated. | **Identity assets, dimensions, README links, package contents, and Matrix profile upload verified.** |
+| Selected Relay identity | Relay is the only shipped symbol. The README embeds local light/dark 256px PNGs as a compact accessible mark; the bot profile uses the contained 256px cross-theme avatar; 32px exports and editable SVGs are packaged under the repository MIT license. | [`test_brand_assets.py`](../tests/test_brand_assets.py), [`test_avatar_pool.py`](../tests/test_avatar_pool.py), [`test_assigns_unique_repo_avatars_and_profile`](../tests/test_bridge.py#L49). | Synapse accepts the Relay profile upload in the Matrix integration harness. Client-specific favicon rendering is not separately automated. | **Identity assets, dimensions, README links, package contents, and Matrix profile upload verified.** |
 | Deterministic, collision-free agent avatars | A bundled 32-image pool is assigned once per agent and persisted in state. | [`test_ships_a_large_unique_avatar_pool`](../tests/test_avatar_pool.py#L10), [`test_preserves_valid_assignments_and_never_duplicates`](../tests/test_avatar_pool.py#L20), [`test_new_agents_receive_unused_avatars_deterministically`](../tests/test_avatar_pool.py#L35). | Synapse accepted a managed room avatar on the test room. | **Unit-verified and observed on Synapse.** |
 
 ## Current automated checks
@@ -80,16 +78,16 @@ python -m pip install ruff
 ruff check .
 ```
 
-Observed results from the clean combined source:
+Observed results from the clean final source:
 
 | Check | Exact command | Commit | Observed result |
 |---|---|---|---|
-| Unit tests | `.venv/bin/python -m pytest -q` | `88dccb3c92329918c62b68f871022d0972377cd8` | 74 passed in 0.38s |
-| Python lint | `.venv/bin/ruff check .` | `88dccb3c92329918c62b68f871022d0972377cd8` | All checks passed |
-| Markdown structure | `npm ci && npx --no-install markdownlint-cli2` | `88dccb3c92329918c62b68f871022d0972377cd8` | 5 files, 0 issues |
-| Relative links | Documentation link-check command below | `88dccb3c92329918c62b68f871022d0972377cd8` | checked=5, missing=0 |
-| Release artifacts | `.venv/bin/python -m build` then `.venv/bin/python tools/verify_release.py --dist <dir>` | `88dccb3c92329918c62b68f871022d0972377cd8` | Wheel and sdist clean installs passed; 32 avatars present |
-| Matrix integration | `.venv/bin/python tools/matrix_integration.py --timeout 60 --source-commit 88dccb3c92329918c62b68f871022d0972377cd8` | `88dccb3c92329918c62b68f871022d0972377cd8` | `evidence_valid: true`, 13 checks passed in 24.2s |
+| Unit tests | `.venv/bin/python -m pytest -q` | `3b21b72330a9b0810457a3ee4d11fdd2c144ae90` | 243 passed in 1.25s |
+| Python lint | `.venv/bin/ruff check .` | `3b21b72330a9b0810457a3ee4d11fdd2c144ae90` | All checks passed |
+| Markdown structure | `npm ci && npx --no-install markdownlint-cli2` | `3b21b72330a9b0810457a3ee4d11fdd2c144ae90` | 10 files, 0 issues |
+| Relative links | `python tools/check_markdown_links.py` | `3b21b72330a9b0810457a3ee4d11fdd2c144ae90` | checked=10, missing=0 |
+| Release artifacts | `.venv/bin/python -m build` then `.venv/bin/python tools/verify_release.py` | `3b21b72330a9b0810457a3ee4d11fdd2c144ae90` | Wheel and sdist clean installs passed; 32 avatars present |
+| Matrix integration | Exact-source command below | `3b21b72330a9b0810457a3ee4d11fdd2c144ae90` | `evidence_valid: true`, 20/20 checks passed in 49.9s |
 
 With `uv` installed, `uv tool run ruff check .` is equivalent to the lint
 command above.
@@ -135,12 +133,17 @@ It includes deterministic bridge exits immediately after qitem claim and final
 answer send. Restart resumes the claimed-but-unsent prompt exactly once and
 reuses the answer transaction ID, returning the same Matrix event and closing
 one qitem. Unit fault tests also cover busy-agent recovery, ambiguous prompt
-sends, qitem claim/finish/fail reconciliation, and pre-0.11 state migration.
-Legacy requests with `started_at` but no `prompt_phase` are treated as
-ambiguous and fail closed rather than being resent.
-Tracked legacy requests are also excluded from the normal poller; an
-authoritative done qitem completes locally without answer replay, while a
-transient qitem-close error emits one stable failure and stops polling.
+sends, and qitem claim/finish/fail reconciliation.
+
+The covered pre-0.11 migration shape is: requests with `started_at` but no
+`prompt_phase` are treated as ambiguous and fail closed rather than being
+resent. For those tracked requests, an authoritative done qitem completes
+locally without answer replay, while a transient qitem-close error emits one
+stable failure and stops polling.
+
+Migration of unstarted legacy pending requests whose qitems are already
+terminal is not covered by 0.11.0 and is deferred to issue #41 in milestone
+0.12.0.
 
 ### Issue #12 qitem lifecycle evidence
 
@@ -215,19 +218,20 @@ manually.
 
 The engine slice provides `tools/matrix_integration.py`. It starts disposable
 Docker Synapse and drives the bridge as a subprocess through a deterministic
-OpenRig CLI fixture. Its JSON report is
-`docs/artifacts/integration-report.json` (schema version 1).
+OpenRig CLI fixture. The final report is
+[`final-0.11.0-integration-report.json`](artifacts/final-0.11.0-integration-report.json)
+(schema version 1).
 
 The observed run used:
 
 ```bash
 .venv/bin/python tools/matrix_integration.py \
   --timeout 60 \
-  --source-commit 88dccb3c92329918c62b68f871022d0972377cd8
+  --source-commit 3b21b72330a9b0810457a3ee4d11fdd2c144ae90
 ```
 
-It reported `status: pass` with 13 checks at
-`2026-10-24T17:22:44Z` in 24.2 seconds, with
+It reported `status: pass` with 20 checks at
+`2026-10-24T22:30:43Z` in 49.9 seconds, with
 `target.source.commit` equal to the tested source SHA and
 `target.source.worktree_clean: true`. The digest-pinned Synapse image is
 recorded in the report. The owner client was a real `matrix-nio` client; the
@@ -264,6 +268,7 @@ Keep these rows open until evidence is actually committed:
 | Restart/recovery | Accepted state and room mapping survive restart; active queue behavior is reported honestly. | Pass on disposable Synapse; report |
 | Device SAS verification | Real Element device completes emoji comparison and `ja`. | Manual evidence absent; Element Web currently reports verification unavailable; remains issue #1 |
 | Element X threaded reply | Owner observes the prompt and bridge answer in the same thread. | Manual owner report on 2026-10-24; screenshot pending; matrix protocol behavior covered separately |
+| Element Web conversation and queue | Owner prompt, activity card, final answer, and pinned queue card render as documented. | Screenshot-backed synthetic harness evidence; see [`screenshots/README.md`](screenshots/README.md) |
 
 ## Unsupported or unverified claims
 
