@@ -3901,7 +3901,7 @@ class IntegrationRun:
         ]
         for filename, payload, msgtype, mimetype in cases:
             before = len(owner.messages)
-            await owner.send_encrypted_file(
+            file_event_id = await owner.send_encrypted_file(
                 room_id,
                 payload,
                 msgtype=msgtype,
@@ -3911,8 +3911,18 @@ class IntegrationRun:
                 extra_content={"m.relates_to": relation},
             )
 
+            def answers_file(message: dict[str, Any], event_id: str) -> bool:
+                # Within the burst span the thread relation links the file to
+                # the thread's earlier parts, so the prompt is a related
+                # context naming every source; later it is a plain file prompt.
+                content = message["source"].get("content", {})
+                return str(message["body"]).startswith(
+                    "Fake integration answer: Datei von"
+                ) or event_id in (content.get("dev.openrig.source_event_ids") or [])
+
             def threaded_file_delivered(
                 before_count=before,
+                event_id=file_event_id,
             ) -> bool:
                 new_messages = owner.messages[before_count:]
                 return any(
@@ -3921,7 +3931,8 @@ class IntegrationRun:
                     for message in new_messages
                 ) and any(
                     message["sender"] == BRIDGE_USER
-                    and "Fake integration answer: Datei von" in str(message["body"])
+                    and str(message["body"]).startswith("Fake integration answer")
+                    and answers_file(message, event_id)
                     for message in new_messages
                 )
 
@@ -4004,7 +4015,8 @@ class IntegrationRun:
             "pass",
             (
                 "A PDF and markerless audio sent from inside an existing m.thread "
-                "were stored and forwarded. Every file status and final bridge "
+                "were stored and forwarded (within the burst span as related "
+                "context of the thread). Every file status and final bridge "
                 "message used the original canonical thread root, and each input "
                 "created one completed qitem."
             ),
