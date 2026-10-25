@@ -635,3 +635,61 @@ def test_activity_card_is_not_created_when_commentary_is_disabled(tmp_path):
         )
     ]
     assert edited == []
+
+
+class DedupingRoom:
+    """Matrix send semantics the bridge relies on: a repeated transaction ID
+    returns the event it already created (Synapse keys on path, user, device).
+    A send without one always creates a new event. The first activity-card
+    send is persisted but its response is lost.
+    """
+
+    def __init__(self):
+        self.events: dict[str, dict] = {}
+        self.by_txn: dict[str, str] = {}
+        self.card_response_lost = False
+
+    async def send(self, room_id, text, reply_to=None, **kwargs):
+        tx_id = kwargs.get("tx_id")
+        if tx_id and tx_id in self.by_txn:
+            return RoomSendResponse(self.by_txn[tx_id], room_id)
+        event_id = f"$event-{len(self.events) + 1}"
+        self.events[event_id] = {"text": text, "tx_id": tx_id}
+        if tx_id:
+            self.by_txn[tx_id] = event_id
+        if text.startswith("**Aktivität:**") and not self.card_response_lost:
+            self.card_response_lost = True
+            # Timeout, connection reset, or the bridge stopped mid-request.
+            raise ConnectionError("response lost after the event was persisted")
+        return RoomSendResponse(event_id, room_id)
+
+    def cards(self) -> list[str]:
+        return [
+            event_id
+            for event_id, event in self.events.items()
+            if event["text"].startswith("**Aktivität:**")
+        ]
+
+
+def test_lost_card_response_is_retried_into_the_same_card(tmp_path):
+    bridge, agent, request, _sent, edited = activity_bridge(
+        tmp_path,
+        [message_record("comment-1", "commentary", "Ich prüfe die Tests.")],
+    )
+    room = DedupingRoom()
+    bridge._send = room.send
+
+    asyncio.run(bridge._poll_agent(agent))  # card persisted, response lost
+    assert "commentary_event_id" not in request
+    asyncio.run(bridge._poll_agent(agent))  # retry with the same transaction
+
+    assert room.cards() == ["$event-1"]
+    assert request["commentary_event_id"] == "$event-1"
+
+    with open(request["transcript_path"], "a", encoding="utf-8") as handle:
+        handle.write(json.dumps(message_record("final-1", "final_answer", "Fertig.")))
+        handle.write("\n")
+    asyncio.run(bridge._poll_agent(agent))
+
+    assert {event_id for event_id, _text, _kwargs in edited} == {"$event-1"}
+    assert room.cards() == ["$event-1"]

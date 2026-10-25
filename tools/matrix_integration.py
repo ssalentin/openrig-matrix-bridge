@@ -1475,6 +1475,93 @@ class IntegrationRun:
             ),
         )
 
+    async def check_activity_card_crash_recovery(self, room_id: str) -> None:
+        """Issue #39: a card whose send response was lost must not be duplicated.
+
+        The bridge exits right after Matrix accepted the initial activity card
+        and before it recorded the card's event ID. The restarted bridge resends
+        with the same transaction ID; Matrix must return the same event, so the
+        request keeps exactly one card that every later edit targets.
+        """
+        assert self.owner is not None
+        owner = self.owner
+        prompt = "crash after activity card send"
+        self.stop_bridge()
+        self.start_bridge(crash_after="activity_card_send")
+        await owner.sync_until(
+            lambda: str(owner.client.rooms[room_id].topic).startswith("🟢 bereit"),
+            self.args.timeout,
+            description="ready status before activity-card crash probe",
+        )
+        before = len(owner.messages)
+        prompt_event_id = await owner.send_text(room_id, prompt)
+        self.wait_for_bridge_crash()
+        pending = self.bridge_state().get("pending", {}).get(AGENT_KEY, [])
+        if not pending or pending[0].get("event_id") != prompt_event_id:
+            raise CheckFailure("activity-card crash left no in-flight request")
+        if pending[0].get("commentary_event_id"):
+            raise CheckFailure("the card was owned before the injected crash point")
+
+        self.start_bridge()
+        wait_for_json_state(
+            self.state_dir / "state.json",
+            lambda value: not value.get("pending", {}).get(AGENT_KEY),
+            self.args.timeout,
+        )
+        await owner.sync_until(
+            lambda: any(
+                message["sender"] == BRIDGE_USER
+                and f"Fake integration answer: {prompt}" in str(message["body"])
+                for message in owner.messages[before:]
+            ),
+            self.args.timeout,
+            description="answer after activity-card crash recovery",
+        )
+        await asyncio.sleep(1.0)
+        await owner.sync_once()
+        cards: list[str] = []
+        edits: set[str] = set()
+        answers = 0
+        for message in owner.messages[before:]:
+            if message["sender"] != BRIDGE_USER:
+                continue
+            relation = message["source"].get("content", {}).get("m.relates_to") or {}
+            body = str(message["body"])
+            if relation.get("rel_type") == "m.replace":
+                edits.add(str(relation.get("event_id") or ""))
+            elif f"Fake integration answer: {prompt}" in body:
+                answers += 1
+            elif "**Aktivität:**" in body and relation.get("event_id") == prompt_event_id:
+                cards.append(message["event_id"])
+        if len(cards) != 1 or not edits or not edits <= set(cards):
+            raise CheckFailure(
+                f"activity card duplicated after a lost send: cards={cards}, "
+                f"edits={sorted(edits)}"
+            )
+        if answers != 1:
+            raise CheckFailure(f"activity-card crash produced {answers} answers")
+        fake = json.loads((self.fake_state / "fake-openrig.json").read_text())
+        qitems = [
+            item
+            for item in fake["queue"].values()
+            if prompt in str(item.get("body") or "")
+        ]
+        if len(qitems) != 1 or qitems[0].get("state") != "done":
+            raise CheckFailure(f"activity-card crash qitem did not reconcile: {qitems}")
+        validate_qitem_history(qitems[0])
+        self.record(
+            "activity-card-crash-recovery",
+            "pass",
+            (
+                "The bridge exited right after Matrix accepted the initial activity "
+                "card and before the card's event ID was recorded. The restarted "
+                "bridge resent it with the same transaction ID, Matrix returned "
+                "the same event, and the request kept exactly one card; every "
+                "edit targeted it, one answer was sent and the single qitem "
+                "completed (issue #39)."
+            ),
+        )
+
     async def check_qitem_claim_crash_recovery(self, room_id: str) -> None:
         assert self.owner is not None
         owner = self.owner
@@ -3583,6 +3670,7 @@ class IntegrationRun:
         await self.check_threaded_reply(room_id)
         await self.check_qitem_claim_crash_recovery(room_id)
         await self.check_answer_crash_recovery(room_id)
+        await self.check_activity_card_crash_recovery(room_id)
         await self.check_fifo(room_id)
         await self.check_steering_modes(room_id)
         await self.check_steering_fallback_and_restart(room_id)

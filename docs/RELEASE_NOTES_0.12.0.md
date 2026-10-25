@@ -65,8 +65,14 @@ the configuration and complete state directory before replacing the service.
   makes the gap visible to the owner. This predates 0.12.0 and is also present
   on `main`.
 - Matrix device SAS and complete cross-signing remain tracked by Issue #1.
-- Activity-card duplication and legacy pending-state reconciliation remain
-  separately tracked by Issues #39 and #41.
+- Legacy pending-state reconciliation remains tracked by Issue #41.
+- The duplicate activity card seen on the 0.11 line (#39) came from an initial
+  card send without a stable transaction ID. 0.12.0 sends it as
+  `activity-card-<request>`, so Matrix returns the existing card when a send is
+  retried after a lost response or a restart; `activity-card-crash-recovery`
+  covers that path. A retry more than 24 hours later (Synapse's
+  transaction-ID retention) or from a new bridge device could still create a
+  second card.
 - Live Codex evidence is **not proven** for this release candidate. The
   integration harness uses a real Synapse and a deterministic OpenRig transport,
   so it does not prove delivery into a live Codex terminal. The first live
