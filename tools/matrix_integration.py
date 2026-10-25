@@ -4546,7 +4546,13 @@ class IntegrationRun:
         fake_path.write_text(json.dumps(fake), encoding="utf-8")
         prompts_before = len(fake.get("prompts", []))
 
-        real_event_id = str(owner.messages[-1]["event_id"])
+        # A plain owner message that exists in the room (not an edit event, which
+        # cannot be a thread root), as a real 0.10 request's source would be.
+        real_event_id = next(
+            str(message["event_id"])
+            for message in owner.messages
+            if message["body"] == "thread root request"
+        )
 
         def legacy_request(
             name: str,
