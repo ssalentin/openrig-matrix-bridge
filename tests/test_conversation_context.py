@@ -583,3 +583,34 @@ def test_plain_text_that_failed_to_queue_is_not_sent_later(tmp_path):
 
     assert "nicht an den Agenten gesendet" in harness.sent[0]["text"]
     assert [request["text"] for request in harness.pending] == ["Nachtrag"]
+
+
+def test_queue_card_summarizes_a_related_request_without_paths_or_event_ids(tmp_path):
+    from openrig_matrix_bridge.bridge import queue_request_entry
+
+    harness = ContextHarness(tmp_path)
+    harness.busy = True
+    harness.handle(harness.gallery_event("$gallery", 0, count=2))
+    harness.handle(harness.text_event("$text", "Bitte beschreiben", 1))
+    (request,) = harness.pending
+
+    entry = queue_request_entry(request)
+
+    assert entry.startswith("Zusammenhang · ")
+    assert "2 Teile · Galerie, Text" in entry
+    assert "/" not in entry and "$" not in entry
+    assert "redacted" not in entry
+
+
+def test_queue_card_summarizes_a_linked_steering_entry(tmp_path):
+    from openrig_matrix_bridge.bridge import queue_request_entry
+
+    harness = ContextHarness(tmp_path)
+    harness.handle(harness.text_event("$text", "Ich schicke gleich Fotos", 0))
+    harness.handle(harness.gallery_event("$gallery", 5, count=3))
+    group = harness.pending[1]
+
+    entry = queue_request_entry(group)
+
+    assert "2 Teile · Text, Galerie" in entry
+    assert "/" not in entry and "redacted" not in entry

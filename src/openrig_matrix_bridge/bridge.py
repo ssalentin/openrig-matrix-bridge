@@ -230,10 +230,12 @@ QUEUE_SOURCE_LABELS = {
     "reaction": "Reaktion",
     "decision": "Entscheidung",
     "gallery": "Galerie",
+    "related": "Zusammenhang",
 }
 QUEUE_FILENAME_LINE = re.compile(r"^Originaldateiname: (\".*\")$", re.MULTILINE)
 QUEUE_CAPTION_LINE = re.compile(r"^Bildunterschrift: (.+)$", re.MULTILINE)
 QUEUE_GALLERY_ITEM_LINE = re.compile(r"^\d+\. \".*\"", re.MULTILINE)
+QUEUE_RELATED_PART_LINE = re.compile(r"^Teil \d+ · ([^·\n]+?) · ", re.MULTILINE)
 
 
 def queue_preview(text: object, limit: int = 96) -> str:
@@ -243,6 +245,15 @@ def queue_preview(text: object, limit: int = 96) -> str:
     if len(summary) > limit:
         return summary[: limit - 1].rstrip() + "…"
     return summary
+
+
+def queue_related_preview(text: str) -> str | None:
+    """Summarize a related-context prompt by its parts, never its paths or IDs."""
+    kinds = QUEUE_RELATED_PART_LINE.findall(text)
+    if not kinds:
+        return None
+    count = f"{len(kinds)} {'Teil' if len(kinds) == 1 else 'Teile'}"
+    return queue_preview(f"{count} · " + ", ".join(kind.strip() for kind in kinds))
 
 
 def queue_request_preview(request: dict[str, Any]) -> str:
@@ -265,6 +276,8 @@ def queue_request_preview(request: dict[str, Any]) -> str:
         return ""
     if label == "image":
         return queue_preview(caption)
+    if label == "related":
+        return queue_related_preview(text) or ""
     if label == "gallery":
         count = len(QUEUE_GALLERY_ITEM_LINE.findall(text))
         parts = [f"{count} {'Datei' if count == 1 else 'Dateien'}"] if count else []
@@ -287,12 +300,13 @@ def queue_request_context(request: dict[str, Any]) -> str:
 def queue_request_entry(request: dict[str, Any]) -> str:
     steering_entries = request.get("steering_entries")
     if isinstance(steering_entries, list) and steering_entries:
+        texts = [
+            str(entry.get("text") or "")
+            for entry in steering_entries
+            if isinstance(entry, dict)
+        ]
         preview = queue_preview(
-            "; ".join(
-                str(entry.get("text") or "")
-                for entry in steering_entries
-                if isinstance(entry, dict)
-            )
+            "; ".join(queue_related_preview(text) or text for text in texts)
         )
     else:
         preview = queue_request_preview(request)
