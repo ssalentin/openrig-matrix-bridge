@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.12.0
+
+- Add best-effort same-thread steering with `queue`, `steer`, and default
+  `auto` modes while preserving one active Codex turn per seat.
+- Persist each injected batch and transcript boundary before pane input, require
+  transcript turn evidence before admission, and adopt late next-turn
+  materialization without resending.
+- Keep every source event, qitem, and canonical thread root, producing one
+  coherent answer for an admitted same-thread batch.
+- Reaction 👍 once on each durably accepted human message as an acceptance
+  receipt (not completion); idempotent across retries and restarts, controlled
+  by `openrig.acceptance_reaction_enabled`.
+- End a seat that stays busy without steering admission for
+  `openrig.response_timeout_minutes` in a bounded terminal failure recorded in
+  `steering_failures`, without resending.
+- Do not claim exactly-once delivery after steering admission fails; a late pane
+  admission remains a documented best-effort residual risk.
+- Rebase the hybrid steering implementation onto current `main` release docs,
+  setup guidance, artifacts, and harness changes.
+
 ## 0.11.0
 
 - Add encrypted arbitrary-file attachments in both directions, including
@@ -25,6 +45,11 @@
 
 ## 0.10.0
 
+- Add default `auto`, explicit `steer`, and strict FIFO `queue` modes for
+  short same-thread follow-ups.
+- Batch every source event and qitem under the canonical thread, use transcript
+  turn identity to reject unrelated human answers, and fall back losslessly when
+  best-effort pane injection is unavailable or ambiguous.
 - Treat an owner leaving or rejecting an agent room as a durable opt-out instead
   of recreating the room on restart.
 

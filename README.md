@@ -65,12 +65,43 @@ that terminal, and reads the seat's own Codex transcript for progress and the
 final answer. Matrix prompts also create OpenRig queue items so work remains
 visible and durable outside the chat client.
 
+## Acceptance receipt
+
+Once the bridge has durably accepted a message (and its OpenRig queue item is
+created when queueing is enabled; the request is queued or steered), it adds one 👍 to it. The 👍
+means *accepted*, not finished; the final answer is still the completion signal.
+Retries, restarts, and batched steering never duplicate it. Untrusted, rejected,
+and too-old messages get none. Disable it with
+`openrig.acceptance_reaction_enabled: false`.
+
+## Follow-ups and steering
+
+While a seat is working, `openrig.steering_mode` controls short follow-ups in
+the same Matrix thread: `queue` keeps every request FIFO, `steer` attempts
+best-effort delivery into the active seat, and the default `auto` steers only
+eligible same-thread follow-ups. Top-level and other-thread prompts stay
+separate and FIFO. A rapid same-thread batch keeps every source event ID and
+qitem and gets one answer under the original thread root.
+
+The bridge persists the transcript boundary and batch before pane input and
+adopts the batch only on matching transcript evidence. While the seat is busy it
+rescans rather than resends, so input that materializes as the next turn is
+adopted once. If the seat is idle and admission is absent, the batch makes one
+durable fallback attempt. A seat that stays busy without admission for
+`openrig.response_timeout_minutes` ends in a visible terminal timeout recorded
+in `steering_failures`.
+
+Steering is best effort. OpenRig has no acknowledged safe model/tool boundary
+or admission-turn response for pane input, so the bridge does not guarantee
+mid-turn application or exactly-once delivery after a failed admission. Late
+pane admission after the fallback deadline is a documented residual risk.
+
 ## Quick start
 
 You need OpenRig with at least one running Codex seat, Python 3.11+, and a
 dedicated Matrix bot account. A Matrix homeserver must be reachable over HTTPS.
 
-1. Install the published 0.11.0 wheel, or install this checkout:
+1. Install the published 0.12.0 wheel, or install this checkout:
 
    ```bash
    python3 -m venv .venv
@@ -142,8 +173,8 @@ automatic trust on every Matrix device.
 | [Brand identity](docs/branding/README.md) | Relay assets, usage, previews, and licensing |
 
 For release history and operations, see the
-[0.11.0 release notes](docs/RELEASE_NOTES_0.11.0.md) and
-[0.11.0 install and rollback runbook](docs/RUNBOOK_0.11.0.md).
+[0.12.0 release notes](docs/RELEASE_NOTES_0.12.0.md) and
+[0.12.0 install and rollback runbook](docs/RUNBOOK_0.12.0.md).
 
 ## Security at a glance
 
@@ -161,7 +192,7 @@ Read the full [security model](docs/SECURITY.md) before exposing a bridge.
 
 ## Project status
 
-The current package version is **0.11.0**. The committed integration harness
+The current package version is **0.12.0**. The committed integration harness
 starts a disposable, digest-pinned Synapse and exercises real Matrix protocol
 paths through a deterministic OpenRig transport. It does not prove a live Codex
 model turn, real voice recognition quality, or human device verification.

@@ -32,6 +32,8 @@ def fake(
     *args: str,
     fail: str | None = None,
     delay: str = "0.2",
+    allow_steering: bool = False,
+    unrelated_turn: bool = False,
     extra_env: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
     environment = {
@@ -42,6 +44,10 @@ def fake(
     }
     if fail:
         environment["OPENRIG_FAKE_FAIL"] = fail
+    if allow_steering:
+        environment["OPENRIG_FAKE_ALLOW_STEERING"] = "1"
+    if unrelated_turn:
+        environment["OPENRIG_FAKE_UNRELATED_TURN"] = "1"
     return subprocess.run(
         [str(FAKE), *args],
         check=False,
@@ -219,10 +225,171 @@ def test_fake_transport_rejects_send_while_agent_is_busy(tmp_path: Path):
         "concurrent prompt",
         "--raw",
         "--json",
+        delay="5.0",
     )
 
     assert second.returncode != 0
     assert "busy" in second.stderr.lower()
+
+
+def test_fake_transport_records_best_effort_steering_inside_active_turn(
+    tmp_path: Path,
+):
+    first = fake(
+        tmp_path,
+        "send",
+        "integration-agent@local",
+        "active prompt",
+        "--raw",
+        "--json",
+        delay="5.0",
+    )
+    assert first.returncode == 0
+
+    steer = fake(
+        tmp_path,
+        "send",
+        "integration-agent@local",
+        "steered follow-up",
+        "--raw",
+        "--json",
+        delay="5.0",
+        allow_steering=True,
+    )
+
+    assert steer.returncode == 0
+    state = json.loads((tmp_path / "fake-openrig.json").read_text())
+    assert [item["prompt"] for item in state["prompts"]] == ["active prompt"]
+    assert [item["prompt"] for item in state["steers"]] == ["steered follow-up"]
+    records = [
+        json.loads(line)
+        for line in (tmp_path / "transcript.jsonl").read_text().splitlines()
+    ]
+    user_records = [
+        record
+        for record in records
+        if record.get("type") == "response_item"
+        and record.get("payload", {}).get("role") == "user"
+    ]
+    assert [record["payload"]["content"][0]["text"] for record in user_records] == [
+        "active prompt",
+        "steered follow-up",
+    ]
+    assert (
+        len(
+            {
+                record["payload"]["internal_chat_message_metadata_passthrough"][
+                    "turn_id"
+                ]
+                for record in user_records
+            }
+        )
+        == 1
+    )
+
+
+def test_fake_transport_can_materialize_steering_after_completion(
+    tmp_path: Path,
+):
+    first = fake(
+        tmp_path,
+        "send",
+        "integration-agent@local",
+        "active prompt",
+        "--raw",
+        "--json",
+        delay="0.2",
+    )
+    assert first.returncode == 0
+
+    steer = fake(
+        tmp_path,
+        "send",
+        "integration-agent@local",
+        "late follow-up",
+        "--raw",
+        "--json",
+        allow_steering=True,
+        extra_env={"OPENRIG_FAKE_LATE_STEER_SECONDS": "0.4"},
+    )
+    assert steer.returncode == 0
+    assert json.loads(steer.stdout)["materialization"] == "late"
+
+    transcript = tmp_path / "transcript.jsonl"
+    deadline = time.monotonic() + 3
+    records: list[dict[str, object]] = []
+    while time.monotonic() < deadline:
+        records = [
+            json.loads(line)
+            for line in transcript.read_text(encoding="utf-8").splitlines()
+        ]
+        if any(
+            record.get("payload", {}).get("item", {}).get("phase") == "final_answer"
+            and "Late steering answer:" in str(record)
+            for record in records
+        ):
+            break
+        time.sleep(0.05)
+
+    user_records = [
+        record
+        for record in records
+        if record.get("type") == "response_item"
+        and record.get("payload", {}).get("role") == "user"
+    ]
+    assert [record["payload"]["content"][0]["text"] for record in user_records] == [
+        "active prompt",
+        "late follow-up",
+    ]
+    assert len(
+        {
+            record["payload"]["internal_chat_message_metadata_passthrough"][
+                "turn_id"
+            ]
+            for record in user_records
+        }
+    ) == 2
+
+
+def test_fake_transport_can_emit_unrelated_human_final_before_owner_answer(
+    tmp_path: Path,
+):
+    result = fake(
+        tmp_path,
+        "send",
+        "integration-agent@local",
+        "owner prompt",
+        "--raw",
+        "--json",
+        delay="0.1",
+        unrelated_turn=True,
+    )
+    assert result.returncode == 0
+
+    deadline = time.monotonic() + 3
+    records = []
+    while time.monotonic() < deadline:
+        records = [
+            json.loads(line)
+            for line in (tmp_path / "transcript.jsonl").read_text().splitlines()
+        ]
+        if any(
+            record.get("payload", {}).get("item", {}).get("phase") == "final_answer"
+            and "Fake integration answer" in str(record)
+            for record in records
+        ):
+            break
+        time.sleep(0.05)
+
+    finals = [
+        record["payload"]["item"]["content"][0]["text"]
+        for record in records
+        if record.get("payload", {}).get("item", {}).get("phase") == "final_answer"
+    ]
+    assert finals == [
+        "Unrelated human answer that must not reach Matrix.",
+        "Fake integration answer: owner prompt",
+    ]
 
 
 def test_fake_transport_accepts_natural_demo_copy(tmp_path: Path):
@@ -249,7 +416,14 @@ def test_fake_transport_accepts_natural_demo_copy(tmp_path: Path):
                 json.loads(line)
                 for line in transcript.read_text(encoding="utf-8").splitlines()
             ]
-            if len(records) >= 2:
+            if (
+                sum(
+                    isinstance(record.get("payload"), dict)
+                    and isinstance(record["payload"].get("item"), dict)
+                    for record in records
+                )
+                >= 2
+            ):
                 break
         time.sleep(0.05)
 
@@ -304,7 +478,11 @@ def test_fifo_requires_second_send_after_first_completion():
         validate_fifo_records(
             [
                 {"prompt": "hold first request", "sent_at": 1.0, "completed_at": 4.0},
-                {"prompt": "second queued request", "sent_at": 3.0, "completed_at": 5.0},
+                {
+                    "prompt": "second queued request",
+                    "sent_at": 3.0,
+                    "completed_at": 5.0,
+                },
             ],
             "hold first request",
             "second queued request",

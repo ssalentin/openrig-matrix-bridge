@@ -1542,7 +1542,10 @@ def test_poll_agent_uses_persisted_canonical_thread_root(tmp_path):
         (
             "**Aktivität:** Arbeitet\n\nIch prüfe das.",
             "$root",
-            {"thread_root": "$root"},
+                {
+                    "thread_root": "$root",
+                    "tx_id": "activity-card-$nested-reply",
+                },
         ),
         (
             "Fertig.",

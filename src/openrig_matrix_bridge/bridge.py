@@ -80,7 +80,13 @@ from .openrig import (
     OpenRigGateway,
     OpenRigSessionResolver,
 )
-from .transcript import commentary_messages, final_answer, read_complete_records
+from .transcript import (
+    commentary_messages,
+    final_answer,
+    read_complete_records,
+    record_turn_id,
+    user_messages,
+)
 from .transcription import Transcriber
 from .verification import (
     TERMINAL_PHASES,
@@ -98,6 +104,13 @@ AGENT_STATUS_EVENT = "dev.openrig.agent_status"
 VERIFICATION_TIMEOUT_SECONDS = 600
 _DEFAULT_THREAD_ROOT = object()
 MAX_DELIVERY_ATTEMPTS = 3
+ACCEPTANCE_REACTION_KEY = "👍"
+MAX_ACCEPTANCE_RECORDS = 2000
+MAX_ACCEPTANCE_ATTEMPTS = 8
+ACCEPTANCE_RETRY_BASE_SECONDS = 5.0
+ACCEPTANCE_RETRY_MAX_SECONDS = 300.0
+MAX_LATENCY_SAMPLES = 200
+TERMINAL_QITEM_PHASES = {"done", "failed", "canceled", "denied"}
 VOICE_STATUS_PROGRESS = "Sprachnachricht empfangen, transkribiere …"
 VOICE_STATUS_INTERRUPTED = (
     "Die Sprachnachricht wurde durch einen Bridge-Neustart unterbrochen "
@@ -238,10 +251,7 @@ def _open_verified_snapshot(
                 f"{metadata.st_size} instead of {expected_size} bytes"
             )
         if metadata.st_size <= 0 or metadata.st_size > max_file_bytes:
-            raise MediaError(
-                "file size must be between 1 and "
-                f"{max_file_bytes} bytes"
-            )
+            raise MediaError(f"file size must be between 1 and {max_file_bytes} bytes")
         handle = os.fdopen(descriptor, "rb")
         descriptor = -1
     finally:
@@ -316,6 +326,21 @@ def formatted_message_content(text: str) -> dict[str, Any]:
     return content
 
 
+def steering_batch_text(thread_root: str, entries: list[dict[str, Any]]) -> str:
+    lines = [
+        (
+            "Matrix follow-up batch for this thread. Treat every numbered item below "
+            "as ordered input to the same task."
+        ),
+        f"Canonical thread root: {thread_root}",
+        "Source events: " + ", ".join(entry["event_id"] for entry in entries),
+        "",
+    ]
+    for index, entry in enumerate(entries, start=1):
+        lines.append(f"{index}. [{entry['event_id']}] {entry['text']}")
+    return "\n".join(lines)
+
+
 def verification_decision(text: str) -> bool | None:
     normalized = text.strip().lower().rstrip(".!")
     if normalized in {"ja", "ja bitte", "bestätigen", "bestaetigen", "stimmt"}:
@@ -355,7 +380,9 @@ class StateStore:
 
     def save(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        fd, temp_name = tempfile.mkstemp(prefix=f".{self.path.name}.", dir=self.path.parent)
+        fd, temp_name = tempfile.mkstemp(
+            prefix=f".{self.path.name}.", dir=self.path.parent
+        )
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as handle:
                 json.dump(self.data, handle, indent=2, sort_keys=True)
@@ -376,14 +403,18 @@ class MatrixBridge:
             raise ValueError("MATRIX_ACCESS_TOKEN is required")
         self.config = config
         self.config.state_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
-        (self.config.state_dir / "matrix-store").mkdir(parents=True, exist_ok=True, mode=0o700)
+        (self.config.state_dir / "matrix-store").mkdir(
+            parents=True, exist_ok=True, mode=0o700
+        )
         self.state = StateStore(config.state_dir / "state.json")
         self.resolver = OpenRigSessionResolver(config.rig_command, config.codex_home)
         self.gateway = OpenRigGateway(config.rig_command, config.sender_session)
         self.transcriber = Transcriber(config.transcription)
         self.locks = {key: asyncio.Lock() for key in config.agents}
         self.room_agents: dict[str, str] = {}
-        self.processed_events: set[str] = set(self.state.data.get("processed_events", []))
+        self.processed_events: set[str] = set(
+            self.state.data.get("processed_events", [])
+        )
         self.verification_records = self.state.data.setdefault("verifications", {})
         self.typing_tasks: dict[str, asyncio.Task[None]] = {}
         self.pin_locks = {
@@ -429,13 +460,21 @@ class MatrixBridge:
         )
         self.client.add_event_callback(self._on_room_message, RoomMessageText)
         self.client.add_event_callback(self._on_reaction, ReactionEvent)
-        self.client.add_event_callback(self._on_audio, (RoomMessageAudio, RoomEncryptedAudio))
-        self.client.add_event_callback(self._on_image, (RoomMessageImage, RoomEncryptedImage))
-        self.client.add_event_callback(self._on_file, (RoomMessageFile, RoomEncryptedFile))
+        self.client.add_event_callback(
+            self._on_audio, (RoomMessageAudio, RoomEncryptedAudio)
+        )
+        self.client.add_event_callback(
+            self._on_image, (RoomMessageImage, RoomEncryptedImage)
+        )
+        self.client.add_event_callback(
+            self._on_file, (RoomMessageFile, RoomEncryptedFile)
+        )
         self.client.add_event_callback(self._on_invite, InviteMemberEvent)
         self.client.add_event_callback(self._on_member, RoomMemberEvent)
         self.client.add_event_callback(self._on_unknown_event, UnknownEvent)
-        self.client.add_to_device_callback(self._on_verification, (KeyVerificationEvent,))
+        self.client.add_to_device_callback(
+            self._on_verification, (KeyVerificationEvent,)
+        )
 
     async def run(self) -> None:
         await self._initial_sync()
@@ -450,6 +489,7 @@ class MatrixBridge:
         self._initialize_transcript_offsets()
         self._repair_decision_reply_targets()
         await self._reconcile_pending_operations()
+        await self._recover_acceptance_reactions()
         await self._refresh_agent_statuses(force=True)
         poller = asyncio.create_task(self._poll_answers(), name="openrig-matrix-poller")
         status_poller = asyncio.create_task(
@@ -701,9 +741,7 @@ class MatrixBridge:
                         "title": title,
                         "body": body,
                         "qitem_id": qitem_id,
-                        "questions": normalize_questions(
-                            detail.get("humanQuestions")
-                        ),
+                        "questions": normalize_questions(detail.get("humanQuestions")),
                     }
                 )
             else:
@@ -857,9 +895,9 @@ class MatrixBridge:
             encrypt=True,
             filesize=size,
         )
-        if not isinstance(upload, UploadResponse) or not _has_complete_encryption_metadata(
-            encryption
-        ):
+        if not isinstance(
+            upload, UploadResponse
+        ) or not _has_complete_encryption_metadata(encryption):
             raise ConnectionError(f"encrypted image upload failed: {upload}")
 
         caption = str(request.get("caption") or "").strip()[:10_000]
@@ -945,9 +983,9 @@ class MatrixBridge:
             )
         finally:
             snapshot_handle.close()
-        if not isinstance(upload, UploadResponse) or not _has_complete_encryption_metadata(
-            encryption
-        ):
+        if not isinstance(
+            upload, UploadResponse
+        ) or not _has_complete_encryption_metadata(encryption):
             raise MediaError(
                 "encrypted file upload returned incomplete encryption metadata"
             )
@@ -1013,9 +1051,7 @@ class MatrixBridge:
             return
 
         noun = "Nachricht wartet" if waiting == 1 else "Nachrichten warten"
-        priority = str(
-            getattr(self.config, "inbound_message_priority", "urgent")
-        )
+        priority = str(getattr(self.config, "inbound_message_priority", "urgent"))
         priority_label = {
             "routine": "normal",
             "urgent": "hoch",
@@ -1034,7 +1070,9 @@ class MatrixBridge:
             response = await self._send(room_id, text)
             target_event_id = None
         if not isinstance(response, RoomSendResponse):
-            LOGGER.warning("queue notice delivery failed for %s: %s", agent.session, response)
+            LOGGER.warning(
+                "queue notice delivery failed for %s: %s", agent.session, response
+            )
             return
         if target_event_id is None:
             notice["event_id"] = response.event_id
@@ -1080,7 +1118,9 @@ class MatrixBridge:
                     {"name": stable_name},
                 )
             except Exception:
-                LOGGER.warning("failed to restore room name for %s", agent.session, exc_info=True)
+                LOGGER.warning(
+                    "failed to restore room name for %s", agent.session, exc_info=True
+                )
                 continue
             room["name"] = stable_name
         self.state.save()
@@ -1128,10 +1168,7 @@ class MatrixBridge:
         selected = assign_unique_avatar_ids(candidates, existing)
         assignments.clear()
         assignments.update(
-            {
-                key: {"id": avatar_id}
-                for key, avatar_id in selected.items()
-            }
+            {key: {"id": avatar_id} for key, avatar_id in selected.items()}
         )
         for key, avatar_id in selected.items():
             room = self.state.data["rooms"][key]
@@ -1161,7 +1198,9 @@ class MatrixBridge:
                     {"url": avatar_url},
                 )
                 if hasattr(response, "status_code") and response.status_code >= 400:
-                    LOGGER.warning("room avatar update failed for %s: %s", key, response)
+                    LOGGER.warning(
+                        "room avatar update failed for %s: %s", key, response
+                    )
                     continue
             assignments[key] = {"id": avatar_id, "mxc": avatar_url}
             room["avatar"] = avatar_id
@@ -1426,11 +1465,7 @@ class MatrixBridge:
                 poll_question["id"] in decision["answers"]
                 for poll_question in decision.get("polls", {}).values()
             )
-            unpin = (
-                decision.get("event_ids", [])
-                if all_answered
-                else [poll_id]
-            )
+            unpin = decision.get("event_ids", []) if all_answered else [poll_id]
             await self._remove_pinned(room.room_id, unpin)
             if all_answered:
                 decision["closed_at"] = int(time.time() * 1000)
@@ -1547,21 +1582,29 @@ class MatrixBridge:
             queue_tracked=False,
         )
 
-    async def _handle_room_message(self, room: MatrixRoom, event: RoomMessageText) -> None:
+    async def _handle_room_message(
+        self, room: MatrixRoom, event: RoomMessageText
+    ) -> None:
         if event.sender == self.config.user_id:
             return
         agent = self._agent_for_room(room.room_id)
         if not agent:
             return
         if event.sender not in self.config.allowed_users:
-            LOGGER.warning("ignoring Matrix sender %s in %s", event.sender, room.room_id)
+            LOGGER.warning(
+                "ignoring Matrix sender %s in %s", event.sender, room.room_id
+            )
             return
         if event.event_id in self.processed_events:
             return
         if self.config.max_message_age_minutes >= 0:
             age_ms = int(time.time() * 1000) - int(event.server_timestamp)
             if age_ms > self.config.max_message_age_minutes * 60_000:
-                await self._send(room.room_id, "Nachricht ist zu alt und wurde nicht an den Agenten gesendet.", event.event_id)
+                await self._send(
+                    room.room_id,
+                    "Nachricht ist zu alt und wurde nicht an den Agenten gesendet.",
+                    event.event_id,
+                )
                 return
         text = event.body.strip()
         if not text:
@@ -1648,7 +1691,11 @@ class MatrixBridge:
                     now=time.time(),
                 )
                 self.state.save()
-                await self._send(room.room_id, f"Bestätigung fehlgeschlagen: {result}", event.event_id)
+                await self._send(
+                    room.room_id,
+                    f"Bestätigung fehlgeschlagen: {result}",
+                    event.event_id,
+                )
             else:
                 mark_verification(
                     self.verification_records,
@@ -1670,7 +1717,9 @@ class MatrixBridge:
                 now=now,
             )
             self.state.save()
-            result = await self.client.cancel_key_verification(transaction_id, reject=True)
+            result = await self.client.cancel_key_verification(
+                transaction_id, reject=True
+            )
             if isinstance(result, ToDeviceError):
                 mark_verification(
                     self.verification_records,
@@ -1679,7 +1728,9 @@ class MatrixBridge:
                     now=time.time(),
                 )
                 self.state.save()
-                await self._send(room.room_id, f"Abbruch fehlgeschlagen: {result}", event.event_id)
+                await self._send(
+                    room.room_id, f"Abbruch fehlgeschlagen: {result}", event.event_id
+                )
             else:
                 mark_verification(
                     self.verification_records,
@@ -1688,7 +1739,9 @@ class MatrixBridge:
                     now=time.time(),
                 )
                 self.state.save()
-                await self._send(room.room_id, "Geräteverifikation abgelehnt.", event.event_id)
+                await self._send(
+                    room.room_id, "Geräteverifikation abgelehnt.", event.event_id
+                )
         return True
 
     async def _recover_verifications(self) -> None:
@@ -1822,7 +1875,10 @@ class MatrixBridge:
                     now=time.time(),
                 )
                 self.state.save()
-                await self._send(room_id, f"Matrix-Verifikation konnte nicht gestartet werden: {response}")
+                await self._send(
+                    room_id,
+                    f"Matrix-Verifikation konnte nicht gestartet werden: {response}",
+                )
                 return
             sas = self.client.key_verifications.get(event.transaction_id)
             if sas is not None:
@@ -1835,7 +1891,9 @@ class MatrixBridge:
                         now=time.time(),
                     )
                     self.state.save()
-                    await self._send(room_id, f"Schlüsselaustausch fehlgeschlagen: {response}")
+                    await self._send(
+                        room_id, f"Schlüsselaustausch fehlgeschlagen: {response}"
+                    )
                     return
             mark_verification(
                 self.verification_records,
@@ -1924,6 +1982,7 @@ class MatrixBridge:
         suppress_reply: bool = False,
         queue_tracked: bool = True,
     ) -> None:
+        intake_at = time.time()
         async with self.locks[agent.key]:
             pending = self.state.data["pending"].setdefault(agent.key, [])
             self.processed_events.add(event_id)
@@ -1964,6 +2023,7 @@ class MatrixBridge:
                 "source_relation": dict(relates_to) if relates_to else None,
                 "source_label": source_label or "message",
                 "qitem_id": qitem_id,
+                "qitem_ids": [qitem_id] if qitem_id else [],
                 "queue_tracked": queue_tracked,
                 "suppress_reply": suppress_reply,
                 "priority": getattr(
@@ -1972,17 +2032,55 @@ class MatrixBridge:
                     "urgent",
                 ),
                 "text": text,
+                "intake_at": intake_at,
                 "enqueued_at": time.time(),
                 "prompt_phase": "pending",
                 "answer_phase": None,
                 "qitem_phase": "pending" if qitem_id else "not_tracked",
+                "qitem_phases": ({qitem_id: "pending"} if qitem_id else {}),
                 "started_at": None,
                 "session_id": None,
                 "transcript_path": None,
                 "offset": None,
                 "answer_text": None,
+                "turn_attribution_required": True,
             }
+            if self._is_steering_candidate(
+                pending,
+                text,
+                target,
+                suppress_reply=suppress_reply,
+                queue_tracked=queue_tracked,
+            ):
+                self._append_steering_followup(
+                    agent,
+                    pending,
+                    request,
+                    event_id=event_id,
+                    text=text,
+                )
+                acknowledge = self._record_acceptance(
+                    room.room_id,
+                    event_id,
+                    queue_tracked=queue_tracked,
+                    suppress_reply=suppress_reply,
+                )
+                self.state.save()
+                if acknowledge:
+                    await self._acknowledge_acceptance(room.room_id, event_id)
+                await self._update_queue_notice(
+                    agent,
+                    room.room_id,
+                    max(0, len(pending) - 1),
+                )
+                return
             pending.append(request)
+            acknowledge = self._record_acceptance(
+                room.room_id,
+                event_id,
+                queue_tracked=queue_tracked,
+                suppress_reply=suppress_reply,
+            )
             self.state.save()
             if len(pending) == 1:
                 await self._start_request(agent, pending[0], room.room_id)
@@ -1992,6 +2090,271 @@ class MatrixBridge:
                     room.room_id,
                     len(pending) - 1,
                 )
+            if acknowledge:
+                await self._acknowledge_acceptance(room.room_id, event_id)
+
+    def _is_steering_candidate(
+        self,
+        pending: list[dict[str, Any]],
+        text: str,
+        target: ResponseTarget,
+        *,
+        suppress_reply: bool,
+        queue_tracked: bool,
+    ) -> bool:
+        mode = str(getattr(self.config, "steering_mode", "auto"))
+        if mode not in {"steer", "auto"}:
+            return False
+        if suppress_reply or not queue_tracked or not target.thread_root_event_id:
+            return False
+        max_chars = int(getattr(self.config, "steering_max_chars", 2000))
+        if len(text) > max_chars:
+            return False
+        if not pending:
+            return False
+        active = pending[0]
+        group_id = active.get("steering_group_id")
+        if group_id:
+            group = next(
+                (request for request in pending[1:] if request.get("id") == group_id),
+                None,
+            )
+            if group is not None and group.get("injection_phase") != "pending":
+                return False
+        return (
+            active.get("prompt_phase") == "sent"
+            and active.get("answer_phase") is None
+            and active.get("thread_root_event_id") == target.thread_root_event_id
+            and not active.get("suppress_reply")
+        )
+
+    def _append_steering_followup(
+        self,
+        agent: AgentConfig,
+        pending: list[dict[str, Any]],
+        incoming: dict[str, Any],
+        *,
+        event_id: str,
+        text: str,
+    ) -> None:
+        active = pending[0]
+        group_id = active.get("steering_group_id")
+        group = next(
+            (
+                request
+                for request in pending[1:]
+                if request.get("id") == group_id and request.get("deferred_steering")
+            ),
+            None,
+        )
+        entry = {
+            "event_id": event_id,
+            "text": text,
+            "qitem_id": incoming.get("qitem_id"),
+            "reply_to_event_id": incoming["reply_to_event_id"],
+            "source_relation": incoming.get("source_relation"),
+            "intake_at": incoming.get("intake_at"),
+            "enqueued_at": incoming["enqueued_at"],
+        }
+        if group is None:
+            group = {
+                **incoming,
+                "deferred_steering": True,
+                "steering_entries": [entry],
+                "injection_phase": "pending",
+                "injection_ready_at": (
+                    time.time()
+                    + float(
+                        getattr(
+                            self.config,
+                            "steering_batch_window_seconds",
+                            0.5,
+                        )
+                    )
+                ),
+                "injection_offset": None,
+                "injection_text": None,
+                "injection_turn_id": None,
+            }
+            pending.append(group)
+            active["steering_group_id"] = group["id"]
+        else:
+            group["steering_entries"].append(entry)
+            group["source_event_ids"].append(event_id)
+            if incoming.get("qitem_id"):
+                group.setdefault("qitem_ids", []).append(incoming["qitem_id"])
+                group.setdefault("qitem_phases", {})[incoming["qitem_id"]] = "pending"
+        entries = group["steering_entries"]
+        group["text"] = steering_batch_text(
+            str(active["thread_root_event_id"]),
+            entries,
+        )
+        LOGGER.info(
+            "batched Matrix event %s for best-effort steering in %s",
+            event_id,
+            agent.session,
+        )
+
+    def _record_acceptance(
+        self,
+        room_id: str,
+        event_id: str,
+        *,
+        queue_tracked: bool,
+        suppress_reply: bool,
+    ) -> bool:
+        """Persist the acceptance-reaction intent with the accepted request.
+
+        The caller saves state once, so the request and its pending
+        acknowledgement become durable together and a crash before the
+        reaction send is repaired by recovery instead of being lost.
+        """
+        if suppress_reply or not queue_tracked:
+            return False
+        if not getattr(self.config, "acceptance_reaction_enabled", True):
+            return False
+        acks = self.state.data.setdefault("acceptance_reactions", {})
+        record = acks.get(event_id)
+        if isinstance(record, dict):
+            return record.get("phase") == "sending"
+        acks[event_id] = {
+            "room_id": room_id,
+            "tx_id": f"ack-{event_id}",
+            "phase": "sending",
+            "attempts": 0,
+            "accepted_at": time.time(),
+            "acknowledged_at": None,
+            "reaction_event_id": None,
+            "last_error": None,
+        }
+        settled = [
+            key
+            for key, value in acks.items()
+            if not (isinstance(value, dict) and value.get("phase") == "sending")
+        ]
+        for key in settled[: max(0, len(acks) - MAX_ACCEPTANCE_RECORDS)]:
+            del acks[key]
+        return True
+
+    async def _acknowledge_acceptance(self, room_id: str, event_id: str) -> bool:
+        acks = self.state.data.get("acceptance_reactions", {})
+        record = acks.get(event_id)
+        if not isinstance(record, dict) or record.get("phase") != "sending":
+            return False
+        record["attempts"] = int(record.get("attempts") or 0) + 1
+        error: object = None
+        try:
+            response = await self.client.room_send(
+                room_id,
+                "m.reaction",
+                {
+                    "m.relates_to": {
+                        "rel_type": "m.annotation",
+                        "event_id": event_id,
+                        "key": ACCEPTANCE_REACTION_KEY,
+                    }
+                },
+                tx_id=str(record.get("tx_id") or f"ack-{event_id}"),
+                ignore_unverified_devices=True,
+            )
+        except Exception as exc:
+            LOGGER.warning(
+                "acceptance reaction for %s raised",
+                event_id,
+                exc_info=True,
+            )
+            response = None
+            error = exc
+        if isinstance(response, RoomSendResponse):
+            self._crash_after_effect("ack_send")
+            record["phase"] = "sent"
+            record["reaction_event_id"] = response.event_id
+        elif getattr(response, "status_code", None) == "M_DUPLICATE_ANNOTATION":
+            record["phase"] = "sent"
+        else:
+            record["last_error"] = str(error or response)
+            record["retry_at"] = time.time() + min(
+                ACCEPTANCE_RETRY_MAX_SECONDS,
+                ACCEPTANCE_RETRY_BASE_SECONDS * 2 ** (record["attempts"] - 1),
+            )
+            if record["attempts"] >= MAX_ACCEPTANCE_ATTEMPTS:
+                record["phase"] = "failed"
+                LOGGER.error(
+                    "giving up acceptance reaction for %s after %s attempts: %s",
+                    event_id,
+                    record["attempts"],
+                    record["last_error"],
+                )
+            self.state.save()
+            return False
+        record["acknowledged_at"] = time.time()
+        record["last_error"] = None
+        record.pop("retry_at", None)
+        self.state.save()
+        return True
+
+    async def _recover_acceptance_reactions(self) -> None:
+        acks = self.state.data.get("acceptance_reactions", {})
+        now = time.time()
+        for event_id, record in list(acks.items()):
+            if (
+                isinstance(record, dict)
+                and record.get("phase") == "sending"
+                and record.get("room_id")
+                and float(record.get("retry_at") or 0) <= now
+            ):
+                await self._acknowledge_acceptance(str(record["room_id"]), event_id)
+
+    def _mark_prompt_admitted(
+        self,
+        request: dict[str, Any],
+        turn_id: str,
+    ) -> None:
+        request["prompt_turn_id"] = turn_id
+        request["admitted_at"] = time.time()
+        self._record_latency(
+            request,
+            "fallback" if request.get("deferred_steering") else "prompt",
+        )
+
+    def _record_latency(self, request: dict[str, Any], kind: str) -> None:
+        """Keep bounded intake, injection and admission timestamps.
+
+        Admission is the bridge's observation of the transcript user record,
+        so it includes up to one transcript poll interval.
+        """
+        if request.get("latency_recorded"):
+            return
+        request["latency_recorded"] = True
+        acks = self.state.data.get("acceptance_reactions", {})
+        entries = request.get("steering_entries") or [
+            {
+                "event_id": request.get("event_id"),
+                "intake_at": request.get("intake_at"),
+            }
+        ]
+        samples = self.state.data.setdefault("latency_samples", [])
+        for entry in entries:
+            event_id = str(entry.get("event_id"))
+            ack = acks.get(event_id)
+            samples.append(
+                {
+                    "event_id": event_id,
+                    "request_id": request.get("id"),
+                    "kind": kind,
+                    "turn_id": (
+                        request.get("injection_turn_id")
+                        or request.get("prompt_turn_id")
+                    ),
+                    "intake_at": entry.get("intake_at"),
+                    "injected_at": request.get("injected_at"),
+                    "admitted_at": request.get("admitted_at"),
+                    "acknowledged_at": (
+                        ack.get("acknowledged_at") if isinstance(ack, dict) else None
+                    ),
+                }
+            )
+        self.state.data["latency_samples"] = samples[-MAX_LATENCY_SAMPLES:]
 
     async def _create_inbound_qitem(
         self,
@@ -2003,18 +2366,14 @@ class MatrixBridge:
     ) -> str | None:
         if not getattr(self.config, "queue_inbound_messages", False):
             return None
-        source_session = str(
-            getattr(self.config, "inbound_queue_source", "")
-        ).strip()
+        source_session = str(getattr(self.config, "inbound_queue_source", "")).strip()
         if not source_session:
             raise GatewayError("inbound queue source is not configured")
         first_line = next(
             (line.strip() for line in text.splitlines() if line.strip()),
             f"Matrix {source_label}",
         )
-        priority = str(
-            getattr(self.config, "inbound_message_priority", "urgent")
-        )
+        priority = str(getattr(self.config, "inbound_message_priority", "urgent"))
         qitem_id = await self.gateway.queue_create(
             source_session=source_session,
             destination_session=agent.session,
@@ -2040,47 +2399,56 @@ class MatrixBridge:
         agent: AgentConfig,
         request: dict[str, Any],
     ) -> bool:
-        qitem_id = str(request.get("qitem_id") or "").strip()
-        if not qitem_id:
+        qitem_ids = self._request_qitem_ids(request)
+        if not qitem_ids:
             request["qitem_phase"] = "not_tracked"
             return True
-        phase = str(request.get("qitem_phase") or "")
-        if phase == "claimed":
-            return True
-        if phase == "claiming":
-            try:
-                item = await self.gateway.queue_show(qitem_id)
-            except (GatewayError, OSError):
-                LOGGER.warning("could not inspect Matrix qitem %s", qitem_id, exc_info=True)
-                return False
-            state = str(item.get("state") or "")
-            waiting = item.get("waiting", {})
-            owner = waiting.get("owner") if isinstance(waiting, dict) else None
-            if state == "in-progress" and agent.session in {
-                item.get("claimed_by"),
-                owner,
-            }:
-                request["qitem_phase"] = "claimed"
-                self.state.save()
-                return True
-            if state in {"done", "failed", "canceled", "denied"}:
-                request["qitem_phase"] = state
-                self.state.save()
-                return False
-        request["qitem_phase"] = "claiming"
-        self.state.save()
-        try:
-            await self.gateway.queue_claim(qitem_id, agent.session)
-        except (GatewayError, OSError):
-            LOGGER.warning(
-                "could not claim Matrix qitem %s",
-                qitem_id,
-                exc_info=True,
-            )
+        if self._request_terminal_qitem_phase(request):
             return False
-        self._crash_after_effect("qitem_claim")
-        request["qitem_phase"] = "claimed"
-        self.state.save()
+        for qitem_id in qitem_ids:
+            phase = self._request_qitem_phase(request, qitem_id)
+            if phase == "claimed":
+                continue
+            if phase in TERMINAL_QITEM_PHASES:
+                return False
+            if phase == "claiming":
+                try:
+                    item = await self.gateway.queue_show(qitem_id)
+                except (GatewayError, OSError):
+                    LOGGER.warning(
+                        "could not inspect Matrix qitem %s",
+                        qitem_id,
+                        exc_info=True,
+                    )
+                    return False
+                state = str(item.get("state") or "")
+                waiting = item.get("waiting", {})
+                owner = waiting.get("owner") if isinstance(waiting, dict) else None
+                if state == "in-progress" and agent.session in {
+                    item.get("claimed_by"),
+                    owner,
+                }:
+                    self._set_request_qitem_phase(request, qitem_id, "claimed")
+                    self.state.save()
+                    continue
+                if state in TERMINAL_QITEM_PHASES:
+                    self._set_request_qitem_phase(request, qitem_id, state)
+                    self.state.save()
+                    return False
+            self._set_request_qitem_phase(request, qitem_id, "claiming")
+            self.state.save()
+            try:
+                await self.gateway.queue_claim(qitem_id, agent.session)
+            except (GatewayError, OSError):
+                LOGGER.warning(
+                    "could not claim Matrix qitem %s",
+                    qitem_id,
+                    exc_info=True,
+                )
+                return False
+            self._crash_after_effect("qitem_claim")
+            self._set_request_qitem_phase(request, qitem_id, "claimed")
+            self.state.save()
         return True
 
     async def _finish_inbound_qitem(
@@ -2088,41 +2456,51 @@ class MatrixBridge:
         agent: AgentConfig,
         request: dict[str, Any],
     ) -> bool:
-        qitem_id = str(request.get("qitem_id") or "").strip()
-        if not qitem_id:
+        qitem_ids = self._request_qitem_ids(request)
+        if not qitem_ids:
             request["qitem_phase"] = "not_tracked"
             return True
-        phase = str(request.get("qitem_phase") or "")
-        if phase == "done":
-            return True
-        if phase == "finishing":
-            try:
-                item = await self.gateway.queue_show(qitem_id)
-            except (GatewayError, OSError):
-                LOGGER.warning("could not inspect Matrix qitem %s", qitem_id, exc_info=True)
+        for qitem_id in qitem_ids:
+            phase = self._request_qitem_phase(request, qitem_id)
+            if phase == "done":
+                continue
+            if phase in TERMINAL_QITEM_PHASES:
                 return False
-            if item.get("state") == "done":
-                request["qitem_phase"] = "done"
-                self.state.save()
-                return True
-        request["qitem_phase"] = "finishing"
-        self.state.save()
-        try:
-            await self.gateway.queue_finish(
-                qitem_id,
-                agent.session,
-                "Matrix answer delivered",
-            )
-        except (GatewayError, OSError):
-            LOGGER.warning(
-                "could not finish Matrix qitem %s",
-                qitem_id,
-                exc_info=True,
-            )
-            return False
-        self._crash_after_effect("qitem_finish")
-        request["qitem_phase"] = "done"
-        self.state.save()
+            if phase == "finishing":
+                try:
+                    item = await self.gateway.queue_show(qitem_id)
+                except (GatewayError, OSError):
+                    LOGGER.warning(
+                        "could not inspect Matrix qitem %s",
+                        qitem_id,
+                        exc_info=True,
+                    )
+                    return False
+                state = str(item.get("state") or "")
+                if state in TERMINAL_QITEM_PHASES:
+                    self._set_request_qitem_phase(request, qitem_id, state)
+                    self.state.save()
+                    if state == "done":
+                        continue
+                    return False
+            self._set_request_qitem_phase(request, qitem_id, "finishing")
+            self.state.save()
+            try:
+                await self.gateway.queue_finish(
+                    qitem_id,
+                    agent.session,
+                    "Matrix answer delivered",
+                )
+            except (GatewayError, OSError):
+                LOGGER.warning(
+                    "could not finish Matrix qitem %s",
+                    qitem_id,
+                    exc_info=True,
+                )
+                return False
+            self._crash_after_effect("qitem_finish")
+            self._set_request_qitem_phase(request, qitem_id, "done")
+            self.state.save()
         return True
 
     async def _fail_inbound_qitem(
@@ -2131,42 +2509,91 @@ class MatrixBridge:
         request: dict[str, Any],
         resolution: str,
     ) -> bool:
-        qitem_id = str(request.get("qitem_id") or "").strip()
-        if not qitem_id:
+        qitem_ids = self._request_qitem_ids(request)
+        if not qitem_ids:
             request["qitem_phase"] = "not_tracked"
             return True
-        phase = str(request.get("qitem_phase") or "")
-        if phase == "failed":
-            return True
-        if phase == "failing":
+        for qitem_id in qitem_ids:
+            phase = self._request_qitem_phase(request, qitem_id)
+            if phase in TERMINAL_QITEM_PHASES:
+                continue
+            if phase == "failing":
+                try:
+                    item = await self.gateway.queue_show(qitem_id)
+                except (GatewayError, OSError):
+                    LOGGER.warning(
+                        "could not inspect Matrix qitem %s",
+                        qitem_id,
+                        exc_info=True,
+                    )
+                    return False
+                state = str(item.get("state") or "")
+                if state in TERMINAL_QITEM_PHASES:
+                    self._set_request_qitem_phase(request, qitem_id, state)
+                    self.state.save()
+                    if state == "failed":
+                        continue
+                    return False
+            self._set_request_qitem_phase(request, qitem_id, "failing")
+            self.state.save()
             try:
-                item = await self.gateway.queue_show(qitem_id)
+                await self.gateway.queue_fail(
+                    qitem_id,
+                    agent.session,
+                    resolution[:1000],
+                )
             except (GatewayError, OSError):
-                LOGGER.warning("could not inspect Matrix qitem %s", qitem_id, exc_info=True)
+                LOGGER.warning(
+                    "could not fail Matrix qitem %s",
+                    qitem_id,
+                    exc_info=True,
+                )
                 return False
-            if item.get("state") == "failed":
-                request["qitem_phase"] = "failed"
-                self.state.save()
-                return True
-        request["qitem_phase"] = "failing"
-        self.state.save()
-        try:
-            await self.gateway.queue_fail(
-                qitem_id,
-                agent.session,
-                resolution[:1000],
-            )
-        except (GatewayError, OSError):
-            LOGGER.warning(
-                "could not fail Matrix qitem %s",
-                qitem_id,
-                exc_info=True,
-            )
-            return False
-        self._crash_after_effect("qitem_fail")
-        request["qitem_phase"] = "failed"
-        self.state.save()
+            self._crash_after_effect("qitem_fail")
+            self._set_request_qitem_phase(request, qitem_id, "failed")
+            self.state.save()
         return True
+
+    @staticmethod
+    def _request_qitem_ids(request: dict[str, Any]) -> list[str]:
+        values = request.get("qitem_ids")
+        if isinstance(values, list):
+            ids = [str(value) for value in values if str(value).strip()]
+        else:
+            primary = str(request.get("qitem_id") or "").strip()
+            ids = [primary] if primary else []
+        return list(dict.fromkeys(ids))
+
+    @staticmethod
+    def _request_qitem_phase(request: dict[str, Any], qitem_id: str) -> str:
+        phases = request.get("qitem_phases")
+        if isinstance(phases, dict) and qitem_id in phases:
+            return str(phases[qitem_id] or "")
+        if qitem_id == request.get("qitem_id"):
+            return str(request.get("qitem_phase") or "")
+        return ""
+
+    @staticmethod
+    def _set_request_qitem_phase(
+        request: dict[str, Any],
+        qitem_id: str,
+        phase: str,
+    ) -> None:
+        phases = request.setdefault("qitem_phases", {})
+        phases[qitem_id] = phase
+        if qitem_id == request.get("qitem_id"):
+            request["qitem_phase"] = phase
+
+    @classmethod
+    def _request_terminal_qitem_phase(
+        cls,
+        request: dict[str, Any],
+    ) -> str | None:
+        for qitem_id in cls._request_qitem_ids(request):
+            phase = cls._request_qitem_phase(request, qitem_id)
+            if phase in TERMINAL_QITEM_PHASES:
+                return phase
+        return None
 
     async def _reconcile_pending_operations(self) -> None:
         for agent in self.config.agents.values():
@@ -2207,28 +2634,28 @@ class MatrixBridge:
                             ),
                         )
                     continue
-                if request.get("qitem_id") and request.get("qitem_phase") in {
-                    "pending",
-                    "claiming",
-                } and not await self._claim_inbound_qitem(agent, request):
-                    if request.get("qitem_phase") in {
-                        "done",
-                        "failed",
-                        "canceled",
-                        "denied",
-                    }:
+                request_qitems = self._request_qitem_ids(request)
+                request_phases = {
+                    self._request_qitem_phase(request, qitem_id)
+                    for qitem_id in request_qitems
+                }
+                if (
+                    request_qitems
+                    and request_phases
+                    <= {
+                        "pending",
+                        "claiming",
+                    }
+                    and not await self._claim_inbound_qitem(agent, request)
+                ):
+                    if self._request_terminal_qitem_phase(request):
                         await self._abandon_terminal_qitem(
                             agent,
                             request,
                             self._room_for_agent(agent.key),
                         )
                     continue
-                if request.get("qitem_phase") in {
-                    "done",
-                    "failed",
-                    "canceled",
-                    "denied",
-                }:
+                if self._request_terminal_qitem_phase(request):
                     await self._abandon_terminal_qitem(
                         agent,
                         request,
@@ -2313,7 +2740,7 @@ class MatrixBridge:
                 request["qitem_phase"] = "done"
                 request["terminal_error"] = "Legacy request already completed"
                 pending = self.state.data["pending"][agent.key]
-                if pending and pending[0].get("id") == request["id"]:
+                if pending and pending[0] is request:
                     pending.pop(0)
                 self.state.save()
                 return
@@ -2325,7 +2752,7 @@ class MatrixBridge:
                 "Der Prompt-Versand ist nach dem Neustart nicht eindeutig. "
                 "Die Anfrage wird nicht erneut gesendet.",
                 request,
-                tx_id=f"failure-{request['id']}",
+                tx_id=f"failure-{request.get('id') or request['event_id']}",
             )
             if isinstance(response, RoomSendResponse):
                 request["failure_notice_event_id"] = response.event_id
@@ -2338,7 +2765,7 @@ class MatrixBridge:
             self.state.save()
             return
         pending = self.state.data["pending"][agent.key]
-        if pending and pending[0].get("id") == request["id"]:
+        if pending and pending[0] is request:
             pending.pop(0)
         self.state.save()
 
@@ -2353,18 +2780,23 @@ class MatrixBridge:
             or "Matrix answer delivery failed before restart"
         )
         if await self._fail_inbound_qitem(agent, request, resolution) is False:
+            await self._abandon_if_terminal(
+                agent,
+                request,
+                self._room_for_agent(agent.key),
+            )
             return False
         if not request.get("failure_notice_event_id"):
             response = await self._deliver_to_request(
                 self._room_for_agent(agent.key),
                 f"Die Matrix-Antwort konnte nicht zugestellt werden: {resolution}",
                 request,
-                tx_id=f"failure-{request['id']}",
+                tx_id=f"failure-{request.get('id') or request['event_id']}",
             )
             if not isinstance(response, RoomSendResponse):
                 return False
             request["failure_notice_event_id"] = response.event_id
-        if pending and pending[0].get("id") == request["id"]:
+        if pending and pending[0] is request:
             pending.pop(0)
         self.state.save()
         return True
@@ -2375,13 +2807,35 @@ class MatrixBridge:
         request: dict[str, Any],
         room_id: str,
     ) -> None:
+        terminal_phases = {
+            qitem_id: self._request_qitem_phase(request, qitem_id)
+            for qitem_id in self._request_qitem_ids(request)
+            if self._request_qitem_phase(request, qitem_id)
+            in TERMINAL_QITEM_PHASES
+        }
         request["terminal_error"] = (
-            f"OpenRig qitem ended before Matrix delivery: {request.get('qitem_phase')}"
+            "OpenRig batch ended before Matrix delivery: "
+            + ", ".join(
+                f"{qitem_id}={phase}"
+                for qitem_id, phase in terminal_phases.items()
+            )
+        )
+        if not await self._fail_inbound_qitem(
+            agent,
+            request,
+            request["terminal_error"],
+        ):
+            self.state.save()
+            return
+        qitem_ids = ", ".join(self._request_qitem_ids(request))
+        phase_summary = ", ".join(
+            f"{qitem_id}={self._request_qitem_phase(request, qitem_id)}"
+            for qitem_id in self._request_qitem_ids(request)
         )
         response = await self._send(
             room_id,
-            f"OpenRig Queue-Item {request.get('qitem_id')} ist bereits "
-            f"{request.get('qitem_phase')}. Die Anfrage wird nicht gesendet.",
+            f"OpenRig Queue-Item(s) {qitem_ids} sind terminal "
+            f"({phase_summary}). Die Anfrage wird nicht gesendet.",
             self._reply_target(request),
             tx_id=f"failure-{request.get('id') or request['event_id']}",
             **self._delivery_kwargs(request),
@@ -2392,16 +2846,28 @@ class MatrixBridge:
             self.state.save()
             return
         pending = self.state.data["pending"][agent.key]
-        if pending and pending[0].get("id") == request.get("id"):
-            pending.pop(0)
+        was_head = bool(pending and pending[0] is request)
+        if any(item is request for item in pending):
+            pending[:] = [item for item in pending if item is not request]
             self.state.save()
             await self._update_queue_notice(
                 agent,
                 room_id,
                 max(0, len(pending) - 1),
             )
-            if pending:
+            if was_head and pending:
                 await self._start_request(agent, pending[0], room_id)
+
+    async def _abandon_if_terminal(
+        self,
+        agent: AgentConfig,
+        request: dict[str, Any],
+        room_id: str,
+    ) -> bool:
+        if self._request_terminal_qitem_phase(request) is None:
+            return False
+        await self._abandon_terminal_qitem(agent, request, room_id)
+        return True
 
     async def _handle_audio(
         self,
@@ -2419,7 +2885,9 @@ class MatrixBridge:
         if not agent:
             return
         if event.sender not in self.config.allowed_users:
-            LOGGER.warning("ignoring Matrix sender %s in %s", event.sender, room.room_id)
+            LOGGER.warning(
+                "ignoring Matrix sender %s in %s", event.sender, room.room_id
+            )
             return
         if self.config.max_message_age_minutes >= 0:
             age_ms = int(time.time() * 1000) - int(event.server_timestamp)
@@ -2475,7 +2943,9 @@ class MatrixBridge:
                     event.hashes["sha256"],
                     event.iv,
                 )
-            text = await asyncio.to_thread(self.transcriber.transcribe, audio, event.body)
+            text = await asyncio.to_thread(
+                self.transcriber.transcribe, audio, event.body
+            )
         except Exception as exc:
             LOGGER.exception("audio transcription failed")
             await self._finish_voice_status(
@@ -2634,9 +3104,7 @@ class MatrixBridge:
                 f"{text.removeprefix('Transkript:').lstrip()}"
             )
         else:
-            fallback_text = (
-                f"{text}\n\n(Statusmeldung konnte nicht bearbeitet werden.)"
-            )
+            fallback_text = f"{text}\n\n(Statusmeldung konnte nicht bearbeitet werden.)"
         return {
             "text": text,
             "terminal_state": terminal_state,
@@ -2853,10 +3321,7 @@ class MatrixBridge:
         self,
         room: MatrixRoom,
         event: (
-            RoomMessageFile
-            | RoomEncryptedFile
-            | RoomMessageAudio
-            | RoomEncryptedAudio
+            RoomMessageFile | RoomEncryptedFile | RoomMessageAudio | RoomEncryptedAudio
         ),
     ) -> None:
         content = event.source.get("content", {})
@@ -2997,6 +3462,214 @@ class MatrixBridge:
             relates_to=message_relation(event),
         )
 
+    @staticmethod
+    def _steering_group(
+        pending: list[dict[str, Any]],
+        request: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        group_id = request.get("steering_group_id")
+        if not group_id:
+            return None
+        return next(
+            (
+                candidate
+                for candidate in pending[1:]
+                if candidate.get("id") == group_id
+                and candidate.get("deferred_steering")
+            ),
+            None,
+        )
+
+    def _defer_unconfirmed_steering_group(
+        self,
+        pending: list[dict[str, Any]],
+        request: dict[str, Any],
+    ) -> None:
+        group = self._steering_group(pending, request)
+        if group is None or group.get("injection_phase") not in {
+            "injecting",
+            "injected_unconfirmed",
+        }:
+            return
+        group["fallback_not_before"] = max(
+            float(group.get("fallback_not_before") or 0),
+            time.time()
+            + float(
+                getattr(
+                    self.config,
+                    "steering_admission_timeout_seconds",
+                    2.0,
+                )
+            ),
+        )
+        group["last_injection_error"] = (
+            "waiting for asynchronous transcript admission before fallback"
+        )
+        self.state.save()
+
+    def _record_steering_failure(
+        self,
+        request: dict[str, Any],
+        reason: str,
+    ) -> None:
+        failures = self.state.data.setdefault("steering_failures", [])
+        failures.append(
+            {
+                "id": request.get("id"),
+                "source_event_ids": list(request.get("source_event_ids", [])),
+                "thread_root_event_id": request.get("thread_root_event_id"),
+                "reply_to_event_id": request.get("reply_to_event_id"),
+                "qitem_ids": self._request_qitem_ids(request),
+                "injection_attempted_at": request.get("injection_attempted_at"),
+                "injection_turn_id": request.get("injection_turn_id"),
+                "reason": reason,
+                "failed_at": time.time(),
+            }
+        )
+        self.state.data["steering_failures"] = failures[-200:]
+        self.state.save()
+
+    async def _attempt_steering(
+        self,
+        agent: AgentConfig,
+        active: dict[str, Any],
+        group: dict[str, Any],
+    ) -> None:
+        if group.get("injection_phase") != "pending":
+            return
+        if time.time() < float(group.get("injection_ready_at") or 0):
+            return
+        try:
+            ref = await asyncio.to_thread(self.resolver.resolve, agent.session)
+        except AgentSessionNotFound as exc:
+            group["injection_phase"] = "fallback"
+            group["last_injection_error"] = str(exc)
+            self.state.save()
+            return
+        if not ref.busy:
+            group["injection_phase"] = "fallback"
+            group["last_injection_error"] = "no active OpenRig turn"
+            self.state.save()
+            return
+        if ref.session_id != active.get("session_id"):
+            group["injection_phase"] = "fallback"
+            group["last_injection_error"] = "active session identity changed"
+            self.state.save()
+            return
+        prompt_turn_id = active.get("prompt_turn_id")
+        if active.get("turn_attribution_required") and not prompt_turn_id:
+            try:
+                records, _new_offset = await asyncio.to_thread(
+                    read_complete_records,
+                    ref.transcript_path,
+                    int(active["offset"]),
+                )
+            except (OSError, KeyError, TypeError, ValueError):
+                records = []
+            prompt_turn_id = next(
+                (
+                    turn_id
+                    for turn_id, message in user_messages(records)
+                    if message == active.get("text")
+                ),
+                None,
+            )
+            if prompt_turn_id is None:
+                group["last_injection_error"] = (
+                    "waiting for active Matrix prompt turn identity"
+                )
+                self.state.save()
+                return
+            self._mark_prompt_admitted(active, prompt_turn_id)
+            self.state.save()
+        if not await self._claim_inbound_qitem(agent, group):
+            group["injection_phase"] = "fallback"
+            group["last_injection_error"] = "could not claim batch qitems"
+            self.state.save()
+            return
+
+        group["injection_phase"] = "injecting"
+        group["injection_offset"] = ref.transcript_path.stat().st_size
+        group["injection_text"] = str(group["text"])
+        group["injection_attempted_at"] = time.time()
+        self.state.save()
+        try:
+            await self.gateway.steer_prompt(ref, str(group["text"]))
+        except (AgentSessionNotFound, GatewayError, OSError) as exc:
+            group["last_injection_error"] = str(exc)
+            self.state.save()
+            return
+        self._crash_after_effect("steering_send")
+        group["injection_phase"] = "injected_unconfirmed"
+        group["injected_at"] = time.time()
+        self.state.save()
+        await self._scan_steering_admission(
+            group,
+            ref.transcript_path,
+            expected_turn_id=str(prompt_turn_id),
+        )
+
+    async def _scan_steering_admission(
+        self,
+        group: dict[str, Any],
+        transcript_path: Path,
+        *,
+        expected_turn_id: str | None = None,
+    ) -> bool:
+        phase = str(group.get("injection_phase") or "")
+        if phase not in {"injecting", "injected_unconfirmed"}:
+            return phase == "admitted"
+        offset = group.get("injection_offset")
+        text = group.get("injection_text")
+        if not isinstance(offset, int) or not isinstance(text, str):
+            group["injection_phase"] = "fallback"
+            group["last_injection_error"] = "steering admission state is incomplete"
+            self.state.save()
+            return False
+        try:
+            records, _new_offset = await asyncio.to_thread(
+                read_complete_records,
+                transcript_path,
+                offset,
+            )
+        except OSError:
+            return False
+        for turn_id, message in user_messages(records):
+            if message == text and (
+                expected_turn_id is None or turn_id == expected_turn_id
+            ):
+                group["injection_phase"] = "admitted"
+                group["injection_turn_id"] = turn_id
+                group["admitted_at"] = time.time()
+                self._record_latency(
+                    group,
+                    "steer" if expected_turn_id is not None else "late_steer",
+                )
+                self.state.save()
+                return True
+        if phase == "injecting":
+            if not group.get("fallback_not_before"):
+                group["fallback_not_before"] = time.time() + float(
+                    getattr(
+                        self.config,
+                        "steering_admission_timeout_seconds",
+                        2.0,
+                    )
+                )
+            if not group.get("last_injection_error"):
+                group["last_injection_error"] = (
+                    "waiting for transcript admission after restart"
+                )
+            self.state.save()
+        return False
+
+    async def _finish_steering_group(
+        self,
+        agent: AgentConfig,
+        group: dict[str, Any],
+    ) -> bool:
+        return await self._finish_inbound_qitem(agent, group)
+
     async def _start_request(
         self,
         agent: AgentConfig,
@@ -3009,6 +3682,108 @@ class MatrixBridge:
                 self.resolver.resolve,
                 agent.session,
             )
+            if request.get("deferred_steering"):
+                injection_phase = str(request.get("injection_phase") or "")
+                if (
+                    injection_phase
+                    in {"injecting", "injected_unconfirmed", "admitted"}
+                    and isinstance(request.get("injection_offset"), int)
+                    and isinstance(request.get("injection_text"), str)
+                ):
+                    admitted = await self._scan_steering_admission(
+                        request,
+                        ref.transcript_path,
+                    )
+                    if admitted:
+                        request["session_id"] = ref.session_id
+                        request["transcript_path"] = str(ref.transcript_path)
+                        request["offset"] = int(request["injection_offset"])
+                        request["started_at"] = float(
+                            request.get("injection_attempted_at") or time.time()
+                        )
+                        request["prompt_turn_id"] = request["injection_turn_id"]
+                        if not await self._claim_inbound_qitem(agent, request):
+                            raise QitemLifecycleError(
+                                "could not claim admitted steering qitems"
+                            )
+                        request["prompt_phase"] = "sent"
+                        request["externally_admitted"] = True
+                        self.state.save()
+                        if not request.get("suppress_reply"):
+                            await self._set_typing(room_id, True)
+                            await self._update_agent_status(
+                                agent,
+                                "busy",
+                                "arbeitet",
+                            )
+                        return
+                    injection_phase = str(
+                        request.get("injection_phase") or ""
+                    )
+                    if injection_phase in {
+                        "injecting",
+                        "injected_unconfirmed",
+                    }:
+                        attempted_at = float(
+                            request.get("injection_attempted_at") or time.time()
+                        )
+                        timeout_seconds = max(
+                            0.0,
+                            float(
+                                getattr(
+                                    self.config,
+                                    "response_timeout_minutes",
+                                    360,
+                                )
+                            )
+                            * 60,
+                        )
+                        if time.time() - attempted_at >= timeout_seconds:
+                            reason = (
+                                "steering admission unresolved while the "
+                                "seat remained busy"
+                            )
+                            request["terminal_error"] = (
+                                "Steering-Eingabe konnte nicht bestätigt werden: "
+                                f"{reason}"
+                            )
+                            self._record_steering_failure(request, reason)
+                            await self._advance_terminal_request(
+                                agent,
+                                request,
+                                room_id,
+                                disposition="timeout",
+                                status_detail="Steering-Zeitüberschreitung",
+                            )
+                            return
+                        deadline = float(
+                            request.get("fallback_not_before")
+                            or (
+                                attempted_at
+                                + float(
+                                    getattr(
+                                        self.config,
+                                        "steering_admission_timeout_seconds",
+                                        2.0,
+                                    )
+                                )
+                            )
+                        )
+                        if time.time() < deadline or ref.busy:
+                            if ref.busy:
+                                request["last_injection_error"] = (
+                                    "waiting for transcript admission while "
+                                    "the seat remains busy"
+                                )
+                            request["started_at"] = None
+                            self.state.save()
+                            return
+                        request["injection_phase"] = "fallback"
+                        request["last_injection_error"] = (
+                            "steering admission did not appear before the "
+                            "fallback grace deadline"
+                        )
+                        self.state.save()
             if ref.busy:
                 if request.get("prompt_phase") == "pending":
                     request["started_at"] = None
@@ -3031,12 +3806,7 @@ class MatrixBridge:
                 needs_input_count,
             )
             if not await self._claim_inbound_qitem(agent, request):
-                if request.get("qitem_phase") in {
-                    "done",
-                    "failed",
-                    "canceled",
-                    "denied",
-                }:
+                if self._request_terminal_qitem_phase(request):
                     await self._abandon_terminal_qitem(agent, request, room_id)
                     return
                 raise QitemLifecycleError(
@@ -3047,6 +3817,7 @@ class MatrixBridge:
             await self.gateway.send_prompt(ref, request["text"])
             self._crash_after_effect("prompt_send")
             request["prompt_phase"] = "sent"
+            request["injected_at"] = time.time()
             self.state.save()
             if not request.get("suppress_reply"):
                 await self._set_typing(room_id, True)
@@ -3111,6 +3882,7 @@ class MatrixBridge:
         while True:
             try:
                 await asyncio.sleep(self.config.poll_interval_seconds)
+                await self._recover_acceptance_reactions()
                 for agent in self.config.agents.values():
                     await self._poll_agent(agent)
             except asyncio.CancelledError:
@@ -3173,12 +3945,41 @@ class MatrixBridge:
                 return
             if request.get("ambiguous_prompt_legacy"):
                 return
+            group = self._steering_group(pending, request)
+            if group is not None:
+                injection_phase = str(group.get("injection_phase") or "")
+                if injection_phase == "pending":
+                    await self._attempt_steering(agent, request, group)
+                    injection_phase = str(group.get("injection_phase") or "")
+                    if injection_phase == "pending":
+                        return
+                if injection_phase in {
+                    "injecting",
+                    "injected_unconfirmed",
+                } and request.get("transcript_path"):
+                    expected_turn_id = request.get("prompt_turn_id")
+                    if (
+                        not request.get("turn_attribution_required")
+                        or expected_turn_id
+                    ):
+                        await self._scan_steering_admission(
+                            group,
+                            Path(str(request["transcript_path"])),
+                            expected_turn_id=(
+                                str(expected_turn_id)
+                                if expected_turn_id
+                                else None
+                            ),
+                        )
             if request.get("started_at") is None:
                 try:
                     ref = self.resolver.resolve(agent.session)
                 except AgentSessionNotFound:
                     return
-                if ref.busy:
+                deferred_injection = request.get("deferred_steering") and request.get(
+                    "injection_phase"
+                ) in {"injecting", "injected_unconfirmed", "admitted"}
+                if ref.busy and not deferred_injection:
                     return
                 await self._start_request(
                     agent,
@@ -3188,10 +3989,12 @@ class MatrixBridge:
                 )
                 return
             if request.get("answer_text") is None:
-                if request.get("started_at") and time.time() - request["started_at"] > self.config.response_timeout_minutes * 60:
-                    request["terminal_error"] = (
-                        "Timed out waiting for a Matrix answer"
-                    )
+                if (
+                    request.get("started_at")
+                    and time.time() - request["started_at"]
+                    > self.config.response_timeout_minutes * 60
+                ):
+                    request["terminal_error"] = "Timed out waiting for a Matrix answer"
                     request["answer_phase"] = "failed"
                     if (
                         getattr(self.config, "mirror_commentary", False)
@@ -3218,9 +4021,25 @@ class MatrixBridge:
                     return
                 path = Path(request["transcript_path"])
                 try:
-                    records, offset = read_complete_records(path, int(request["offset"]))
+                    records, offset = read_complete_records(
+                        path, int(request["offset"])
+                    )
                 except OSError:
                     return
+                prompt_turn_id = request.get("prompt_turn_id")
+                if request.get("turn_attribution_required") and not prompt_turn_id:
+                    prompt_turn_id = next(
+                        (
+                            turn_id
+                            for turn_id, message in user_messages(records)
+                            if message == request.get("text")
+                        ),
+                        None,
+                    )
+                    if prompt_turn_id is None:
+                        return
+                    self._mark_prompt_admitted(request, prompt_turn_id)
+                    self.state.save()
                 sent_commentary = request.setdefault("sent_commentary", [])
                 sent_ids = set(sent_commentary)
                 if (
@@ -3231,7 +4050,14 @@ class MatrixBridge:
                     room_id = self._room_for_agent(agent.key)
                     pending_commentary = [
                         message
-                        for message in commentary_messages(records)
+                        for message in commentary_messages(
+                            records,
+                            (
+                                request.get("prompt_turn_id")
+                                if request.get("turn_attribution_required")
+                                else None
+                            ),
+                        )
                         if message[0] not in sent_ids
                     ]
                     if pending_commentary:
@@ -3268,7 +4094,15 @@ class MatrixBridge:
                         )
                         self.state.save()
                 request["offset"] = offset
-                answers = [text for record in records if (text := final_answer(record))]
+                answers = [
+                    text
+                    for record in records
+                    if (
+                        not request.get("turn_attribution_required")
+                        or record_turn_id(record) == request.get("prompt_turn_id")
+                    )
+                    and (text := final_answer(record))
+                ]
                 if answers:
                     request["answer_text"] = answers[-1]
                 self.state.save()
@@ -3284,6 +4118,11 @@ class MatrixBridge:
                 request["answer_phase"] = "suppressed"
                 self.state.save()
                 if await self._finish_inbound_qitem(agent, request) is False:
+                    await self._abandon_if_terminal(
+                        agent,
+                        request,
+                        room_id,
+                    )
                     return
                 pending.pop(0)
                 self.state.save()
@@ -3295,6 +4134,21 @@ class MatrixBridge:
                 if pending:
                     await self._start_request(agent, pending[0], room_id)
                 return
+            group = self._steering_group(pending, request)
+            if (
+                group is not None
+                and group.get("injection_phase") == "admitted"
+                and group.get("injection_turn_id") == request.get("prompt_turn_id")
+            ):
+                request["answer_source_event_ids"] = list(
+                    dict.fromkeys(
+                        [
+                            *request.get("source_event_ids", []),
+                            *group.get("source_event_ids", []),
+                        ]
+                    )
+                )
+                self.state.save()
             if request.get("answer_phase") != "sent":
                 request["answer_phase"] = "sending"
                 request["answer_tx_id"] = (
@@ -3404,6 +4258,16 @@ class MatrixBridge:
             kwargs = self._delivery_kwargs(request)
             if tx_id is not None:
                 kwargs["tx_id"] = tx_id
+            source_event_ids = request.get(
+                "answer_source_event_ids",
+                request.get("source_event_ids"),
+            )
+            if isinstance(source_event_ids, list) and (
+                len(source_event_ids) > 1 or request.get("deferred_steering")
+            ):
+                kwargs["source_event_ids"] = [
+                    str(event_id) for event_id in source_event_ids
+                ]
             return await self._send(
                 room_id,
                 text,
@@ -3411,7 +4275,9 @@ class MatrixBridge:
                 **kwargs,
             )
         except Exception:
-            LOGGER.warning("Matrix delivery raised for %s", request["event_id"], exc_info=True)
+            LOGGER.warning(
+                "Matrix delivery raised for %s", request["event_id"], exc_info=True
+            )
             return None
 
     async def _deliver_activity_card(
@@ -3442,7 +4308,16 @@ class MatrixBridge:
                     exc_info=True,
                 )
         else:
-            response = await self._deliver_to_request(room_id, text, request)
+            card_tx_id = tx_id or (
+                "activity-card-"
+                + str(request.get("id") or request["event_id"])
+            )
+            response = await self._deliver_to_request(
+                room_id,
+                text,
+                request,
+                tx_id=card_tx_id,
+            )
         if isinstance(response, RoomSendResponse):
             if not commentary_event_id:
                 request["commentary_event_id"] = response.event_id
@@ -3524,15 +4399,42 @@ class MatrixBridge:
     ) -> bool:
         pending = self.state.data["pending"][agent.key]
         if disposition == "completed":
+            group = self._steering_group(pending, request)
+            if group is not None:
+                if group.get("injection_phase") == "admitted":
+                    if group.get("injection_turn_id") == request.get(
+                        "prompt_turn_id"
+                    ):
+                        if await self._finish_steering_group(agent, group) is False:
+                            await self._abandon_if_terminal(
+                                agent,
+                                group,
+                                room_id,
+                            )
+                            self.state.save()
+                            return False
+                        pending.remove(group)
+                elif group.get("injection_phase") == "pending":
+                    group["injection_phase"] = "fallback"
+                    group["last_injection_error"] = (
+                        "active turn completed before steering admission"
+                    )
             if await self._finish_inbound_qitem(agent, request) is False:
+                await self._abandon_if_terminal(
+                    agent,
+                    request,
+                    room_id,
+                )
                 self.state.save()
                 return False
             await self._set_typing(room_id, False)
             await self._update_agent_status(agent, "ready", "bereit")
-            if pending and pending[0].get("id") == request.get("id"):
+            self._defer_unconfirmed_steering_group(pending, request)
+            if pending and pending[0] is request:
                 pending.pop(0)
             self.state.save()
         else:
+            self._defer_unconfirmed_steering_group(pending, request)
             resolutions = {
                 "timeout": "Timed out waiting for a Matrix answer",
                 "delivery_failed": (
@@ -3558,11 +4460,16 @@ class MatrixBridge:
                     request,
                     resolution,
                 ) is False:
+                    await self._abandon_if_terminal(
+                        agent,
+                        request,
+                        room_id,
+                    )
                     self.state.save()
                     return False
             await self._set_typing(room_id, False)
             await self._update_agent_status(agent, "error", status_detail)
-            if pending and pending[0].get("id") == request.get("id"):
+            if pending and pending[0] is request:
                 pending.pop(0)
             self.state.save()
 
@@ -3674,7 +4581,9 @@ class MatrixBridge:
                 },
             )
         except Exception:
-            LOGGER.warning("failed to update Matrix status for %s", agent.session, exc_info=True)
+            LOGGER.warning(
+                "failed to update Matrix status for %s", agent.session, exc_info=True
+            )
             return
         self.agent_statuses[agent.key] = status
 
@@ -3758,9 +4667,16 @@ class MatrixBridge:
         *,
         thread_root: str | None | object = _DEFAULT_THREAD_ROOT,
         tx_id: str | None = None,
+        source_event_ids: list[str] | None = None,
     ):
         content = formatted_message_content(text)
-        effective_root = reply_to if thread_root is _DEFAULT_THREAD_ROOT else thread_root
+        if source_event_ids:
+            content["dev.openrig.source_event_ids"] = list(
+                dict.fromkeys(source_event_ids)
+            )
+        effective_root = (
+            reply_to if thread_root is _DEFAULT_THREAD_ROOT else thread_root
+        )
         if effective_root:
             content["m.relates_to"] = {
                 "rel_type": "m.thread",
@@ -3774,4 +4690,3 @@ class MatrixBridge:
         if tx_id:
             kwargs["tx_id"] = tx_id
         return await self.client.room_send(room_id, "m.room.message", content, **kwargs)
-

@@ -15,11 +15,20 @@ openrig:
   queue_inbound_messages: true
   inbound_message_priority: urgent
   inbound_queue_source: owner@external
+  steering_mode: auto
+  steering_max_chars: 2000
+  steering_batch_window_seconds: 0.5
+  steering_admission_timeout_seconds: 2.0
+  # Add one 👍 to each human message once it is durably accepted (queued or
+  # steered). It means accepted, not finished.
+  acceptance_reaction_enabled: true
   reaction_feedback_enabled: true
   mirror_commentary: true
   poll_interval_seconds: 0.2
   human_queue_poll_seconds: 2.0
   max_message_age_minutes: 60
+  # Also bounds how long a steering batch may wait for transcript admission
+  # while the seat stays busy before it fails closed (never resent).
   response_timeout_minutes: 360
   status_refresh_seconds: 30
 

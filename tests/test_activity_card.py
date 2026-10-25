@@ -104,7 +104,10 @@ def test_activity_card_combines_known_activity_and_safe_commentary(tmp_path):
         (
             "**Aktivität:** Arbeitet\n\nIch prüfe die Tests.",
             "$prompt",
-            {"thread_root": "$prompt"},
+            {
+                "thread_root": "$prompt",
+                "tx_id": "activity-card-request-1",
+            },
         ),
         (
             "Fertig.",

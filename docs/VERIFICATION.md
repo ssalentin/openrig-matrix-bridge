@@ -63,6 +63,7 @@ binds its verdict to the source SHA recorded here and in the report.
 | Reactions as silent feedback | Owner reactions to bridge-authored events are resolved, bounded, forwarded to the agent with `suppress_reply=True`, and excluded from visible answer delivery. | [`test_reaction_to_bot_post_becomes_silent_feedback`](../tests/test_bridge.py#L468), [`test_silent_feedback_does_not_post_agent_answer`](../tests/test_bridge.py#L523). | Owner reaction reached the fake transport as feedback and created no visible bot reply on Synapse. | **Verified at fake-transport/Matrix boundary.** |
 | Durable OpenRig queue behavior | Each tracked Matrix input creates a priority qitem with `--no-nudge`, claims it when work starts, closes it after answer delivery, and leaves untracked reactions out of queue creation. | [`test_creates_matrix_qitem_with_priority_and_no_duplicate_nudge`](../tests/test_openrig.py#L159), [`test_claims_and_finishes_qitem_as_destination_agent`](../tests/test_openrig.py#L205), [`test_matrix_message_creates_priority_qitem`](../tests/test_bridge.py#L953). | A Matrix prompt created an urgent fake qitem, moved pending to in-progress to done, and was delivered once. | **Command contract verified; live OpenRig daemon recovery unverified.** |
 | FIFO prompt queue and pinned queue card | Per-agent `asyncio.Lock` and pending lists serialize prompts; one queue notice is edited and unpinned as the count changes. | [`test_queue_notice_is_one_updated_and_pinned_message`](../tests/test_bridge.py#L904). | While the first fake turn was held, a second prompt appeared in the pinned queue notice and the transport received both in FIFO order. | **Verified on disposable Synapse with fake transport.** |
+| Best-effort hybrid queue/steering | `queue`, `steer`, and default `auto` modes keep one active turn; only short follow-ups in the exact active Matrix thread are candidates. An ordered fallback request and one qitem per source event persist before pane injection. Transcript session/turn evidence is required before admission, and unrelated human turns are ignored. | [`test_steering.py`](../tests/test_steering.py) covers mode semantics, same-thread batching, top-level/cross-thread isolation, qitem closure, steering error, completion fallback, restart adoption/ambiguity, and unrelated-turn attribution. | The disposable-Synapse checks exercise queue/steer/auto, canonical-root answer source metadata, busy rejection fallback, and crash-after-injection recovery. | **Integration evidence is recorded for the narrowed best-effort contract only; OpenRig exposes no acknowledged safe-boundary or admission-turn API.** |
 | Markdown and safe rich-text rendering | Markdown becomes Matrix HTML; raw HTML is escaped; remote images are rendered as references instead of fetched. | [`test_renders_gfm_table_as_matrix_html`](../tests/test_formatting.py#L4), [`test_escapes_raw_html`](../tests/test_formatting.py#L14), [`test_does_not_embed_remote_markdown_images`](../tests/test_formatting.py#L21). | Client rendering is not automated. Matrix event content can be captured. | **Unit-verified.** |
 | Selected Relay identity | Relay is the only shipped symbol. The README embeds local light/dark 256px PNGs as a compact accessible mark; the bot profile uses the contained 256px cross-theme avatar; 32px exports and editable SVGs are packaged under the repository MIT license. | [`test_brand_assets.py`](../tests/test_brand_assets.py), [`test_avatar_pool.py`](../tests/test_avatar_pool.py), [`test_assigns_unique_repo_avatars_and_profile`](../tests/test_bridge.py#L49). | Synapse accepts the Relay profile upload in the Matrix integration harness. Client-specific favicon rendering is not separately automated. | **Identity assets, dimensions, README links, package contents, and Matrix profile upload verified.** |
 | Deterministic, collision-free agent avatars | A bundled 32-image pool is assigned once per agent and persisted in state. | [`test_ships_a_large_unique_avatar_pool`](../tests/test_avatar_pool.py#L10), [`test_preserves_valid_assignments_and_never_duplicates`](../tests/test_avatar_pool.py#L20), [`test_new_agents_receive_unused_avatars_deterministically`](../tests/test_avatar_pool.py#L35). | Synapse accepted a managed room avatar on the test room. | **Unit-verified and observed on Synapse.** |
@@ -163,6 +164,68 @@ bounded backoff, timeout diagnostics, and a restart barrier requiring durable
 exact-source runs passed 20/20 checks; the persisted run completed in 54.1s with
 `evidence_valid: true`. Report:
 [`matrix-stability-report.json`](artifacts/matrix-stability-report.json).
+
+### 0.12.0 steering, acceptance receipt, and fail-closed evidence
+
+The 0.12.0 candidate narrows the steering contract and adds the 👍 acceptance
+receipt. The committed harness `tools/matrix_integration.py` covers them with
+these checks, all against a disposable Synapse and a deterministic fake OpenRig
+transport:
+
+| Check | What it proves |
+|---|---|
+| `steering-modes-and-batch` | `queue`, `steer`, and `auto` behavior; one ordered same-thread batch keeps every source event ID and the canonical thread root. |
+| `steering-fallback-restart` | Refused injection and crash-after-injection recovery: rescan before fallback, one durable fallback attempt only when the seat is idle without admission. |
+| `steering-late-admission` | Input that materializes as the next turn is adopted without resending; the answer keeps the follow-up source ID and the completed root's thread. |
+| `acceptance-reaction` | Exactly one bridge `m.annotation` 👍 on each accepted owner event, including batch members; a crash after the send leaves the acknowledgement pending and restart reuses the persisted transaction; an untrusted room member gets no reaction, no acceptance record, and no OpenRig prompt. |
+
+The report also carries a `steering_latency` section (median and maximum
+milliseconds per stage and kind, with `method` and `boundary` strings). It
+measures the deterministic transport, not live Codex.
+
+The bounded terminal state for a seat that stays busy without admission
+(`openrig.response_timeout_minutes`, recorded in `steering_failures`) is
+covered at the unit level in `tests/test_steering.py`; the Matrix harness does
+not wait out that timeout.
+
+**Not proven:** live Codex evidence. The cost directive for this cell forbade
+live Codex turns, so no run shows a real Codex terminal retaining, queueing, or
+admitting pane input. Exactly-once delivery after steering admission fails is
+not claimed; a late pane admission remains a documented best-effort residual
+risk because OpenRig has no acknowledged safe-boundary or turn-admission
+primitive. The source SHA, check count, and retained report for the final
+candidate (`final-0.12.0-integration-report.json`) are recorded in
+[`docs/artifacts/README.md`](artifacts/README.md).
+
+### Issue #4 hybrid steering evidence (0.11.0 candidate, historical)
+
+Issue #4 source `774d1038b61f79fbf28c6709a8d7c5dfbc8dee99` passed 277 unit
+tests. Three consecutive exact-source disposable-Synapse runs passed
+(`evidence_valid: true`, 22/22 checks in 92.7s, 102.0s, and 106.4s). The runs
+covered queue/steer/auto behavior, one ordered
+same-thread batch with every source event ID and canonical root, top-level and
+cross-thread FIFO isolation, one answer with source-event metadata, qitem
+closure, refused-injection fallback, crash-after-injection restart recovery,
+completion-race adoption without resend, and rejection of an unrelated human
+transcript turn. Multi-qitem terminal recovery preserves known terminal members,
+fail-closes remaining siblings, and removes the batch only after one durable
+notice. `finishing` and `failing` reconciliation accepts every remote terminal
+state before retrying a contradictory local transition. Unconfirmed steering
+gets a bounded asynchronous transcript-rescan grace period before fallback. The
+grace also covers restart-from-`injecting` and is refreshed before timeout or
+delivery-failure removal. Legacy pending requests without an `id` are removed by
+object identity and retain stable `event_id`-based failure transaction IDs. The
+worktree was clean for the tested SHA. The retained final run's report is
+[`issue-4-integration-report.json`](artifacts/issue-4-integration-report.json).
+
+Initial activity-card sends now carry the stable
+`activity-card-<request-id>` Matrix transaction ID, so a slow or ambiguous send
+response cannot create a second card on retry.
+
+This evidence supports only the narrowed best-effort contract. The fake
+transport models pane-style admission under an explicit test switch; it does
+not prove that a live Codex runtime accepts input at a model/tool boundary.
+OpenRig exposes no admitted-turn or safe-boundary acknowledgement.
 
 ## Documentation checks
 
