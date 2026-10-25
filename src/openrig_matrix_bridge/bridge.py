@@ -489,7 +489,7 @@ class MatrixBridge:
         self._initialize_transcript_offsets()
         self._repair_decision_reply_targets()
         await self._reconcile_pending_operations()
-        await self._recover_acceptance_reactions()
+        await self._recover_acceptance_reactions(startup=True)
         await self._refresh_agent_statuses(force=True)
         poller = asyncio.create_task(self._poll_answers(), name="openrig-matrix-poller")
         status_poller = asyncio.create_task(
@@ -2211,18 +2211,22 @@ class MatrixBridge:
         """
         if suppress_reply or not queue_tracked:
             return False
-        if not getattr(self.config, "acceptance_reaction_enabled", True):
+        if not getattr(self.config, "acceptance_reaction_enabled", False):
             return False
         acks = self.state.data.setdefault("acceptance_reactions", {})
         record = acks.get(event_id)
         if isinstance(record, dict):
             return record.get("phase") == "sending"
+        now = time.time()
         acks[event_id] = {
             "room_id": room_id,
             "tx_id": f"ack-{event_id}",
             "phase": "sending",
             "attempts": 0,
-            "accepted_at": time.time(),
+            "accepted_at": now,
+            # The accepting path makes the first attempt itself; recovery only
+            # repairs a record that path did not finish.
+            "retry_at": now + ACCEPTANCE_RETRY_BASE_SECONDS,
             "acknowledged_at": None,
             "reaction_event_id": None,
             "last_error": None,
@@ -2293,7 +2297,14 @@ class MatrixBridge:
         self.state.save()
         return True
 
-    async def _recover_acceptance_reactions(self) -> None:
+    async def _recover_acceptance_reactions(self, *, startup: bool = False) -> None:
+        """Retry pending acceptance reactions.
+
+        At startup no accepting path is still running, so every pending record
+        is retried at once; afterwards a record waits for its retry_at.
+        """
+        if not getattr(self.config, "acceptance_reaction_enabled", False):
+            return
         acks = self.state.data.get("acceptance_reactions", {})
         now = time.time()
         for event_id, record in list(acks.items()):
@@ -2301,7 +2312,7 @@ class MatrixBridge:
                 isinstance(record, dict)
                 and record.get("phase") == "sending"
                 and record.get("room_id")
-                and float(record.get("retry_at") or 0) <= now
+                and (startup or float(record.get("retry_at") or 0) <= now)
             ):
                 await self._acknowledge_acceptance(str(record["room_id"]), event_id)
 

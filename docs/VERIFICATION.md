@@ -167,8 +167,8 @@ exact-source runs passed 20/20 checks; the persisted run completed in 54.1s with
 
 ### 0.12.0 steering, acceptance receipt, and fail-closed evidence
 
-The 0.12.0 candidate narrows the steering contract and adds the 👍 acceptance
-receipt. The committed harness `tools/matrix_integration.py` covers them with
+The 0.12.0 candidate narrows the steering contract and adds an optional, off-by-default 👍
+acceptance receipt. The committed harness `tools/matrix_integration.py` covers them with
 these checks, all against a disposable Synapse and a deterministic fake OpenRig
 transport:
 
@@ -177,7 +177,8 @@ transport:
 | `steering-modes-and-batch` | `queue`, `steer`, and `auto` behavior; one ordered same-thread batch keeps every source event ID and the canonical thread root. |
 | `steering-fallback-restart` | Refused injection and crash-after-injection recovery: rescan before fallback, one durable fallback attempt only when the seat is idle without admission. |
 | `steering-late-admission` | Input that materializes as the next turn is adopted without resending; the answer keeps the follow-up source ID and the completed root's thread. |
-| `acceptance-reaction` | Exactly one bridge `m.annotation` 👍 on each accepted owner event, including batch members; a crash after the send leaves the acknowledgement pending and restart reuses the persisted transaction; an untrusted room member gets no reaction, no acceptance record, and no OpenRig prompt. |
+| `acceptance-reaction` | With the optional receipt enabled, exactly one bridge `m.annotation` 👍 on each accepted owner event, including batch members; a crash after the send leaves the acknowledgement pending and restart reuses the persisted transaction; an untrusted room member gets no reaction, no acceptance record, and no OpenRig prompt. |
+| `acceptance-reaction-default-off` | With the receipt off (default), an accepted owner message is queued, typing is observed, it is answered and its qitem is done, and it gets no bridge reaction and no acceptance record. |
 
 The report also carries a `steering_latency` section (median and maximum
 milliseconds per stage and kind, with `method` and `boundary` strings). It

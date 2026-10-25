@@ -750,6 +750,10 @@ class IntegrationRun:
             env=self.env(),
             timeout=self.args.timeout,
         )
+        # The acceptance receipt is opt-in; enable it so `acceptance-reaction`
+        # proves the opt-in path. `acceptance-reaction-default-off` removes
+        # the key again to prove the default.
+        self.set_openrig_options(acceptance_reaction_enabled=True)
         doctor = self.cli("doctor")
         if doctor.returncode != 0:
             raise CheckFailure(f"bridge doctor failed: {doctor.stdout}{doctor.stderr}")
@@ -814,18 +818,28 @@ class IntegrationRun:
             start_new_session=True,
         )
 
-    def set_steering_mode(self, mode: str) -> None:
+    def set_openrig_options(self, **values: Any) -> None:
+        """Rewrite `openrig` keys in the bridge config; None removes a key."""
         raw = yaml.safe_load(self.config_path.read_text(encoding="utf-8"))
         if not isinstance(raw, dict):
             raise CheckFailure("bridge configuration is not a mapping")
         transport = raw.setdefault("openrig", {})
         if not isinstance(transport, dict):
             raise CheckFailure("bridge openrig configuration is not a mapping")
-        transport["steering_mode"] = mode
-        transport["steering_batch_window_seconds"] = 0.2
+        for key, value in values.items():
+            if value is None:
+                transport.pop(key, None)
+            else:
+                transport[key] = value
         self.config_path.write_text(
             yaml.safe_dump(raw, sort_keys=False),
             encoding="utf-8",
+        )
+
+    def set_steering_mode(self, mode: str) -> None:
+        self.set_openrig_options(
+            steering_mode=mode,
+            steering_batch_window_seconds=0.2,
         )
 
     def wait_for_bridge_crash(self, expected_code: int = 86) -> None:
@@ -2283,6 +2297,64 @@ class IntegrationRun:
             ),
         )
 
+    async def check_acceptance_reaction_default_off(self, room_id: str) -> None:
+        assert self.owner is not None
+        owner = self.owner
+        self.stop_bridge()
+        self.set_openrig_options(acceptance_reaction_enabled=None)
+        self.start_bridge()
+        await self.wait_for_steering_mode_ready(room_id)
+        typing_before = len(owner.typing)
+        prompt = "default receipt-off probe"
+        event_id = await owner.send_text(room_id, prompt)
+        await owner.sync_until(
+            lambda: any(
+                message["sender"] == BRIDGE_USER
+                and f"Fake integration answer: {prompt}" in str(message["body"])
+                for message in owner.messages
+            ),
+            self.args.timeout,
+            description="answer with the acceptance receipt disabled",
+        )
+        wait_for_json_state(
+            self.state_dir / "state.json",
+            lambda value: not value.get("pending", {}).get(AGENT_KEY),
+            self.args.timeout,
+            description="pending queue to drain with the receipt disabled",
+        )
+        if not any(
+            BRIDGE_USER in item["users"] for item in owner.typing[typing_before:]
+        ):
+            raise CheckFailure("bridge typing was not observed with the receipt off")
+        fake = json.loads((self.fake_state / "fake-openrig.json").read_text())
+        qitems = [
+            item for item in fake["queue"].values() if prompt in str(item.get("body"))
+        ]
+        if len(qitems) != 1 or qitems[0]["state"] != "done":
+            raise CheckFailure(f"receipt-off request qitem is wrong: {qitems}")
+        await asyncio.sleep(1.0)
+        if await self.bridge_acknowledgements(room_id, event_id):
+            raise CheckFailure("default configuration sent an acceptance reaction")
+        if event_id in self.bridge_state().get("acceptance_reactions", {}):
+            raise CheckFailure("default configuration recorded an acceptance")
+        self.stop_bridge()
+        self.set_openrig_options(acceptance_reaction_enabled=True)
+        self.start_bridge()
+        await self.wait_for_steering_mode_ready(room_id)
+        self.record(
+            "acceptance-reaction-default-off",
+            "pass",
+            (
+                "With `openrig.acceptance_reaction_enabled` removed from the "
+                "bridge config (the default), an owner message was queued, the "
+                "bridge typing indicator was observed, the answer arrived and "
+                "its single qitem completed, while Synapse's relation index "
+                "showed no bridge reaction and the bridge recorded no "
+                "acceptance. The room status topic was not separately asserted "
+                "for this probe."
+            ),
+        )
+
     async def check_images(self, room_id: str) -> None:
         assert self.owner is not None
         owner = self.owner
@@ -3135,6 +3207,7 @@ class IntegrationRun:
         await self.check_steering_fallback_and_restart(room_id)
         await self.check_reaction(room_id)
         await self.check_acceptance_reaction(room_id)
+        await self.check_acceptance_reaction_default_off(room_id)
         await self.check_images(room_id)
         await self.check_files(room_id)
         await self.check_threaded_files(room_id)

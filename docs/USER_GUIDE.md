@@ -56,10 +56,19 @@ The automated integration harness and its observed boundaries are documented
 in [Verification and evidence](VERIFICATION.md). Unit tests alone do not prove
 live Matrix delivery.
 
-## Acceptance receipt
+## Optional acceptance receipt
 
-When the bridge has durably accepted a message from an allowed user, it adds
-one 👍 reaction to that message. The 👍 means *accepted*: the bridge has durably
+The acceptance receipt is optional and off by default. Set
+`openrig.acceptance_reaction_enabled: true` to enable it. Without it, the status
+card and the typing indicator are the live acknowledgement for top-level and
+idle-thread messages. Steered or late-admitted thread follow-ups, and any
+request in flight across a bridge restart, are tracked in issue #47: a
+late-admitted follow-up can show "ready" without typing, and a request in flight
+across a restart comes back with the busy status but no typing until it is
+answered.
+
+When enabled and the bridge has durably accepted a message from an allowed user,
+it adds one 👍 reaction to that message. The 👍 means *accepted*: the bridge has durably
 accepted it (and created its OpenRig queue item when queueing is enabled) and
 the request is either queued behind the active work or joined to a steering
 batch. It does not mean the agent has started or finished. The final
@@ -75,8 +84,9 @@ answer in the thread remains the completion signal.
 - If Matrix keeps rejecting the reaction, the bridge retries a bounded number of
   times and then records `phase: failed` in `acceptance_reactions`. The request
   itself is still processed and answered; only the receipt is missing.
-- Set `openrig.acceptance_reaction_enabled: false` to turn the receipt off. It is
-  on by default.
+- Behavior is the same whenever the receipt is enabled: at most one 👍 per
+  accepted event, eight attempts with backoff from 5s to 300s, none for
+  untrusted or rejected events.
 
 ## Follow-ups and steering
 

@@ -31,6 +31,20 @@ agents:
     return path
 
 
+def test_acceptance_reaction_can_be_enabled(tmp_path: Path):
+    path = write_config(tmp_path / "config.yaml")
+    path.write_text(
+        path.read_text(encoding="utf-8").replace(
+            '  human_destinations: ["owner@external"]',
+            '  human_destinations: ["owner@external"]\n'
+            "  acceptance_reaction_enabled: true",
+        ),
+        encoding="utf-8",
+    )
+
+    assert load_config(path).acceptance_reaction_enabled is True
+
+
 def test_loads_minimal_config(tmp_path: Path):
     config = load_config(write_config(tmp_path / "config.yaml"))
     assert config.homeserver == "https://matrix.example.org"
@@ -49,7 +63,7 @@ def test_loads_minimal_config(tmp_path: Path):
     assert config.steering_max_chars == 2000
     assert config.steering_batch_window_seconds == 0.5
     assert config.steering_admission_timeout_seconds == 2.0
-    assert config.acceptance_reaction_enabled is True
+    assert config.acceptance_reaction_enabled is False
     assert config.reaction_feedback_enabled is True
     assert config.mirror_commentary is True
     assert config.avatars.enabled is True

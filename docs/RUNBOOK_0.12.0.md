@@ -22,7 +22,7 @@ each item in the acceptance record at the end of this runbook.
   rollback artifact (sections 1 to 4).
 - [ ] `doctor` passes and exactly one bridge process runs (section 4).
 - [ ] Observe production using the smoke check (section 6), including the
-  thumbs-up receipt, and decide to accept or roll back (section 7).
+  thumbs-up receipt if you enabled it, and decide to accept or roll back (section 7).
 
 ### Evidence boundary
 
@@ -50,15 +50,18 @@ latency and must not be copied into the live table.
 
 Deterministic harness latency, from the `steering_latency` section of
 `docs/artifacts/final-0.12.0-integration-report.json`: fake OpenRig transport and
-a loopback Synapse, not a live seat. Admission includes up to one bridge poll interval.
-Maxima include the crash, restart and delayed-probe scenarios.
+a loopback Synapse, not a live seat. Admission includes up to one bridge poll
+interval. Maxima include the crash, restart and delayed-probe scenarios. These
+latencies depend on host load: they are higher than in the earlier `0f533e7`
+report (prompt injection and admission medians 124.4 and 315.4 ms), which ran on
+a less busy host. They are not a performance benchmark.
 
 | Boundary (harness) | Median | Max |
 |---|---|---|
-| Prompt: intake to injection | 124.4 ms | 5504.3 ms |
-| Prompt: intake to admission | 315.4 ms | 5756.8 ms |
-| Prompt: intake to 👍 | 165.0 ms | 846.9 ms |
-| Steer: intake to admission | 496.9 ms | 1056.8 ms |
+| Prompt: intake to injection | 429.9 ms | 6733.2 ms |
+| Prompt: intake to admission | 989.3 ms | 7072.1 ms |
+| Prompt: intake to 👍 | 776.1 ms | 2779.4 ms |
+| Steer: intake to admission | 1101.0 ms | 2928.8 ms |
 
 ## 1. Record the approved candidate
 
@@ -148,7 +151,8 @@ Before production ownership traffic, use a dedicated disposable Codex seat:
 5. Repeat after a bridge restart and retain redacted timing evidence. Send the
    follow-ups only after the restarted bridge has finished its initial sync:
    events delivered during that sync are not routed. This predates 0.12.0. Such
-   a message receives no 👍, which makes the gap visible to the owner.
+   a message is not delivered and, with the receipt enabled, gets no 👍, which
+   makes the gap visible to the owner.
 
 Do not use the OpenRig production bridge or this project-cell seat as the
 disposable target.
@@ -163,8 +167,10 @@ same-thread follow-ups while the seat is working. Record:
 - transcript admission time and turn ID;
 - number of transcript user records and Matrix answers;
 - qitem closure for every source event;
-- exactly one 👍 on each of your own messages once it is accepted, and none on
-  a message from an untrusted sender (the 👍 means accepted, not finished); and
+- with `openrig.acceptance_reaction_enabled: true`, exactly one 👍 on each of
+  your own messages once it is accepted, and none on a message from an
+  untrusted sender (the 👍 means accepted, not finished); with the default
+  (off), no 👍 at all; and
 - any remaining inability to observe a pane boundary.
 
 A duplicate transcript input, duplicate side effect, missing qitem, multiple
