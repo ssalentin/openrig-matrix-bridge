@@ -2274,6 +2274,77 @@ def test_human_queue_items_are_mirrored_to_the_source_agent_room():
     }
 
 
+def test_duplicate_decision_qitem_publish_is_serialized_and_idempotent():
+    bridge = object.__new__(MatrixBridge)
+    agent = AgentConfig(
+        key="advisor",
+        display_name="Advisor",
+        session="advisor-lead@kernel",
+    )
+    bridge.config = SimpleNamespace(agents={"advisor": agent})
+    bridge.decision_publish_lock = asyncio.Lock()
+    bridge.state = SimpleNamespace(
+        save=lambda: None,
+        data={
+            "rooms": {
+                "advisor": {
+                    "room_id": "!advisor:matrix.example.org",
+                    "name": "Advisor",
+                }
+            },
+            "decisions": {},
+        },
+    )
+    sent = []
+
+    async def send(room_id, text, *args, **kwargs):
+        sent.append((room_id, text))
+        await asyncio.sleep(0.01)
+        return RoomSendResponse("$brief", room_id)
+
+    class Client:
+        async def room_send(self, room_id, event_type, content, **kwargs):
+            return RoomSendResponse("$poll", room_id)
+
+    async def add_pinned(room_id, event_ids):
+        return None
+
+    bridge._send = send
+    bridge.client = Client()
+    bridge._add_pinned = add_pinned
+
+    def request(request_id):
+        return {
+            "id": request_id,
+            "agent": "advisor",
+            "title": "Welche Variante?",
+            "body": "Bitte entscheiden.",
+            "qitem_id": "qitem-same",
+            "questions": [
+                {
+                    "id": "choice",
+                    "question": "Welche Variante?",
+                    "options": [
+                        {"id": "a", "label": "A"},
+                        {"id": "b", "label": "B"},
+                    ],
+                }
+            ],
+        }
+
+    async def publish_both():
+        await asyncio.gather(
+            bridge._publish_decision(request("decision-manual")),
+            bridge._publish_decision(request("queue-qitem-same")),
+        )
+
+    asyncio.run(publish_both())
+
+    assert len(sent) == 1
+    assert len(bridge.state.data["decisions"]) == 1
+    assert next(iter(bridge.state.data["decisions"].values()))["qitem_id"] == "qitem-same"
+
+
 def test_first_human_queue_scan_only_sets_the_watermark():
     bridge = object.__new__(MatrixBridge)
     bridge.config = SimpleNamespace(
