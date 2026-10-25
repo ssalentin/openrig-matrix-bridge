@@ -5027,6 +5027,9 @@ class MatrixBridge:
             )
         if isinstance(response, RoomSendResponse):
             if not commentary_event_id:
+                # The card exists in Matrix but is not owned yet: a retry must
+                # reuse the stable transaction ID so Matrix returns this event.
+                self._crash_after_effect("activity_card_send")
                 request["commentary_event_id"] = response.event_id
             request["activity_card_text"] = text
             request["commentary_failure_count"] = 0

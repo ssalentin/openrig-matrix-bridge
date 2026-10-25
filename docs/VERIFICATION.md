@@ -198,6 +198,56 @@ primitive. The source SHA, check count, and retained report for the final
 candidate (`final-0.12.0-integration-report.json`) are recorded in
 [`docs/artifacts/README.md`](artifacts/README.md).
 
+### Issue #39 duplicate activity-card evidence
+
+**Observed.** A Matrix run of PR #38 at `aca64fb` (based on `release/0.11.0`)
+failed `threaded-prompt-restart` with two initial `**Aktivität:** Bereit` cards
+for one request, 0.79 s apart; only the second was ever edited.
+
+**Cause: the initial card send was not idempotent.** At `aca64fb` the first
+activity-card message was sent without a transaction ID, so `matrix-nio` used a
+random one for every attempt. When Matrix stored the card but the bridge never
+saw the response (a timeout or reset that `_deliver_to_request` turns into a
+failed attempt, or a SIGTERM restart mid-request), the bridge did not own the
+card and the next poll sent a new one. That retry got a new random transaction,
+so Matrix created a second card; the bridge recorded and edited only that one.
+The event-ID ownership path was not the defect: the card's event ID is saved
+under the agent lock as soon as a response arrives.
+
+**Fix on `main`.** `f34831f` (#34) sends the initial card with the stable
+transaction ID `activity-card-<request id>`. The pinned Synapse deduplicates
+`PUT /send/{type}/{txnId}` per user and device, both in memory and through its
+persisted `event_txn_id_device_id` table, so a retry returns the card that
+already exists. `aca64fb` is not an ancestor of `main`; no `main`-based run
+reproduced the failure.
+
+**Evidence.**
+
+- Retained Synapse databases of 28 Matrix runs on this host on 2026-10-25
+  (main-based sources, hundreds of requests with cards): no request created
+  more than one card (`event_txn_id_device_id` joined to `event_json`,
+  excluding `m.replace` edits).
+- `tests/test_activity_card.py::test_lost_card_response_is_retried_into_the_same_card`
+  runs `_poll_agent` against a fake room with Synapse's transaction semantics;
+  the first card send is stored but its response is lost. It passes on `main`
+  and fails with two cards when the stable transaction ID is removed (the
+  `aca64fb` behavior).
+- `activity-card-crash-recovery` (Matrix harness, real Synapse): the bridge
+  exits right after Matrix accepted the initial card and before recording its
+  event ID (`OPENRIG_BRIDGE_TEST_CRASH_AFTER=activity_card_send`), restarts,
+  and must end with exactly one card that every edit targets, one answer and
+  one completed qitem. With the stable transaction ID removed, the check
+  failed exactly like the original report (two cards, only the second edited:
+  `cards=[$trsRzy…, $nR9Lk2…], edits=[$nR9Lk2…]`).
+
+**Remaining timing boundary.** Deduplication holds while the retry uses the
+same bridge device within Synapse's 24-hour transaction-ID retention. A retry
+after more than 24 hours, or after the bridge logs in as a new device, could
+still create a second card. A terminal edit that keeps failing posts one
+explicit terminal fallback message by design
+(`test_terminal_activity_edit_failure_posts_explicit_terminal_fallback`); that
+message is a final status, not a second active card.
+
 ### Issue #4 hybrid steering evidence (0.11.0 candidate, historical)
 
 Issue #4 source `774d1038b61f79fbf28c6709a8d7c5dfbc8dee99` passed 277 unit
