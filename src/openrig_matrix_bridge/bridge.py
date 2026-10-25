@@ -2882,7 +2882,9 @@ class MatrixBridge:
                 continue
             if phase in TERMINAL_QITEM_PHASES:
                 return False
-            if phase == "claiming":
+            if phase in {"", "claiming"}:
+                # An unknown phase is a request saved before phases existed (0.10);
+                # its qitem may be closed, so read it before ever claiming.
                 try:
                     item = await self.gateway.queue_show(qitem_id)
                 except (GatewayError, OSError):
@@ -3081,7 +3083,77 @@ class MatrixBridge:
                 return phase
         return None
 
+    @classmethod
+    def _is_legacy_pending_request(cls, request: dict[str, Any]) -> bool:
+        """True for a request saved by bridge 0.10, before phases were recorded."""
+        return bool(
+            cls._request_qitem_ids(request)
+            and request.get("prompt_phase") is None
+            and request.get("answer_phase") is None
+            and not request.get("ambiguous_prompt_legacy")
+            and not request.get("terminal_error")
+        )
+
+    async def _reconcile_legacy_pending(self) -> None:
+        """Adopt the remote qitem state of every 0.10 request before any action.
+
+        A request whose qitems are all closed is dropped without replaying its
+        prompt or answer; a request that is still open is left to the normal
+        reconciliation, which keeps the ambiguous-prompt fail-closed behavior.
+        """
+        for agent in self.config.agents.values():
+            async with self.locks[agent.key]:
+                pending = self.state.data["pending"].get(agent.key, [])
+                for request in list(pending):
+                    if self._is_legacy_pending_request(request):
+                        await self._reconcile_legacy_request(
+                            agent,
+                            pending,
+                            request,
+                        )
+
+    async def _reconcile_legacy_request(
+        self,
+        agent: AgentConfig,
+        pending: list[dict[str, Any]],
+        request: dict[str, Any],
+    ) -> None:
+        states: dict[str, str] = {}
+        for qitem_id in self._request_qitem_ids(request):
+            state = await self._inspect_qitem_state(qitem_id)
+            if state is None:
+                return
+            states[qitem_id] = state
+        terminal = {
+            qitem_id: state
+            for qitem_id, state in states.items()
+            if state in TERMINAL_QITEM_PHASES
+        }
+        if not terminal:
+            return
+        for qitem_id, state in terminal.items():
+            self._set_request_qitem_phase(request, qitem_id, state)
+        self.state.save()
+        room_id = self._room_for_agent(agent.key)
+        if set(terminal.values()) == {"done"} and len(terminal) == len(states):
+            request["terminal_error"] = "Legacy request already completed"
+            pending[:] = [item for item in pending if item is not request]
+            self.state.save()
+            await self._update_queue_notice(
+                agent,
+                room_id,
+                max(0, len(pending) - 1),
+            )
+            return
+        await self._abandon_terminal_qitem(
+            agent,
+            request,
+            room_id,
+            start_next=False,
+        )
+
     async def _reconcile_pending_operations(self) -> None:
+        await self._reconcile_legacy_pending()
         for agent in self.config.agents.values():
             async with self.locks[agent.key]:
                 pending = self.state.data["pending"].get(agent.key, [])
@@ -3313,6 +3385,8 @@ class MatrixBridge:
         agent: AgentConfig,
         request: dict[str, Any],
         room_id: str,
+        *,
+        start_next: bool = True,
     ) -> None:
         terminal_phases = {
             qitem_id: self._request_qitem_phase(request, qitem_id)
@@ -3339,19 +3413,20 @@ class MatrixBridge:
             f"{qitem_id}={self._request_qitem_phase(request, qitem_id)}"
             for qitem_id in self._request_qitem_ids(request)
         )
-        response = await self._send(
-            room_id,
-            f"OpenRig Queue-Item(s) {qitem_ids} sind terminal "
-            f"({phase_summary}). Die Anfrage wird nicht gesendet.",
-            self._reply_target(request),
-            tx_id=f"failure-{request.get('id') or request['event_id']}",
-            **self._delivery_kwargs(request),
-        )
-        if isinstance(response, RoomSendResponse):
-            request["failure_notice_event_id"] = response.event_id
-        else:
-            self.state.save()
-            return
+        if not request.get("failure_notice_event_id"):
+            response = await self._send(
+                room_id,
+                f"OpenRig Queue-Item(s) {qitem_ids} sind terminal "
+                f"({phase_summary}). Die Anfrage wird nicht gesendet.",
+                self._reply_target(request),
+                tx_id=f"failure-{request.get('id') or request['event_id']}",
+                **self._delivery_kwargs(request),
+            )
+            if isinstance(response, RoomSendResponse):
+                request["failure_notice_event_id"] = response.event_id
+            else:
+                self.state.save()
+                return
         pending = self.state.data["pending"][agent.key]
         was_head = bool(
             pending
@@ -3372,7 +3447,7 @@ class MatrixBridge:
                 room_id,
                 max(0, len(pending) - 1),
             )
-            if was_head and pending:
+            if was_head and pending and start_next:
                 await self._start_request(agent, pending[0], room_id)
 
     async def _abandon_if_terminal(

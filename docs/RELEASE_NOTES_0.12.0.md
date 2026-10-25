@@ -63,6 +63,10 @@ without starting a second agent or allowing concurrent Codex turns.
 - Before finishing an inbound qitem the bridge reads its state. A qitem the
   agent already closed is treated as finished instead of being updated again,
   which OpenRig rejects as `note_append_fields_not_admitted`.
+- Upgrading from 0.10 with requests still pending: at startup the bridge reads
+  each request's OpenRig qitem first. Requests whose qitem is already closed are
+  removed without resending the prompt or answer (a canceled, failed or denied
+  qitem produces one notice), instead of repeating claim errors.
 - The hybrid steering implementation is integrated with the current setup,
   attachments, voice, activity-card, restart, and release documentation from
   `main`.
