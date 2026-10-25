@@ -106,8 +106,8 @@ merge.
 - Human decisions are serialized and deduplicated by qitem ID, preventing the
   automatic human-queue mirror and a manual `decision` command from posting the
   same brief and poll twice.
-- PLACEHOLDER (sensitive-span redaction in activity commentary, #70): fill from
-  the pull request when it merges.
+- PLACEHOLDER (sensitive-span redaction in activity commentary, #70 / PR #82):
+  fill from the pull request when it merges.
 
 ### Setup
 

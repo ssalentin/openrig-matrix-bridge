@@ -124,8 +124,8 @@ Items marked PLACEHOLDER are open pull requests and are filled in when they merg
 - Serialize decision publication and deduplicate by qitem ID, so the automatic
   human-queue mirror and a manual decision command cannot publish the same
   brief and poll twice (#80).
-- PLACEHOLDER (sensitive-span redaction in activity commentary, #70): fill from
-  the pull request when it merges.
+- PLACEHOLDER (sensitive-span redaction in activity commentary, #70 / PR #82):
+  fill from the pull request when it merges.
 
 ### Setup (#37)
 
