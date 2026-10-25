@@ -141,7 +141,7 @@ CREDENTIAL_VALUE = re.compile(
     r"\s*[:=]\s*(?:\"[^\"]*\"|'[^']*'|\S+)"
 )
 URI_USERINFO = re.compile(
-    r"(?i)\b[a-z][a-z0-9+.-]*://(?:[^\s/@:]*):[^\s/@]+@"
+    r"(?i)\b[a-z][a-z0-9+.-]*://(?:[^\s/@:]*):[^\s/]+@"
 )
 AUTHORIZATION_SCHEME = re.compile(
     r"(?i)\b(?:proxy-)?authorization\b[^\r\n]{0,40}"
@@ -149,7 +149,8 @@ AUTHORIZATION_SCHEME = re.compile(
 )
 COOKIE_VALUE = re.compile(
     r"(?i)\b(?:set-)?cookie\b(?:\s*[:=]\s*|\s+)"
-    r"(?:[a-z0-9_-]+\s*=\s*)?\S+"
+    r"(?:[a-z0-9_-]+\s*=\s*)?[^\s;]+"
+    r"(?:\s*;\s*[a-z0-9_-]+(?:\s*=\s*[^\s;]+)?)*"
 )
 BARE_TOKEN = re.compile(
     r"(?i)\b(?:"
@@ -229,7 +230,8 @@ def sanitize_activity_summary(text: str) -> str:
     span by span, so safe progress text stays readable and no matched byte
     survives. Whitespace is normalized and the result is bounded.
     """
-    summary = text
+    # NUL is reserved for the placeholders below.
+    summary = text.replace("\x00", " ")
     for pattern, category in REDACTION_PATTERNS:
         summary = pattern.sub(
             lambda match, category=category: _redaction_slot(category, match),

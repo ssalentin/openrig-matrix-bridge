@@ -65,6 +65,55 @@ def test_credentials_are_replaced_by_a_category_marker(text, secret, marker):
     assert summary.split()[0] == text.split()[0] or summary.startswith(marker)
 
 
+@pytest.mark.parametrize(
+    ("text", "secret", "expected"),
+    [
+        (
+            "Cookie: theme=dark; session=ZmFrZS1zZXNzaW9uLXNlY3JldA gesetzt",
+            "ZmFrZS1zZXNzaW9uLXNlY3JldA",
+            f"{COOKIE} gesetzt",
+        ),
+        (
+            "Set-Cookie: lang=de; sid=Q2hhbmdlTWVOb3c; Path=/",
+            "Q2hhbmdlTWVOb3c",
+            COOKIE,
+        ),
+        (
+            "Cookie theme=dark; __Host-sess=abc123XYZ789qq gesetzt",
+            "abc123XYZ789qq",
+            f"{COOKIE} gesetzt",
+        ),
+        (
+            "Cookie: session=abcdef1234567890 gesetzt und weiter",
+            "abcdef1234567890",
+            f"{COOKIE} gesetzt und weiter",
+        ),
+    ],
+)
+def test_every_pair_of_a_cookie_header_is_replaced(text, secret, expected):
+    summary = sanitize_activity_summary(text)
+
+    assert secret not in summary
+    assert summary == expected
+
+
+def test_password_containing_at_sign_is_fully_replaced():
+    summary = sanitize_activity_summary(
+        "open https://user:p@ssw0rdSECRET@host.example/x"
+    )
+
+    assert "ssw0rdSECRET" not in summary
+    assert "@ssw0rd" not in summary
+    assert summary.startswith(f"open https://{CREDENTIALS}@")
+
+
+def test_nul_delimited_words_in_commentary_do_not_crash():
+    summary = sanitize_activity_summary("progress \x00abc\x00 done a\x00b\x00")
+
+    assert "\x00" not in summary
+    assert summary == "progress abc done a b"
+
+
 def test_uri_userinfo_keeps_scheme_and_host_but_not_credentials():
     summary = sanitize_activity_summary(
         "REDIS_URL redis://default:secretpassword@cache.internal:6379 erreichbar"
@@ -137,3 +186,22 @@ def test_advisor_style_commentary_keeps_the_card_informative(tmp_path):
     )
     assert "/root/" not in card
     assert ".openrig" not in card
+
+
+def test_multi_pair_cookie_header_never_reaches_the_card(tmp_path):
+    bridge, agent, _request, sent, _edited = activity_bridge(
+        tmp_path,
+        [
+            message_record(
+                "comment-1",
+                "commentary",
+                "Login geprüft, Cookie: theme=dark; sid=SIDVALUE1234567890abcdef ok.",
+            )
+        ],
+    )
+
+    asyncio.run(bridge._poll_agent(agent))
+
+    card = sent[0][0]
+    assert card == f"**Aktivität:** Arbeitet\n\nLogin geprüft, {COOKIE} ok."
+    assert "SIDVALUE" not in card
