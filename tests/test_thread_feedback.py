@@ -399,3 +399,39 @@ def test_sigterm_clears_typing_and_stops_cleanly(
     assert harness.client.typing_calls[-1] is False
     assert closed == [True]
     assert signal.SIGTERM not in handlers
+
+
+def restart_feedback(harness: FeedbackHarness) -> None:
+    for task in list(harness.bridge.typing_tasks.values()):
+        task.cancel()
+    harness.loop.run_until_complete(asyncio.sleep(0))
+    harness.bridge.typing_tasks = {}
+    harness.bridge.agent_statuses = {}
+    harness.client.typing_calls.clear()
+    harness.run(harness.bridge._restore_activity_feedback())
+
+
+def test_fail_closed_ambiguous_prompt_head_never_types(harness: FeedbackHarness):
+    harness.enqueue("$root", "root request", None)
+    request = harness.bridge.state.data["pending"]["advisor"][0]
+    request.update(ambiguous_prompt_legacy=True, prompt_phase="sending")
+
+    restart_feedback(harness)
+    for _poll in range(3):
+        harness.poll()
+
+    assert harness.bridge.state.data["pending"]["advisor"] == [request]
+    assert not harness.typing_active()
+    assert True not in harness.client.typing_calls
+
+
+def test_head_with_terminal_error_stops_typing(harness: FeedbackHarness):
+    harness.enqueue("$root", "root request", None)
+    request = harness.bridge.state.data["pending"]["advisor"][0]
+    assert harness.typing_active()
+
+    request["terminal_error"] = "Matrix answer delivery failed after 3 attempts"
+    harness.run(harness.bridge._sync_typing(harness.agent))
+
+    assert not harness.typing_active()
+    assert harness.client.typing_calls[-1] is False

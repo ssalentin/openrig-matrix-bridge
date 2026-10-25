@@ -4656,6 +4656,11 @@ class MatrixBridge:
             return False
         if request.get("answer_phase") in {"sent", "suppressed"}:
             return False
+        # A failed head, or one the bridge refuses to resend after an
+        # ambiguous restart, can wait at the head while its failure is
+        # delivered; nobody is working on it.
+        if request.get("terminal_error") or request.get("ambiguous_prompt_legacy"):
+            return False
         if request.get("deferred_steering") and request.get("injection_phase") in {
             "injecting",
             "injected_unconfirmed",
