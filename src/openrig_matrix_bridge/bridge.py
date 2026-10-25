@@ -3150,6 +3150,7 @@ class MatrixBridge:
             request,
             room_id,
             start_next=False,
+            best_effort_notice=True,
         )
 
     async def _reconcile_pending_operations(self) -> None:
@@ -3387,6 +3388,7 @@ class MatrixBridge:
         room_id: str,
         *,
         start_next: bool = True,
+        best_effort_notice: bool = False,
     ) -> None:
         terminal_phases = {
             qitem_id: self._request_qitem_phase(request, qitem_id)
@@ -3426,7 +3428,15 @@ class MatrixBridge:
                 request["failure_notice_event_id"] = response.event_id
             else:
                 self.state.save()
-                return
+                if not best_effort_notice:
+                    return
+                # The notice is courtesy only; a request that can never be
+                # answered must not stay queued and retry forever.
+                LOGGER.warning(
+                    "could not post the terminal-qitem notice for %s; "
+                    "dropping the request anyway",
+                    request.get("id"),
+                )
         pending = self.state.data["pending"][agent.key]
         was_head = bool(
             pending

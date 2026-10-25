@@ -4535,6 +4535,7 @@ class IntegrationRun:
             "qitem-legacy-done": "done",
             "qitem-legacy-answered": "done",
             "qitem-legacy-canceled": "canceled",
+            "qitem-legacy-orphan": "canceled",
         }
         for qitem_id, remote_state in closed.items():
             fake["queue"][qitem_id] = {
@@ -4545,15 +4546,22 @@ class IntegrationRun:
         fake_path.write_text(json.dumps(fake), encoding="utf-8")
         prompts_before = len(fake.get("prompts", []))
 
-        def legacy_request(name: str, qitem_id: str, **values: Any) -> dict[str, Any]:
+        real_event_id = str(owner.messages[-1]["event_id"])
+
+        def legacy_request(
+            name: str,
+            qitem_id: str,
+            event_id: str | None = None,
+            **values: Any,
+        ) -> dict[str, Any]:
             # The shape bridge 0.10.0 saved: a qitem_id and none of the phase
             # fields. Placeholder identifiers and text only.
             request = {
                 "id": f"legacy-{name}",
-                "event_id": f"$legacy-{name}",
-                "reply_to_event_id": f"$legacy-{name}",
-                "thread_root_event_id": f"$legacy-{name}",
-                "source_event_ids": [f"$legacy-{name}"],
+                "event_id": event_id or f"$legacy-{name}",
+                "reply_to_event_id": event_id or f"$legacy-{name}",
+                "thread_root_event_id": event_id or f"$legacy-{name}",
+                "source_event_ids": [event_id or f"$legacy-{name}"],
                 "source_relation": None,
                 "source_label": "message",
                 "qitem_id": qitem_id,
@@ -4584,7 +4592,14 @@ class IntegrationRun:
                 offset=0,
                 answer_text="legacy fixture answer",
             ),
-            legacy_request("canceled", "qitem-legacy-canceled"),
+            legacy_request(
+                "canceled",
+                "qitem-legacy-canceled",
+                event_id=real_event_id,
+            ),
+            # Its source event does not exist, so Synapse rejects the notice;
+            # the request must still be dropped rather than retried forever.
+            legacy_request("orphan", "qitem-legacy-orphan"),
         ]
         state_path.write_text(json.dumps(state), encoding="utf-8")
 
@@ -4635,13 +4650,15 @@ class IntegrationRun:
             "legacy-pending-reconcile",
             "pass",
             (
-                "Three bridge 0.10.0 pending requests (no prompt, answer or qitem "
+                "Four bridge 0.10.0 pending requests (no prompt, answer or qitem "
                 "phase fields; one unstarted and one started with a captured "
-                "answer, both for a done qitem; one unstarted for a canceled qitem) "
-                "were reconciled against OpenRig at startup: the queue drained "
-                "without a claim, a prompt or any qitem update, the done requests "
-                "left no message, the canceled one produced exactly one factual "
-                "notice, and a second restart changed nothing."
+                "answer, both for a done qitem; two unstarted for canceled qitems, "
+                "one of them referencing an event Synapse rejects) were reconciled "
+                "against OpenRig at startup: the queue drained without a claim, a "
+                "prompt or any qitem update, the done requests left no message, the "
+                "deliverable canceled one produced exactly one factual notice, the "
+                "undeliverable one was dropped without a retry loop, and a second "
+                "restart changed nothing."
             ),
         )
 

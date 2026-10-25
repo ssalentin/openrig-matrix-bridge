@@ -308,3 +308,26 @@ def test_unreachable_rig_neither_claims_nor_prompts_and_keeps_the_request(tmp_pa
     # The existing once-only "could not claim, will retry" notice may be sent;
     # it is idempotent and not repeated by the second pass.
     assert len(bridge.sent) <= 1
+
+
+def test_an_undeliverable_notice_still_drops_the_request_without_a_retry_loop(
+    tmp_path,
+):
+    rig = RigDouble({"qitem-one": "canceled"})
+    bridge, _agent = make_bridge(tmp_path, [legacy_request()], rig)
+    attempts = []
+
+    async def rejected(room_id, text, reply_to=None, **kwargs):
+        attempts.append(text)
+        return SimpleNamespace(message="M_UNKNOWN Can't send relation to unknown event")
+
+    bridge._send = rejected
+
+    reconcile(bridge)
+    reconcile(bridge)
+    reconcile(bridge)
+
+    assert pending(bridge) == []
+    assert len(attempts) == 1
+    assert "claim" not in rig.kinds()
+    assert "prompt" not in rig.kinds()
