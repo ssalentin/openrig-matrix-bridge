@@ -48,9 +48,10 @@ bot profile itself uses `relay-avatar-256.png` through the runtime asset loader.
 
 ## README
 
-The project README embeds the local light/dark PNG pair with a responsive
-picture. It uses no external image host, fixed markup loads at 96x96 pixels, and
-the accessible name is `Relay`.
+The project README embeds the local light/dark PNG pair with a responsive,
+compact picture. It uses no external image host, fixed markup loads at 72x72
+pixels, and the accessible name is `Relay`. Longer identity, preview, usage, and
+licensing guidance stays on this page rather than in the landing page.
 
 ## Licensing
 

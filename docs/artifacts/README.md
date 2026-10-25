@@ -37,6 +37,11 @@ path, the observed result, the tested commit, and the environment boundary.
 Text artifacts are acceptable when they capture real command output. A
 screenshot alone is insufficient if the room context is ambiguous.
 
+The public Element Web images and their crop/redaction provenance are documented
+separately in [`docs/screenshots/README.md`](../screenshots/README.md). They
+illustrate synthetic harness rendering and are not live-Codex or device-trust
+evidence.
+
 ## Manifest
 
 | File | Captured at | Tested source commit | Environment | Command/path | Redaction review |

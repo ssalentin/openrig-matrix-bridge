@@ -5,6 +5,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -31,11 +32,13 @@ def fake(
     *args: str,
     fail: str | None = None,
     delay: str = "0.2",
+    extra_env: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
     environment = {
         **os.environ,
         "OPENRIG_FAKE_RESPONSE_DELAY": delay,
         "OPENRIG_FAKE_STATE": str(root),
+        **(extra_env or {}),
     }
     if fail:
         environment["OPENRIG_FAKE_FAIL"] = fail
@@ -220,6 +223,43 @@ def test_fake_transport_rejects_send_while_agent_is_busy(tmp_path: Path):
 
     assert second.returncode != 0
     assert "busy" in second.stderr.lower()
+
+
+def test_fake_transport_accepts_natural_demo_copy(tmp_path: Path):
+    sent = fake(
+        tmp_path,
+        "send",
+        "integration-agent@local",
+        "Summarize the release status",
+        "--raw",
+        "--json",
+        extra_env={
+            "OPENRIG_FAKE_COMMENTARY": "Reviewing the release notes.",
+            "OPENRIG_FAKE_ANSWER": "Release status: ready for review.",
+        },
+    )
+    assert sent.returncode == 0
+
+    transcript = tmp_path / "transcript.jsonl"
+    deadline = time.monotonic() + 5
+    records: list[dict[str, object]] = []
+    while time.monotonic() < deadline:
+        if transcript.exists():
+            records = [
+                json.loads(line)
+                for line in transcript.read_text(encoding="utf-8").splitlines()
+            ]
+            if len(records) >= 2:
+                break
+        time.sleep(0.05)
+
+    texts = [
+        record["payload"]["item"]["content"][0]["text"]
+        for record in records
+        if isinstance(record.get("payload"), dict)
+        and isinstance(record["payload"].get("item"), dict)
+    ]
+    assert texts == ["Reviewing the release notes.", "Release status: ready for review."]
 
 
 def test_thread_relation_requires_reference_to_owner_prompt():
