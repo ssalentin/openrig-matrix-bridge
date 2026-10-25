@@ -57,6 +57,12 @@
   received voice audio, to the agent prompt.
 - Handle Element X `dm.filament.gallery` (and `m.gallery`) albums: every item
   stored in order with explicit per-item failures (PR #57).
+- Make agent file delivery discoverable and verifiable: `send-file --json`
+  prints the Matrix `event_id`, `room_id`, filename, MIME type, size and
+  `sha256`; the new [agent file delivery guide](docs/AGENT_FILE_DELIVERY.md)
+  states that a local path is never delivery evidence; and the integration
+  harness proves a nonzero PDF by returned event ID and decrypted SHA-256 and
+  that empty, missing and oversize files fail before upload.
 
 ## 0.11.0
 

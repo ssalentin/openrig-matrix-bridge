@@ -635,3 +635,14 @@ def test_fake_late_steer_materializes_only_after_its_root_completes(
         time.sleep(0.05)
     else:
         raise AssertionError("late steer did not materialize after root completion")
+
+
+def test_shipping_label_fixture_is_a_valid_nonzero_pdf():
+    label = HARNESS_MODULE.shipping_label_pdf()
+
+    assert label.startswith(b"%PDF-1.4\n")
+    assert label.rstrip().endswith(b"%%EOF")
+    assert len(label) > 500
+    startxref = int(label.rsplit(b"startxref\n", 1)[1].split()[0])
+    assert label[startxref:].startswith(b"xref\n")
+    assert label == HARNESS_MODULE.shipping_label_pdf()
