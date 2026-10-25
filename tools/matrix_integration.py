@@ -55,6 +55,10 @@ SYNAPSE_IMAGE = (
     "390f5e67227378eb87c84627b57f0582cdb235fcc8159d89f371f37bf7cccfd7"
 )
 REPORT_SCHEMA_VERSION = 1
+# Steering probes need the bridge's resolve -> claim -> steer chain (three
+# fake-CLI subprocesses, about 2 s on a loaded host) to land inside the root
+# turn; ordinary "hold first" prompts keep the fake's 3.2 s default.
+STEERING_PROBE_HOLD_SECONDS = 8.0
 REGISTRATION_SECRET = "openrig-integration-only"
 BRIDGE_USER = "@bridge:localhost"
 OWNER_USER = "@owner:localhost"
@@ -863,6 +867,7 @@ class IntegrationRun:
         allow_steering: bool = True,
         late_steer_seconds: float | None = None,
         unrelated_turn: bool = False,
+        hold_seconds: float | None = None,
     ) -> None:
         if self.bridge is not None and self.bridge.poll() is None:
             raise CheckFailure("bridge is already running")
@@ -880,6 +885,10 @@ class IntegrationRun:
             environment["OPENRIG_FAKE_UNRELATED_TURN"] = "1"
         else:
             environment.pop("OPENRIG_FAKE_UNRELATED_TURN", None)
+        if hold_seconds is not None:
+            environment["OPENRIG_FAKE_HOLD_SECONDS"] = str(hold_seconds)
+        else:
+            environment.pop("OPENRIG_FAKE_HOLD_SECONDS", None)
         if crash_after:
             environment["OPENRIG_BRIDGE_TEST_CRASH_AFTER"] = crash_after
         self.bridge_started_ms = int(time.time() * 1000)
@@ -1634,7 +1643,7 @@ class IntegrationRun:
 
         self.stop_bridge()
         self.set_steering_mode("queue")
-        self.start_bridge()
+        self.start_bridge(hold_seconds=STEERING_PROBE_HOLD_SECONDS)
         await self.wait_for_steering_mode_ready(room_id)
         queue_root = await owner.send_text(room_id, "hold first queue mode root")
         self.wait_for_active_prompt(queue_root, "hold first queue mode root")
@@ -1674,7 +1683,7 @@ class IntegrationRun:
 
         self.stop_bridge()
         self.set_steering_mode("steer")
-        self.start_bridge()
+        self.start_bridge(hold_seconds=STEERING_PROBE_HOLD_SECONDS)
         await self.wait_for_steering_mode_ready(room_id)
         steer_before = len(json.loads(fake_path.read_text())["steers"])
         steer_root = await owner.send_text(room_id, "hold first steer mode root")
@@ -1770,7 +1779,10 @@ class IntegrationRun:
 
         self.stop_bridge()
         self.set_steering_mode("auto")
-        self.start_bridge(unrelated_turn=True)
+        self.start_bridge(
+            unrelated_turn=True,
+            hold_seconds=STEERING_PROBE_HOLD_SECONDS,
+        )
         await self.wait_for_steering_mode_ready(room_id)
         auto_before = len(json.loads(fake_path.read_text())["steers"])
         auto_root = await owner.send_text(room_id, "hold first auto mode root")
@@ -1869,7 +1881,10 @@ class IntegrationRun:
 
         self.stop_bridge()
         self.set_steering_mode("auto")
-        self.start_bridge(allow_steering=False)
+        self.start_bridge(
+            allow_steering=False,
+            hold_seconds=STEERING_PROBE_HOLD_SECONDS,
+        )
         await self.wait_for_steering_mode_ready(room_id)
         fallback_before = len(json.loads(fake_path.read_text())["prompts"])
         fallback_root = await owner.send_text(
@@ -1933,7 +1948,10 @@ class IntegrationRun:
                 raise CheckFailure(f"fallback batch lost {marker}")
 
         self.stop_bridge()
-        self.start_bridge(crash_after="steering_send")
+        self.start_bridge(
+            crash_after="steering_send",
+            hold_seconds=STEERING_PROBE_HOLD_SECONDS,
+        )
         await self.wait_for_steering_mode_ready(room_id)
         restart_before = len(json.loads(fake_path.read_text())["prompts"])
         restart_root = await owner.send_text(
@@ -2002,7 +2020,10 @@ class IntegrationRun:
         )
 
         self.stop_bridge()
-        self.start_bridge(late_steer_seconds=6)
+        self.start_bridge(
+            late_steer_seconds=6,
+            hold_seconds=STEERING_PROBE_HOLD_SECONDS,
+        )
         await self.wait_for_steering_mode_ready(room_id)
         late_before = len(json.loads(fake_path.read_text())["steers"])
         late_root = await owner.send_text(
