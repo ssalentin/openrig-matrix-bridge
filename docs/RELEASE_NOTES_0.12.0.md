@@ -169,6 +169,8 @@ candidate is `final-0.12.0-integration-report.json`
   the reconciliation of 0.10-shaped pending requests.
 - The single activity card after a lost send, and the `setup` and `doctor`
   failure messages.
+- One brief and one poll per qitem when the automatic human-queue mirror and a
+  manual `decision` command race, against a real Synapse and bridge process.
 
 ### NOT PROVEN
 
@@ -242,6 +244,10 @@ startup, as described above.
   downloading or being transcribed; there is no separate timeout beyond the
   download and transcription failure paths.
 - Matrix device SAS and complete cross-signing remain tracked by Issue #1.
+- Commentary redaction does not recognise JSON-quoted secret values (for example
+  `"password": "..."`) or PEM private-key bodies, so they appear unchanged in the
+  activity card and in queue-card previews. This predates 0.12.0 and is tracked in
+  Issue #84.
 - A retry of the initial activity card more than 24 hours later (Synapse's
   transaction-ID retention) or from a new bridge device could still create a
   second card.

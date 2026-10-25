@@ -17,10 +17,9 @@ each item in the acceptance record at the end of this runbook.
   status, #47), #53 (harness timing, #52), #57 and #61 (galleries and related
   messages, #54), #35 (queue card, #24), #40 (setup, #37), #66 (activity card,
   #39), #59 (file delivery, #55), #58 (finish reconciliation, #56), #67 (0.10
-  pending requests, #41), #68 (#48), #63 (#50), #78 (harness hotfix). PLACEHOLDER:
-  add #69 (device verification, #1), #81 (decision polls, #80), #82 (activity
-  commentary redaction, #70) and the harness hardening pull request #83 (#65)
-  when they merge.
+  pending requests, #41), #68 (#48), #63 (#50), #78 (harness hotfix), #69 (device
+  verification, #1), #81 (decision polls, #80) and #83 (harness hardening, #65).
+  PLACEHOLDER: add #82 (activity commentary redaction, #70) when it merges.
 - [ ] CI on the merge commit in `main` is green.
 - [ ] Create the annotated tag `0.12.0` on that commit.
 - [ ] Publish the GitHub Release with the wheel, the sdist, the release notes,
