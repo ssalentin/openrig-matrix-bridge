@@ -5,6 +5,7 @@ import json
 import os
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -527,8 +528,29 @@ def write_fake_state(root: Path, **overrides: object) -> None:
     (root / "fake-openrig.json").write_text(json.dumps(state), encoding="utf-8")
 
 
+def replace_fake_state(root: Path, state: dict) -> None:
+    """Replace the fake's state atomically, as its own writer does.
+
+    A detached fake worker may be polling the file; a truncate-then-write
+    could hand it a torn read and kill it silently.
+    """
+    temporary = root / "fake-openrig.json.tmp"
+    temporary.write_text(json.dumps(state), encoding="utf-8")
+    os.replace(temporary, root / "fake-openrig.json")
+
+
 def read_fake_state(root: Path) -> dict:
     return json.loads((root / "fake-openrig.json").read_text(encoding="utf-8"))
+
+
+def wait_for_transcript_text(path: Path, text: str, timeout: float = 30.0) -> None:
+    """Poll until ``text`` appears in the transcript, or fail after a bounded wait."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if path.exists() and text in path.read_text(encoding="utf-8"):
+            return
+        time.sleep(0.05)
+    raise AssertionError(f"{text!r} did not appear in the transcript within {timeout}s")
 
 
 def test_fake_transport_stays_busy_until_its_turn_completes(tmp_path: Path):
@@ -582,6 +604,42 @@ def test_fake_transport_hold_for_held_prompts_is_configurable(tmp_path: Path):
     assert state["busy_until"] - prompt["sent_at"] == pytest.approx(0.6, abs=0.05)
 
 
+def test_replacing_the_fake_state_is_never_seen_partially(tmp_path: Path):
+    spec = importlib.util.spec_from_file_location("fake_openrig_under_test", FAKE)
+    assert spec is not None and spec.loader is not None
+    fake_module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(fake_module)
+    state = fake_module._default_state()
+    state["prompts"] = [{"id": "p", "completed_at": None, "padding": "x" * 200_000}]
+    write_fake_state(tmp_path, prompts=state["prompts"])
+
+    torn: list[str] = []
+    reads = [0]
+    stop = threading.Event()
+
+    def poll_like_a_worker() -> None:
+        while not stop.is_set():
+            try:
+                fake_module.read_state(tmp_path)
+                reads[0] += 1
+            except json.JSONDecodeError as exc:
+                torn.append(str(exc))
+            time.sleep(0.001)
+
+    reader = threading.Thread(target=poll_like_a_worker)
+    reader.start()
+    try:
+        for _ in range(150):
+            replace_fake_state(tmp_path, state)
+            time.sleep(0.002)
+    finally:
+        stop.set()
+        reader.join()
+
+    assert reads[0] > 0
+    assert torn == []
+
+
 def test_fake_late_steer_materializes_only_after_its_root_completes(
     tmp_path: Path,
 ):
@@ -618,16 +676,8 @@ def test_fake_late_steer_materializes_only_after_its_root_completes(
 
     state = read_fake_state(tmp_path)
     state["prompts"][0]["completed_at"] = time.time()
-    (tmp_path / "fake-openrig.json").write_text(json.dumps(state), encoding="utf-8")
-    deadline = time.monotonic() + 5
-    while time.monotonic() < deadline:
-        if "Late steering answer: late follow-up" in transcript.read_text(
-            encoding="utf-8"
-        ):
-            break
-        time.sleep(0.05)
-    else:
-        raise AssertionError("late steer did not materialize after root completion")
+    replace_fake_state(tmp_path, state)
+    wait_for_transcript_text(transcript, "Late steering answer: late follow-up")
 
 
 def test_shipping_label_fixture_is_a_valid_nonzero_pdf():
