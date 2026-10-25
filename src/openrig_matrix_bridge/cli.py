@@ -25,6 +25,7 @@ from . import __version__
 from .bridge import MatrixBridge
 from .config import ConfigError, load_config, validate_homeserver
 from .decisions import normalize_questions
+from .instance import InstanceAlreadyRunning, acquire_instance_lock, instance_is_running
 from .media import detect_image_type, normalize_mime_type
 from .openrig import AgentSessionNotFound, OpenRigSessionResolver
 from .transcription import MODEL_NAME, ensure_model, model_ready
@@ -114,22 +115,71 @@ def _ensure_human_registration(
 
 
 def discover_openrig_agents(command: str = "rig") -> dict[str, dict[str, str]]:
-    result = subprocess.run(
-        [command, "ps", "--nodes", "-A", "--json"],
-        check=True,
-        capture_output=True,
-        text=True,
-        timeout=30,
-    )
-    nodes = json.loads(result.stdout)
+    """Discover running Codex seats from OpenRig inventory.
+
+    Raises RuntimeError with actionable guidance if discovery fails.
+    """
+    inventory_cmd = [command, "ps", "--nodes", "-A", "--json"]
+
+    try:
+        result = subprocess.run(
+            inventory_cmd,
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+    except FileNotFoundError as exc:
+        raise RuntimeError(
+            f"OpenRig command not found: {command}. "
+            "Install OpenRig or pass --rig-command with the full path to rig."
+        ) from exc
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError(
+            f"OpenRig inventory timed out after 30s. "
+            f"Check that OpenRig is responsive: {' '.join(inventory_cmd)}"
+        ) from exc
+    except subprocess.CalledProcessError as exc:
+        stderr = exc.stderr.strip() if exc.stderr else ""
+        raise RuntimeError(
+            f"OpenRig inventory failed: {stderr[:200]}. "
+            f"Run {' '.join(inventory_cmd)} and fix the reported error."
+        ) from exc
+
+    try:
+        nodes = json.loads(result.stdout)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(
+            f"OpenRig inventory returned invalid JSON. "
+            f"Check the OpenRig version: {' '.join(inventory_cmd)}"
+        ) from exc
+
+    if not isinstance(nodes, list):
+        raise TypeError(
+            f"OpenRig inventory returned unexpected format. "
+            f"Check the OpenRig version: {' '.join(inventory_cmd)}"
+        )
+
     agents: dict[str, dict[str, str]] = {}
+    seen_sessions: set[str] = set()
+
     for node in nodes:
+        if not isinstance(node, dict):
+            continue
         if node.get("sessionStatus") != "running" or node.get("runtime") != "codex":
             continue
         logical_id = str(node.get("logicalId") or "")
         session = str(node.get("canonicalSessionName") or "")
         if not logical_id or not session or logical_id == "operator.human":
             continue
+
+        if session in seen_sessions:
+            raise RuntimeError(
+                f"duplicate Codex seat found: {session}. "
+                "Stop the duplicate seat before running setup."
+            )
+        seen_sessions.add(session)
+
         key = _agent_key(session)
         if key in agents:
             rig = str(node.get("rigName") or "")
@@ -138,8 +188,13 @@ def discover_openrig_agents(command: str = "rig") -> dict[str, dict[str, str]]:
             "display_name": _display_name(logical_id),
             "session": session,
         }
+
     if not agents:
-        raise RuntimeError("no running Codex seats found through `rig ps --nodes -A`")
+        raise RuntimeError(
+            "no running Codex seats found. "
+            f"Start at least one Codex seat, confirm with {' '.join(inventory_cmd)}, "
+            "then retry setup."
+        )
     return agents
 
 
@@ -301,20 +356,145 @@ async def _set_matrix_device_name(
             )
 
 
+async def _validate_matrix_token(homeserver: str, token: str) -> dict:
+    """Validate Matrix access token by calling whoami endpoint.
+
+    Returns the whoami response dict with user_id and device_id.
+    Raises RuntimeError with actionable guidance if validation fails.
+    """
+    if not token:
+        raise RuntimeError(
+            "MATRIX_ACCESS_TOKEN environment variable is not set. "
+            "Set it before running setup: export MATRIX_ACCESS_TOKEN='your-token'. "
+            "Never pass the token as a command-line argument."
+        )
+
+    timeout = aiohttp.ClientTimeout(total=15)
+    try:
+        async with (
+            aiohttp.ClientSession(timeout=timeout) as session,
+            session.get(
+                f"{homeserver}/_matrix/client/v3/account/whoami",
+                headers={"Authorization": f"Bearer {token}"},
+            ) as response,
+        ):
+            if response.status == 401:
+                raise RuntimeError(
+                    "Matrix access token is invalid or expired. "
+                    "Generate a new bot device token from your Matrix client and "
+                    "set MATRIX_ACCESS_TOKEN to the new value."
+                )
+            if response.status == 403:
+                raise RuntimeError(
+                    "Matrix access token is forbidden for this homeserver. "
+                    "Verify the token belongs to the bot account on this homeserver."
+                )
+            if response.status != 200:
+                body = (await response.text())[:300]
+                raise RuntimeError(
+                    f"Matrix token validation failed with HTTP {response.status}: {body}. "
+                    "Verify the homeserver URL is correct and accessible."
+                )
+            return await response.json()
+    except aiohttp.ClientError as exc:
+        raise RuntimeError(
+            f"Cannot reach Matrix homeserver {homeserver}: {exc}. "
+            "Check the homeserver URL and network connectivity."
+        ) from exc
+
+
 def run_setup(args: argparse.Namespace) -> None:
+    """Run interactive setup for the OpenRig Matrix bridge.
+
+    Creates or updates the bridge configuration with discovered Codex seats.
+    Validates the Matrix token before writing any config files.
+    """
+    config_path = args.config
+
+    # Check for existing config
+    if config_path.exists() and not args.replace_config:
+        raise SystemExit(
+            f"config file already exists: {config_path}. "
+            "Pass --replace-config to overwrite it."
+        )
+
+    # Check for already-running bridge
+    state_dir = Path(args.state_dir or Path.home() / ".local" / "state" / "openrig-matrix-bridge")
+    if instance_is_running(state_dir):
+        raise SystemExit(
+            f"the Matrix bridge is already running for state directory {state_dir}. "
+            "Stop the existing bridge before running setup again."
+        )
+
+    # Gather Matrix credentials with helpful prompts
     try:
         homeserver = validate_homeserver(
-            (args.homeserver or input("Matrix homeserver URL: ")).strip()
+            (args.homeserver or input("Matrix homeserver URL (e.g., https://matrix.org): ")).strip()
         )
     except ConfigError as exc:
         raise SystemExit(str(exc)) from exc
-    user_id = (args.user_id or input("Bot Matrix user ID: ")).strip()
-    device_id = (args.device_id or input("Bot Matrix device ID: ")).strip()
+
+    # Validate the Matrix token BEFORE prompting for what it can tell us, discovering
+    # agents or writing config. The token answers the bot user ID and device ID.
+    user_id = (args.user_id or "").strip()
+    device_id = (args.device_id or "").strip()
+    token = os.environ.get("MATRIX_ACCESS_TOKEN", "")
+    if token:
+        print("validating Matrix access token...")
+        try:
+            whoami = asyncio.run(_validate_matrix_token(homeserver, token))
+        except RuntimeError as exc:
+            raise SystemExit(f"Matrix token validation failed: {exc}") from exc
+        print(f"✓ Matrix token valid for {whoami.get('user_id')}")
+        inferred_user_id = whoami.get("user_id")
+        inferred_device_id = whoami.get("device_id")
+        if inferred_user_id:
+            if user_id and user_id != inferred_user_id:
+                print(
+                    f"note: bot user ID {user_id} differs from the access token; "
+                    f"using {inferred_user_id}"
+                )
+            user_id = inferred_user_id
+        if inferred_device_id:
+            if device_id and device_id != inferred_device_id:
+                print(
+                    f"note: device ID {device_id} differs from the access token; "
+                    f"using {inferred_device_id}"
+                )
+            device_id = inferred_device_id
+    else:
+        print(
+            "warning: MATRIX_ACCESS_TOKEN not set. "
+            "Set it before starting the bridge: export MATRIX_ACCESS_TOKEN='your-token'"
+        )
+
+    if not user_id:
+        print("\nTo find your bot's Matrix user ID:")
+        print("  1. Open your Matrix client (Element, etc.)")
+        print("  2. Click on the bot account's profile")
+        print("  3. Copy the full user ID (e.g., @openrig-bot:matrix.org)")
+        user_id = input("Bot Matrix user ID: ").strip()
+
+    if not device_id:
+        print("\nTo find your bot's device ID:")
+        print("  1. In Element: Settings → All Settings → Sessions")
+        print("  2. Find the current session and copy the device ID")
+        device_id = input("Bot Matrix device ID: ").strip()
+
+    if not args.allowed_user:
+        print("\nTo find your owner Matrix user ID:")
+        print("  1. Open your Matrix client with your personal account")
+        print("  2. Click on your profile")
+        print("  3. Copy the full user ID (e.g., @you:matrix.org)")
     allowed_user = (args.allowed_user or input("Owner Matrix user ID: ")).strip()
-    agents = discover_openrig_agents(args.rig_command)
-    state_dir = Path(
-        args.state_dir or Path.home() / ".local" / "state" / "openrig-matrix-bridge"
-    )
+
+    # Discover running Codex seats
+    print(f"discovering Codex seats via {args.rig_command}...")
+    try:
+        agents = discover_openrig_agents(args.rig_command)
+    except RuntimeError as exc:
+        raise SystemExit(str(exc)) from exc
+    print(f"found {len(agents)} running Codex seat(s): {', '.join(agents.keys())}")
     download_root = Path(
         args.download_root
         or Path.home() / ".cache" / "openrig-matrix-bridge" / "parakeet"
@@ -328,15 +508,20 @@ def run_setup(args: argparse.Namespace) -> None:
     human_display_name = args.human_display_name or human_entity_id.title()
     human_result = None
     if not args.no_human_registration:
-        human_result = _ensure_human_registration(
-            command=args.rig_command,
-            entity_id=human_entity_id,
-            display_name=human_display_name,
-            delivery_class=args.human_delivery_class,
-            state_dir=state_dir,
-            actor=args.sender_session,
-            replace=args.replace_human,
-        )
+        try:
+            human_result = _ensure_human_registration(
+                command=args.rig_command,
+                entity_id=human_entity_id,
+                display_name=human_display_name,
+                delivery_class=args.human_delivery_class,
+                state_dir=state_dir,
+                actor=args.sender_session,
+                replace=args.replace_human,
+            )
+        except RuntimeError as exc:
+            raise SystemExit(
+                f"{exc}. Pass --no-human-registration to skip human registry setup."
+            ) from exc
     config = {
         "matrix": {
             "homeserver": homeserver,
@@ -380,6 +565,9 @@ def run_setup(args: argparse.Namespace) -> None:
         },
         "agents": agents,
     }
+    # Ensure state directory exists with correct permissions
+    state_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+
     _write_private_yaml(args.config, config)
     print(f"wrote {args.config} with {len(agents)} agent room(s)")
     if human_result:
@@ -395,8 +583,19 @@ def run_setup(args: argparse.Namespace) -> None:
     else:
         print("warning: MATRIX_ACCESS_TOKEN is not set; Matrix display name unchanged")
     if config["transcription"]["enabled"] and not args.skip_model:
-        model = ensure_model(download_root)
-        print(f"Parakeet ready: {model}")
+        try:
+            model = ensure_model(download_root)
+            print(f"Parakeet ready: {model}")
+        except (OSError, RuntimeError) as exc:
+            raise SystemExit(
+                f"Model download failed: {exc}. "
+                "Pass --skip-model to defer download and complete setup."
+            ) from exc
+
+    print("\nNext steps:")
+    print(f"  1. Run doctor: openrig-matrix-bridge doctor --config {args.config}")
+    print(f"  2. Start the bridge: openrig-matrix-bridge run --config {args.config}")
+    print("  3. Accept room invitations in your Matrix client")
 
 
 def _load_qitem(qitem_id: str, command: str = "rig") -> dict:
@@ -636,23 +835,34 @@ def run_send_message(args: argparse.Namespace, config) -> int:
 
 
 async def _doctor(config_path: Path) -> int:
+    """Run health checks on the bridge configuration.
+
+    Validates Matrix token, directory permissions, Codex seats, and model readiness.
+    Returns 0 on success, 1 if any errors were found.
+    """
     config = load_config(config_path)
     token = os.environ.get("MATRIX_ACCESS_TOKEN", "")
     errors: list[str] = []
     warnings: list[str] = []
+
     if not token:
-        errors.append("MATRIX_ACCESS_TOKEN is not set")
+        errors.append(
+            "MATRIX_ACCESS_TOKEN is not set. "
+            "Set it: export MATRIX_ACCESS_TOKEN='your-token'"
+        )
     else:
-        timeout = aiohttp.ClientTimeout(total=15)
-        async with (
-            aiohttp.ClientSession(timeout=timeout) as session,
-            session.get(
-                f"{config.homeserver}/_matrix/client/v3/account/whoami",
-                headers={"Authorization": f"Bearer {token}"},
-            ) as response,
-        ):
-            if response.status != 200:
-                errors.append(f"Matrix whoami failed with HTTP {response.status}")
+        try:
+            whoami = await _validate_matrix_token(config.homeserver, token)
+            if whoami.get("user_id") != config.user_id:
+                warnings.append(
+                    f"token is for {whoami.get('user_id')} but config expects {config.user_id}"
+                )
+            if whoami.get("device_id") != config.device_id:
+                warnings.append(
+                    f"token is for device {whoami.get('device_id')} but config expects {config.device_id}"
+                )
+        except RuntimeError as exc:
+            errors.append(f"Matrix token validation: {exc}")
     config.state_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
     probe = config.state_dir / ".write-test"
     try:
@@ -735,6 +945,8 @@ def build_parser() -> argparse.ArgumentParser:
         choices=("A", "B", "C", "D"),
         default="B",
     )
+    parser.add_argument("--replace-config", action="store_true",
+                        help="Overwrite existing config file")
     parser.add_argument("--replace-human", action="store_true")
     parser.add_argument("--no-human-registration", action="store_true")
     parser.add_argument("--no-commentary", action="store_true")
@@ -782,4 +994,14 @@ def main() -> None:
         print(ensure_model(config.transcription.download_root))
         return
     token = os.environ.get("MATRIX_ACCESS_TOKEN", "")
-    asyncio.run(MatrixBridge(config, token).run())
+
+    # Acquire instance lock before running the bridge
+    try:
+        lock_handle = acquire_instance_lock(config.state_dir)
+    except InstanceAlreadyRunning as exc:
+        raise SystemExit(str(exc)) from exc
+
+    try:
+        asyncio.run(MatrixBridge(config, token).run())
+    finally:
+        lock_handle.close()

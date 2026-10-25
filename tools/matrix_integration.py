@@ -832,38 +832,39 @@ class IntegrationRun:
             OWNER_PASSWORD,
             "OPENRIG_OWNER",
         )
+        setup_command = [
+            sys.executable,
+            "-m",
+            "openrig_matrix_bridge",
+            "setup",
+            "--config",
+            str(self.config_path),
+            "--homeserver",
+            self.homeserver,
+            "--user-id",
+            BRIDGE_USER,
+            "--device-id",
+            bridge_device,
+            "--allowed-user",
+            OWNER_USER,
+            "--state-dir",
+            str(self.state_dir),
+            "--download-root",
+            str(self.work / "parakeet"),
+            "--rig-command",
+            str(ROOT / "tools" / "fake_openrig.py"),
+            "--codex-home",
+            str(self.work / "codex"),
+            "--sender-session",
+            "matrix-bridge@local",
+            "--human-destination",
+            "owner@external",
+            "--human-id",
+            "owner",
+            "--skip-model",
+        ]
         setup = run(
-            [
-                sys.executable,
-                "-m",
-                "openrig_matrix_bridge",
-                "setup",
-                "--config",
-                str(self.config_path),
-                "--homeserver",
-                self.homeserver,
-                "--user-id",
-                BRIDGE_USER,
-                "--device-id",
-                bridge_device,
-                "--allowed-user",
-                OWNER_USER,
-                "--state-dir",
-                str(self.state_dir),
-                "--download-root",
-                str(self.work / "parakeet"),
-                "--rig-command",
-                str(ROOT / "tools" / "fake_openrig.py"),
-                "--codex-home",
-                str(self.work / "codex"),
-                "--sender-session",
-                "matrix-bridge@local",
-                "--human-destination",
-                "owner@external",
-                "--human-id",
-                "owner",
-                "--skip-model",
-            ],
+            setup_command,
             env=self.env(),
             timeout=self.args.timeout,
         )
@@ -874,12 +875,25 @@ class IntegrationRun:
         doctor = self.cli("doctor")
         if doctor.returncode != 0:
             raise CheckFailure(f"bridge doctor failed: {doctor.stdout}{doctor.stderr}")
+        rerun = run(
+            setup_command,
+            env=self.env(),
+            timeout=self.args.timeout,
+            check=False,
+        )
+        if rerun.returncode == 0 or "--replace-config" not in rerun.stderr:
+            raise CheckFailure(
+                "setup over an existing config did not fail with the "
+                f"--replace-config next step: {rerun.returncode} "
+                f"{rerun.stdout}{rerun.stderr}"
+            )
         self.record(
             "setup-and-doctor",
             "pass",
             (
                 f"`setup` wrote one agent room; `doctor` exited 0 "
-                f"({setup.stdout.splitlines()[0]})"
+                f"({setup.stdout.splitlines()[0]}); a second `setup` without "
+                "`--replace-config` failed with that next step"
             ),
         )
         owner_store = self.work / "owner-store"
@@ -3602,15 +3616,16 @@ class IntegrationRun:
             token="invalid-integration-token",
             check=False,
         )
-        if result.returncode == 0 or "Matrix whoami failed" not in result.stdout:
+        output = f"{result.stdout}{result.stderr}"
+        if result.returncode == 0 or "invalid or expired" not in output:
             raise CheckFailure(
                 f"doctor did not report an invalid Matrix token: "
-                f"{result.stdout}{result.stderr}"
+                f"{output}"
             )
         self.record(
             "doctor-invalid-token",
             "pass",
-            "`doctor` exited non-zero and reported the invalid Matrix token.",
+            "`doctor` exited non-zero and told the owner to create a new token.",
         )
 
     async def execute(self) -> None:

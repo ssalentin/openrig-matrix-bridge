@@ -93,7 +93,7 @@ forward.
 
 | Check | What is exercised |
 |---|---|
-| `setup-and-doctor` | Public `setup` and `doctor` commands against Synapse and the fake OpenRig transport |
+| `setup-and-doctor` | Public `setup` and `doctor` commands against Synapse and the fake OpenRig transport, plus a second `setup` without `--replace-config` that must fail with that next step |
 | `room-status-avatar` | Private room creation, owner invite/join, Megolm room state, managed avatar, ready topic, structured status |
 | `encrypted-chat-queue-typing` | Owner text, typing indicator, activity-labelled commentary card, separate thread-related final answer, recorded pending -> in-progress -> done qitem history, raw `m.room.encrypted` event |
 | `threaded-prompt-restart` | Encrypted owner prompt already in `m.thread`; commentary and final answer under the canonical root; single qitem closure; bridge typing and `arbeitet` status for the reply; bridge restart without duplicate prompt or response and with typing restored for the in-flight request |
@@ -114,7 +114,7 @@ forward.
 | `decision-and-poll` | Pinned decision brief, MSC3381 poll, encrypted response, prompt forwarding, unpin |
 | `proactive-message` | Explicit encrypted `send-message` |
 | `restart-recovery` | Room/state reuse and status recovery across bridge restart |
-| `doctor-invalid-token` | Representative authentication failure |
+| `doctor-invalid-token` | `doctor` exits non-zero with the invalid-or-expired-token next step |
 | `rejected-room-recovery` | Owner leave tombstone and no room recreation after restart |
 
 ### Manual or unproven paths

@@ -144,7 +144,8 @@ dedicated Matrix bot account. A Matrix homeserver must be reachable over HTTPS.
 
 The bridge creates one private encrypted room per discovered Codex seat. For
 prerequisites, secret-safe setup, systemd, upgrades, and troubleshooting, use
-the [installation guide](docs/INSTALLATION.md).
+the [installation guide](docs/INSTALLATION.md). Omitted `setup` flags are prompted for unless the token supplies them; see
+[what setup infers](docs/INSTALLATION.md#what-setup-infers-and-what-you-provide).
 
 ## Current boundaries
 

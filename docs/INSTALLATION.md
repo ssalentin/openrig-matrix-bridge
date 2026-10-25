@@ -245,7 +245,30 @@ This command:
 
 The command above is the complete non-interactive setup path when OpenRig and
 Matrix are already working. If an argument is omitted, `setup` prompts for the
-missing value and prints where to find the corresponding Matrix ID.
+missing value unless the access token supplies it, and prints where to find the
+corresponding Matrix ID.
+
+### What setup infers and what you provide
+
+| Value | Source |
+|---|---|
+| Homeserver URL, owner Matrix user ID | You provide them (flag or prompt); setup cannot infer them. |
+| Bot user ID and device ID | Inferred from `MATRIX_ACCESS_TOKEN` through the homeserver `whoami` answer. Setup prompts for them only when no token is set (or `whoami` omits one), and prints a note if a flag you passed differs from the token. |
+| Codex seats and their sessions | Discovered from `rig ps --nodes -A --json`. |
+| Access token | Only from the environment. Setup checks it with `whoami`, never accepts it as an argument, and never prints or writes it. |
+
+Setup stops with a next step in these states:
+
+| State | What setup says to do |
+|---|---|
+| Config file already exists | Pass `--replace-config`, or choose another `--config` path. |
+| A bridge is already running for the state directory | Stop that bridge first; only one bridge may own a state directory and device. |
+| Token invalid, expired or forbidden | Create a new bot device token and export it again. |
+| Homeserver unreachable | Check the homeserver URL and network. |
+| No running Codex seat, or a duplicate seat name | Start a Codex seat and confirm it with `rig ps --nodes -A --json`. |
+| `rig` not found or not answering | Pass `--rig-command` with the full path. |
+| OpenRig human registry unavailable | Pass `--no-human-registration`. |
+| Voice model download fails | The config is already written; pass `--skip-model` to defer the download. |
 
 Use `--no-human-registration` if you do not want the setup command to modify the
 OpenRig human registry. Use `--without-voice` for a text-only bridge. Use
@@ -360,10 +383,13 @@ shows a running entry whose runtime is `codex`. Pass the correct
 Export the token in the process that runs `doctor`, `run`, or an outbox command.
 You can also set `OPENRIG_MATRIX_CONFIG` to a non-default configuration path.
 
-### `Matrix whoami failed`
+### `Matrix access token is invalid or expired`
 
-Check the homeserver URL, token, bot user ID, and device ID in the generated
-configuration. A token from another homeserver cannot be used.
+Create a new bot device token in your Matrix client and export it as
+`MATRIX_ACCESS_TOKEN`. A token from another homeserver cannot be used. For
+`Cannot reach Matrix homeserver` or an HTTP error, check the homeserver URL and
+network. `doctor` warns when the token belongs to a different user or device
+than the configuration expects.
 
 ### `duplicate agent session`
 
