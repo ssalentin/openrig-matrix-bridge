@@ -58,10 +58,10 @@ a less busy host. They are not a performance benchmark.
 
 | Boundary (harness) | Median | Max |
 |---|---|---|
-| Prompt: intake to injection | 429.9 ms | 6733.2 ms |
-| Prompt: intake to admission | 989.3 ms | 7072.1 ms |
-| Prompt: intake to 👍 | 776.1 ms | 2779.4 ms |
-| Steer: intake to admission | 1101.0 ms | 2928.8 ms |
+| Prompt: intake to injection | 266.5 ms | 5842.6 ms |
+| Prompt: intake to admission | 643.6 ms | 6060.7 ms |
+| Prompt: intake to 👍 | 433.8 ms | 1605.8 ms |
+| Steer: intake to admission | 1351.9 ms | 1873.6 ms |
 
 ## 1. Record the approved candidate
 
@@ -85,6 +85,15 @@ Stop the service and confirm that only one bridge process exists:
 sudo systemctl stop openrig-matrix-bridge.service
 pgrep -af openrig_matrix_bridge || true
 ```
+
+`deploy/openrig-matrix-start` execs the bridge, so systemd's default SIGTERM
+reaches it directly. The bridge handles SIGTERM by running its existing
+shutdown cleanup (stop the pollers, clear Matrix typing, close the client) and
+exiting 0. If cleanup cannot finish, for example because the homeserver is
+unreachable, systemd sends SIGKILL after `TimeoutStopSec=20`, as before. SIGINT
+behavior is unchanged. Without the SIGTERM handling, a stop or restart left
+"OpenRig schreibt …" visible for up to 30 seconds; a crash or SIGKILL still
+does, because the homeserver's typing timeout is 30 seconds.
 
 Back up the service definition, configuration, and complete state directory:
 

@@ -26,8 +26,8 @@ without starting a second agent or allowing concurrent Codex turns.
   `openrig.acceptance_reaction_enabled: true`. When enabled, each durably
   accepted human message gets exactly one 👍 (`m.annotation`), sent after the
   request is saved and queued or joined to a steering batch. When it is
-  off, the status card and typing indicator are the live acknowledgement for
-  top-level and idle-thread messages (see Known limits). It means
+  off, the status card and typing indicator are the live acknowledgement (see
+  Known limits). It means
   accepted, not finished; the final answer remains the completion signal.
   Retries, restarts, duplicate polls, and batch members never
   duplicate it, and untrusted, ignored, duplicate, or rejected events get none.
@@ -56,11 +56,10 @@ the configuration and complete state directory before replacing the service.
 
 ## Known limits
 
-- Status and typing feedback is not yet reliable for steered or late-admitted
-  thread follow-ups, or for any request in flight across a bridge restart: a
-  late-admitted follow-up can show "ready" without typing, "ready" can flash
-  between queued turns, and a request in flight across a restart comes back with
-  the busy status but no typing until it is answered. Tracked in issue #47.
+- Matrix typing and the room status are room-wide: `m.typing` has no thread
+  field (element-meta#1495), so clients may show the typing indicator only in
+  the main room timeline, not inside a thread view. Element X rendering on a
+  real device is not verified.
 - Events delivered during a restarted bridge's initial sync are not routed: the
   message is not delivered and, with the receipt enabled, gets no 👍, which
   makes the gap visible to the owner. This predates 0.12.0 and is also present

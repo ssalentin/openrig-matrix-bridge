@@ -60,12 +60,34 @@ live Matrix delivery.
 
 The acceptance receipt is optional and off by default. Set
 `openrig.acceptance_reaction_enabled: true` to enable it. Without it, the status
-card and the typing indicator are the live acknowledgement for top-level and
-idle-thread messages. Steered or late-admitted thread follow-ups, and any
-request in flight across a bridge restart, are tracked in issue #47: a
-late-admitted follow-up can show "ready" without typing, and a request in flight
-across a restart comes back with the busy status but no typing until it is
-answered.
+card and the typing indicator are the live acknowledgement.
+
+### Typing and status while work is queued
+
+Typing and the room status follow the head of the queue and are recomputed on
+every poll and at startup:
+
+- A reply inside an existing thread shows typing and the `arbeitet` status.
+- Steering a follow-up into the active turn refreshes typing.
+- A late-admitted thread follow-up keeps typing and `arbeitet` after the root
+  answer.
+- `bereit` is written only when the queue drains, so there is no `bereit` flash
+  or typing gap between queued turns.
+- A request in flight across a bridge restart gets its typing indicator back at
+  startup.
+- Typing stops when the last queued request ends (success, failure or
+  timeout). While more work is queued, typing continues into the next turn
+  without a gap.
+- A `systemctl stop` or restart sends SIGTERM, and the bridge now runs its
+  normal cleanup, clears typing and exits 0. Before this change the bridge was
+  killed before cleanup and typing stayed visible for up to 30 seconds. A crash
+  or SIGKILL still leaves typing up to 30 seconds, the homeserver's typing
+  timeout, because no bridge code runs.
+
+Matrix typing and the room status are room-wide: the `m.typing` API has no
+thread field (open request: element-meta#1495). Clients may therefore show the
+typing indicator only in the main room timeline, not inside a thread view.
+Rendering in Element X on a real device is not verified.
 
 When enabled and the bridge has durably accepted a message from an allowed user,
 it adds one 👍 reaction to that message. The 👍 means *accepted*: the bridge has durably

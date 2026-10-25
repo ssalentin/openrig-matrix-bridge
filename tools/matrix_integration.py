@@ -160,6 +160,57 @@ def validate_qitem_history(item: dict[str, Any]) -> None:
         raise CheckFailure(f"qitem history timestamps are out of order: {timestamps}")
 
 
+def feedback_window(
+    timeline: list[dict[str, Any]],
+    start: int,
+    end_body: str,
+    *,
+    include_concurrent: bool = False,
+) -> list[dict[str, Any]]:
+    """Return timeline entries from `start` up to the bridge message `end_body`.
+
+    With `include_concurrent`, typing and status entries delivered in the same
+    sync batch as that message count as concurrent with it and are included;
+    use that when checking that feedback appeared, not that it never stopped.
+    """
+    for index in range(start, len(timeline)):
+        entry = timeline[index]
+        if (
+            entry["kind"] == "message"
+            and entry["sender"] == BRIDGE_USER
+            and end_body in str(entry["body"])
+        ):
+            same_batch = [
+                later
+                for later in timeline[index + 1 :]
+                if include_concurrent
+                and later["batch"] == entry["batch"]
+                and later["kind"] != "message"
+            ]
+            return timeline[start:index] + same_batch
+    raise CheckFailure(f"bridge message {end_body!r} not in the owner timeline")
+
+
+def bridge_message_index(timeline: list[dict[str, Any]], body: str) -> int:
+    for index, entry in enumerate(timeline):
+        if (
+            entry["kind"] == "message"
+            and entry["sender"] == BRIDGE_USER
+            and body in str(entry["body"])
+        ):
+            return index
+    raise CheckFailure(f"bridge message {body!r} not in the owner timeline")
+
+
+def require_continuous_feedback(window: list[dict[str, Any]], label: str) -> None:
+    """Fail if the room went ready or the bridge stopped typing inside `window`."""
+    for entry in window:
+        if entry["kind"] == "status" and entry["state"] == "ready":
+            raise CheckFailure(f"{label}: agent status turned ready mid-work")
+        if entry["kind"] == "typing" and not entry["bridge"]:
+            raise CheckFailure(f"{label}: bridge typing stopped mid-work")
+
+
 def validate_fifo_records(
     records: list[dict[str, Any]],
     first_prompt: str,
@@ -285,6 +336,12 @@ class MatrixOwner:
         self.reactions: list[ReactionEvent] = []
         self.typing: list[dict[str, Any]] = []
         self.unknown: list[UnknownEvent] = []
+        # Messages, typing changes and agent-status updates in arrival order.
+        # Within one sync batch nio delivers timeline events before ephemeral
+        # typing, so a typing change is never placed before a message that
+        # arrived with it.
+        self.timeline: list[dict[str, Any]] = []
+        self.sync_batch = 0
         self.client.add_event_callback(self._on_message, RoomMessageText)
         self.client.add_event_callback(
             self._on_image,
@@ -310,6 +367,14 @@ class MatrixOwner:
                 raise CheckFailure(f"owner key upload failed: {response}")
 
     async def _on_message(self, room: Any, event: RoomMessageText) -> None:
+        self.timeline.append(
+            {
+                "kind": "message",
+                "sender": event.sender,
+                "body": event.body,
+                "batch": self.sync_batch,
+            }
+        )
         self.messages.append(
             {
                 "room_id": room.room_id,
@@ -346,9 +411,25 @@ class MatrixOwner:
 
     async def _on_typing(self, room: Any, event: TypingNoticeEvent) -> None:
         self.typing.append({"room_id": room.room_id, "users": list(event.users)})
+        self.timeline.append(
+            {
+                "kind": "typing",
+                "bridge": BRIDGE_USER in event.users,
+                "batch": self.sync_batch,
+            }
+        )
 
     async def _on_unknown(self, room: Any, event: UnknownEvent) -> None:
         self.unknown.append(event)
+        if event.type == "dev.openrig.agent_status":
+            content = event.source.get("content", {})
+            self.timeline.append(
+                {
+                    "kind": "status",
+                    "state": content.get("state"),
+                    "batch": self.sync_batch,
+                }
+            )
 
     async def _on_invite(self, room: Any, event: InviteMemberEvent) -> None:
         response = await self.client.join(room.room_id)
@@ -356,6 +437,7 @@ class MatrixOwner:
             raise CheckFailure(f"owner could not join invited room: {response}")
 
     async def sync_once(self, timeout_ms: int = 5000) -> None:
+        self.sync_batch += 1
         response = await self.client.sync(timeout=timeout_ms, full_state=True)
         if hasattr(response, "status_code") and response.status_code >= 400:
             raise CheckFailure(f"owner sync failed: {response}")
@@ -858,10 +940,15 @@ class IntegrationRun:
             time.sleep(0.1)
         raise CheckFailure("bridge did not reach the injected crash point")
 
-    def stop_bridge(self) -> None:
+    def stop_bridge(self) -> int | None:
+        """SIGTERM the bridge like systemd does and return its exit code.
+
+        A bridge stopped before startup installs its SIGTERM handler still
+        dies with -SIGTERM; a running bridge stops gracefully with 0.
+        """
         process = self.bridge
         if process is None or process.poll() is not None:
-            return
+            return None
         os.killpg(process.pid, signal.SIGTERM)
         try:
             process.wait(timeout=15)
@@ -870,6 +957,7 @@ class IntegrationRun:
             process.wait(timeout=5)
         if process.returncode not in {0, -signal.SIGTERM}:
             raise CheckFailure(f"bridge exited with {process.returncode}")
+        return process.returncode
 
     def bridge_state(self) -> dict[str, Any]:
         path = self.state_dir / "state.json"
@@ -1072,6 +1160,7 @@ class IntegrationRun:
                 "m.in_reply_to": {"event_id": root_event_id},
             },
         )
+        thread_reply_mark = len(owner.timeline)
         threaded_prompt = await owner.raw_event(room_id, threaded_event_id)
         threaded_prompt_ts = int(threaded_prompt.get("origin_server_ts") or 0)
 
@@ -1099,7 +1188,20 @@ class IntegrationRun:
             self.args.timeout,
             description="threaded prompt at fake transport",
         )
-        self.stop_bridge()
+        await owner.sync_until(
+            lambda: any(
+                entry["kind"] == "typing" and entry["bridge"]
+                for entry in owner.timeline[thread_reply_mark:]
+            ),
+            self.args.timeout,
+            description="bridge typing for a reply inside an existing thread",
+        )
+        stop_code = self.stop_bridge()
+        if stop_code != 0:
+            raise CheckFailure(
+                f"running bridge did not stop gracefully on SIGTERM: {stop_code}"
+            )
+        restart_mark = len(owner.timeline)
         self.start_bridge()
 
         def threaded_delivery_observed(before_count=before) -> bool:
@@ -1141,6 +1243,28 @@ class IntegrationRun:
         )
         await asyncio.sleep(0.5)
         await owner.sync_once()
+        after_restart = feedback_window(
+            owner.timeline,
+            restart_mark,
+            "Fake integration answer: hold first threaded restart request",
+            include_concurrent=True,
+        )
+        if not any(
+            entry["kind"] == "typing" and entry["bridge"] for entry in after_restart
+        ):
+            held = next(
+                item
+                for item in json.loads(
+                    (self.fake_state / "fake-openrig.json").read_text()
+                )["prompts"]
+                if item["prompt"].startswith("hold first threaded restart request")
+            )
+            raise CheckFailure(
+                "bridge typing was not restored after restart for the in-flight "
+                f"thread reply (fake completed_at={held.get('completed_at')}, "
+                f"bridge restarted_at={self.bridge_started_ms / 1000:.3f}, "
+                f"window={after_restart})"
+            )
 
         threaded_messages = [
             message
@@ -1235,7 +1359,10 @@ class IntegrationRun:
                 "An encrypted owner prompt already in m.thread survived a bridge "
                 "restart while the fake seat was busy. Commentary and final answer "
                 "were each delivered once under the canonical thread root, and the "
-                "single Matrix qitem completed pending -> in-progress -> done."
+                "single Matrix qitem completed pending -> in-progress -> done. "
+                "Bridge typing was observed for the reply inside the existing "
+                "thread; SIGTERM stopped the running bridge gracefully (exit 0) "
+                "and the restarted bridge restored typing before the answer."
             ),
         )
 
@@ -1412,6 +1539,17 @@ class IntegrationRun:
         )
         await asyncio.sleep(0.2)
         await owner.sync_once()
+        first_answer = bridge_message_index(
+            owner.timeline, "Fake integration answer: hold first request"
+        )
+        between_turns = feedback_window(
+            owner.timeline,
+            first_answer + 1,
+            "Fake integration answer: second queued request",
+        )
+        require_continuous_feedback(between_turns, "queued turn handover")
+        if not any(entry["kind"] == "status" for entry in owner.timeline):
+            raise CheckFailure("agent status updates were not observed in the timeline")
         fake = json.loads((self.fake_state / "fake-openrig.json").read_text())
         records = fake["prompts"]
         validate_fifo_records(
@@ -1431,7 +1569,9 @@ class IntegrationRun:
                 "first turn; Matrix showed the pinned queue notice and the "
                 "fake OpenRig transport received the second prompt only after "
                 "recording completion of the first "
-                f"({first['completed_at']} < {second['sent_at']})."
+                f"({first['completed_at']} < {second['sent_at']}). Between the "
+                "two answers the owner timeline showed no ready status and no "
+                "gap in the bridge typing indicator."
             ),
         )
 
@@ -1991,6 +2131,15 @@ class IntegrationRun:
             )
         for item in late_qitems:
             validate_qitem_history(item)
+        root_answer = bridge_message_index(
+            owner.timeline, "Fake integration answer: hold first late admission root"
+        )
+        awaiting_follow_up = feedback_window(
+            owner.timeline,
+            root_answer + 1,
+            "Late steering answer:",
+        )
+        require_continuous_feedback(awaiting_follow_up, "late-admitted thread follow-up")
         self.record(
             "steering-late-admission",
             "pass",
@@ -2001,7 +2150,9 @@ class IntegrationRun:
                 "follow-up as a later turn. Matrix received one answer with both "
                 "the follow-up source ID and canonical completed-root thread; "
                 "the batch appeared exactly once in the transcript and was never "
-                "sent as a fallback prompt."
+                "sent as a fallback prompt. Between the root answer and the "
+                "follow-up answer the room never turned ready and bridge typing "
+                "never stopped."
             ),
         )
         self.stop_bridge()
