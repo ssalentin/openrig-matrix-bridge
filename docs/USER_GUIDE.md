@@ -189,6 +189,12 @@ Aktiv: Text · "Draft the release notes"
   or caption, galleries show the number of files and the caption; the card never
   shows local storage paths, hidden reasoning or tool output.
 - Messages that only carry a reaction (silent feedback) are not listed.
+- If a final answer cannot be sent after three attempts, the bridge fails that
+  request's qitem and posts a notice in its thread
+  (`Die Matrix-Antwort konnte nicht zugestellt werden: ...`), then refreshes the
+  card and starts the next request. The failed request stays at the head of the
+  queue, and later requests wait, until Matrix accepts that notice. This hold has
+  no time limit yet (Issue #62).
 
 ## OpenRig queue behavior
 

@@ -30,6 +30,17 @@
   rebuilt after a restart, counts a steered follow-up in the active batch
   instead of as a separate turn, and never shows local paths, secrets or hidden
   output. Files, images and galleries show their filename or caption.
+- Fix a request that waited behind a busy seat staying labelled as the next
+  request after it started: starting it now refreshes the pinned queue card.
+- Behavior change when a final answer cannot be sent: after 3 failed sends the
+  bridge fails the qitem, posts a thread notice
+  (`Die Matrix-Antwort konnte nicht zugestellt werden: ...`), refreshes the card
+  and starts the next request. The request stays at the head of the queue until
+  Matrix accepts that notice and is retried on every poll until then; `main`
+  dropped it silently. Two existing tests were adjusted for this
+  (`test_final_delivery_failure_retries_terminal_card_before_advancing` and
+  `test_persistent_final_delivery_failure_fails_qitem_and_advances`). The retry
+  and hold are unbounded; see Issue #62.
 - Rebase the hybrid steering implementation onto current `main` release docs,
   setup guidance, artifacts, and harness changes.
 
