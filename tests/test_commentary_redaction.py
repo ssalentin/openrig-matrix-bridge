@@ -84,6 +84,16 @@ def test_credentials_are_replaced_by_a_category_marker(text, secret, marker):
             f"{COOKIE} gesetzt",
         ),
         (
+            'Cookie: a="x y"; sid=SECRETSIDVALUE123456 gesetzt',
+            "SECRETSIDVALUE123456",
+            f"{COOKIE} gesetzt",
+        ),
+        (
+            "Cookie: theme=dark; connect.sid=s%3AabcSECRET gesetzt",
+            "abcSECRET",
+            f"{COOKIE} gesetzt",
+        ),
+        (
             "Cookie: session=abcdef1234567890 gesetzt und weiter",
             "abcdef1234567890",
             f"{COOKIE} gesetzt und weiter",
@@ -105,6 +115,25 @@ def test_password_containing_at_sign_is_fully_replaced():
     assert "ssw0rdSECRET" not in summary
     assert "@ssw0rd" not in summary
     assert summary.startswith(f"open https://{CREDENTIALS}@")
+
+
+@pytest.mark.parametrize(
+    ("text", "secret", "prefix"),
+    [
+        ("open https://us@er:pa@ssSECRETVAL@host/x", "SECRETVAL", "open https://"),
+        (
+            "smtp://alice@example.com:Passw0rdSECRET@smtp.example.com ok",
+            "Passw0rdSECRET",
+            "smtp://",
+        ),
+    ],
+)
+def test_username_containing_at_sign_is_fully_replaced(text, secret, prefix):
+    summary = sanitize_activity_summary(text)
+
+    assert secret not in summary
+    assert "alice" not in summary and "us@er" not in summary
+    assert summary.startswith(f"{prefix}{CREDENTIALS}@")
 
 
 def test_nul_delimited_words_in_commentary_do_not_crash():

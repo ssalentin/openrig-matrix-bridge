@@ -141,7 +141,7 @@ CREDENTIAL_VALUE = re.compile(
     r"\s*[:=]\s*(?:\"[^\"]*\"|'[^']*'|\S+)"
 )
 URI_USERINFO = re.compile(
-    r"(?i)\b[a-z][a-z0-9+.-]*://(?:[^\s/@:]*):[^\s/]+@"
+    r"(?i)\b[a-z][a-z0-9+.-]*://[^\s/:]*:[^\s/]+@"
 )
 AUTHORIZATION_SCHEME = re.compile(
     r"(?i)\b(?:proxy-)?authorization\b[^\r\n]{0,40}"
@@ -149,8 +149,8 @@ AUTHORIZATION_SCHEME = re.compile(
 )
 COOKIE_VALUE = re.compile(
     r"(?i)\b(?:set-)?cookie\b(?:\s*[:=]\s*|\s+)"
-    r"(?:[a-z0-9_-]+\s*=\s*)?[^\s;]+"
-    r"(?:\s*;\s*[a-z0-9_-]+(?:\s*=\s*[^\s;]+)?)*"
+    r"(?:[^\s;=]+\s*=\s*)?(?:\"[^\"]*\"|[^\s;]+)"
+    r"(?:\s*;\s*[^\s;=]+(?:\s*=\s*(?:\"[^\"]*\"|[^\s;]+))?)*"
 )
 BARE_TOKEN = re.compile(
     r"(?i)\b(?:"
