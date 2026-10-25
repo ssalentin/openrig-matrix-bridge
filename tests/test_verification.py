@@ -438,3 +438,192 @@ def test_rejection_is_persisted_before_cancel():
 
 async def _completed(value):
     return value
+
+
+class FakeSas:
+    """The matrix-nio SAS state the bridge reads."""
+
+    def __init__(self, *, verified=False, canceled=False, code="", reason=""):
+        self.verified = verified
+        self.canceled = canceled
+        self.cancel_code = code
+        self.cancel_reason = reason
+        self.other_olm_device = SimpleNamespace(id="OWNERPHONE")
+
+
+def mac_event(transaction_id="tx-one"):
+    from nio import KeyVerificationMac
+
+    return KeyVerificationMac({}, "@owner:example.org", transaction_id, {}, "")
+
+
+def awaiting(phase):
+    records = {}
+    begin_verification(records, "tx-one", "!advisor:example.org", now=100)
+    mark_verification(records, "tx-one", phase, now=110)
+    return records
+
+
+def owner_bridge(records, client):
+    bridge = verification_bridge(records, client)
+    bridge._verification_room = lambda: "!advisor:example.org"
+    bridge.config = SimpleNamespace(allowed_users=("@owner:example.org",))
+    return bridge
+
+
+def test_confirmation_after_element_confirmed_first_completes_verification():
+    # Element's MAC arrived before the owner typed `ja`; nio verifies the
+    # device inside confirm_short_auth_string and no further MAC will come.
+    records = awaiting("awaiting_confirmation")
+    sas = FakeSas()
+
+    class Client:
+        def __init__(self):
+            self.key_verifications = {"tx-one": sas}
+
+        async def confirm_short_auth_string(self, transaction_id):
+            sas.verified = True
+            return SimpleNamespace()
+
+    bridge = owner_bridge(records, Client())
+    room = SimpleNamespace(room_id="!advisor:example.org")
+
+    assert asyncio.run(
+        bridge._handle_verification_reply(room, SimpleNamespace(event_id="$ja"), "ja")
+    )
+
+    assert records["tx-one"]["phase"] == "verified"
+    assert "erfolgreich verifiziert" in bridge.sent[-1][1]
+    assert "Element-Dialog" not in bridge.sent[-1][1]
+
+
+def test_confirmation_before_element_waits_for_its_mac():
+    records = awaiting("awaiting_confirmation")
+
+    class Client:
+        def __init__(self):
+            self.key_verifications = {"tx-one": FakeSas()}
+
+        async def confirm_short_auth_string(self, transaction_id):
+            return SimpleNamespace()
+
+    bridge = owner_bridge(records, Client())
+    room = SimpleNamespace(room_id="!advisor:example.org")
+    asyncio.run(
+        bridge._handle_verification_reply(room, SimpleNamespace(event_id="$ja"), "ja")
+    )
+
+    assert records["tx-one"]["phase"] == "awaiting_mac"
+    assert "Element-Dialog" in bridge.sent[-1][1]
+
+
+def test_key_mismatch_mac_fails_the_verification_and_tells_the_owner():
+    records = awaiting("awaiting_mac")
+    sas = FakeSas(
+        canceled=True,
+        code="m.key_mismatch",
+        reason="Mismatched short authentication string",
+    )
+    bridge = owner_bridge(records, SimpleNamespace(key_verifications={"tx-one": sas}))
+
+    asyncio.run(bridge._on_verification(mac_event()))
+
+    assert records["tx-one"]["phase"] == "failed"
+    assert records["tx-one"]["cancel_code"] == "m.key_mismatch"
+    (message,) = [text for _room, text, _reply in bridge.sent]
+    assert "m.key_mismatch" in message
+    assert "nicht verifiziert" in message
+
+
+def test_early_mac_before_the_owner_confirms_keeps_waiting():
+    records = awaiting("awaiting_confirmation")
+    bridge = owner_bridge(
+        records,
+        SimpleNamespace(key_verifications={"tx-one": FakeSas()}),
+    )
+
+    asyncio.run(bridge._on_verification(mac_event()))
+
+    assert records["tx-one"]["phase"] == "awaiting_confirmation"
+    assert bridge.sent == []
+
+
+def test_cancel_from_the_owner_device_is_recorded_and_reported():
+    from nio import KeyVerificationCancel
+
+    records = awaiting("awaiting_confirmation")
+    bridge = owner_bridge(records, SimpleNamespace(key_verifications={}))
+    event = KeyVerificationCancel(
+        {}, "@owner:example.org", "tx-one", "m.user", "Cancelled by user"
+    )
+
+    asyncio.run(bridge._on_verification(event))
+
+    assert records["tx-one"]["phase"] == "cancelled"
+    assert "Cancelled by user" in bridge.sent[-1][1]
+
+
+def test_start_without_emoji_is_declined_with_an_explanation():
+    records = {}
+    cancelled = []
+
+    class Client:
+        def __init__(self):
+            self.key_verifications = {}
+
+        async def accept_key_verification(self, transaction_id):
+            raise AssertionError("an unsupported method must not be accepted")
+
+        async def cancel_key_verification(self, transaction_id, reject=False):
+            cancelled.append((transaction_id, reject))
+            return SimpleNamespace()
+
+    bridge = owner_bridge(records, Client())
+    event = KeyVerificationStart(
+        {},
+        "@owner:example.org",
+        "tx-one",
+        "OWNER",
+        "m.sas.v1",
+        ["curve25519-hkdf-sha256"],
+        ["sha256"],
+        ["hkdf-hmac-sha256.v2"],
+        ["decimal"],
+    )
+
+    asyncio.run(bridge._on_verification(event))
+
+    assert cancelled == [("tx-one", True)]
+    assert records["tx-one"]["phase"] == "rejected"
+    assert "Emoji" in bridge.sent[-1][1]
+
+
+def test_declining_an_unknown_verification_records_failure_not_a_crash():
+    from nio import LocalProtocolError
+
+    records = {}
+
+    class Client:
+        def __init__(self):
+            self.key_verifications = {}
+
+        async def cancel_key_verification(self, transaction_id, reject=False):
+            raise LocalProtocolError("no such verification")
+
+    bridge = owner_bridge(records, Client())
+    event = KeyVerificationStart(
+        {},
+        "@owner:example.org",
+        "tx-one",
+        "OWNER",
+        "m.sas.v1",
+        ["curve25519-hkdf-sha256"],
+        ["sha256"],
+        ["hkdf-hmac-sha256.v2"],
+        ["decimal"],
+    )
+
+    asyncio.run(bridge._on_verification(event))
+
+    assert records["tx-one"]["phase"] == "failed"
+    assert "Emoji" in bridge.sent[-1][1]

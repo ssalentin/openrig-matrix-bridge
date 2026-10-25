@@ -79,6 +79,18 @@
   and after a rejected finish update: a row the agent already closed counts as
   finished, with no `note_append_fields_not_admitted` warning and no duplicate
   transition.
+- Complete a device verification when the owner typed `ja` after Element had
+  already confirmed, instead of waiting for a MAC that had arrived and later
+  reporting a timeout.
+- Report a SAS that matrix-nio canceled on its MAC (for example
+  `m.key_mismatch`) as failed, with the code, instead of leaving it pending;
+  decline a verification request without the emoji comparison with an
+  explanation.
+- `doctor` lists the owner devices the bridge has verified and the latest
+  verification outcome; `setup` prints the verification next step.
+- Document per-device trust and the cross-signing evaluation
+  (`docs/CROSS_SIGNING.md`): keep `matrix-nio` below 0.26, whose release has no
+  cross-signing and open SAS regressions against Element.
 
 ## 0.11.0
 

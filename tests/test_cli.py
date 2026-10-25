@@ -425,3 +425,66 @@ def test_send_file_plain_output_is_unchanged_without_json(tmp_path, capsys):
     output = capsys.readouterr().out.strip()
     assert output.startswith("queued file-")
     assert output.endswith("the bridge did not confirm delivery within 0s")
+
+
+def verification_config(tmp_path):
+    from types import SimpleNamespace
+
+    return SimpleNamespace(
+        state_dir=tmp_path,
+        user_id="@bot:example.org",
+        device_id="BOT",
+        allowed_users=("@owner:example.org",),
+    )
+
+
+def test_doctor_reports_owner_devices_this_bot_verified(tmp_path):
+    from openrig_matrix_bridge.cli import device_verification_report
+
+    store = tmp_path / "matrix-store"
+    store.mkdir()
+    (store / "@bot:example.org_BOT.trusted_devices").write_text(
+        "@owner:example.org PHONE matrix-ed25519 abc\n"
+        "@owner:example.org LAPTOP matrix-ed25519 def\n"
+        "@someone:example.org OTHER matrix-ed25519 ghi\n",
+        encoding="utf-8",
+    )
+
+    info, warnings = device_verification_report(verification_config(tmp_path))
+
+    assert warnings == []
+    assert info == [
+        (
+            "Device verification: @owner:example.org devices verified by this "
+            "bot: LAPTOP, PHONE (trust is per device; cross-signing is not "
+            "provided)"
+        )
+    ]
+
+
+def test_doctor_warns_with_steps_when_no_owner_device_is_verified(tmp_path):
+    from openrig_matrix_bridge.cli import device_verification_report
+
+    (tmp_path / "state.json").write_text(
+        json.dumps(
+            {
+                "verifications": {
+                    "tx-old": {"phase": "timed_out", "updated_at": 100},
+                    "tx-new": {
+                        "phase": "failed",
+                        "updated_at": 200,
+                        "cancel_code": "m.key_mismatch",
+                    },
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    info, warnings = device_verification_report(verification_config(tmp_path))
+
+    assert info == ["Latest device verification: failed (m.key_mismatch)"]
+    (warning,) = warnings
+    assert "no device of @owner:example.org is verified" in warning
+    assert "Verify by emoji" in warning
+    assert "docs/SECURITY.md#matrix-device-verification" in warning

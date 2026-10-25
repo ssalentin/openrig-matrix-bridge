@@ -26,6 +26,7 @@ from nio import (
     KeyVerificationKey,
     KeyVerificationMac,
     KeyVerificationStart,
+    LocalProtocolError,
     MatrixRoom,
     ProfileSetAvatarResponse,
     ReactionEvent,
@@ -2061,6 +2062,24 @@ class MatrixBridge:
                     event.event_id,
                 )
             else:
+                sas = self.client.key_verifications.get(transaction_id)
+                if sas is not None and sas.verified:
+                    # Element confirmed first: its MAC already arrived, and
+                    # matrix-nio verified the device while confirming here.
+                    mark_verification(
+                        self.verification_records,
+                        transaction_id,
+                        "verified",
+                        now=time.time(),
+                    )
+                    self.state.save()
+                    await self._send(
+                        room.room_id,
+                        f"Gerät `{sas.other_olm_device.id}` wurde erfolgreich "
+                        "verifiziert.",
+                        event.event_id,
+                    )
+                    return True
                 mark_verification(
                     self.verification_records,
                     transaction_id,
@@ -2222,6 +2241,7 @@ class MatrixBridge:
         room_id = self._verification_room()
         if isinstance(event, KeyVerificationStart):
             if "emoji" not in event.short_authentication_string:
+                await self._decline_verification_method(event, room_id)
                 return
             begin_verification(
                 self.verification_records,
@@ -2303,6 +2323,26 @@ class MatrixBridge:
 
         if isinstance(event, KeyVerificationMac):
             sas = self.client.key_verifications.get(event.transaction_id)
+            if sas is not None and sas.canceled:
+                # matrix-nio rejected the MAC (key mismatch or an unexpected
+                # message) and sends the cancellation to the other device.
+                record = self.verification_records.get(event.transaction_id)
+                if record is not None:
+                    mark_verification(
+                        self.verification_records,
+                        event.transaction_id,
+                        "failed",
+                        now=time.time(),
+                    )
+                    record["cancel_code"] = sas.cancel_code
+                    self.state.save()
+                await self._send(
+                    room_id,
+                    "Geräteverifikation fehlgeschlagen "
+                    f"({sas.cancel_code}: {sas.cancel_reason}). Das Gerät ist "
+                    "nicht verifiziert; bitte starte die Verifikation erneut.",
+                )
+                return
             if sas is not None and sas.verified:
                 if event.transaction_id in self.verification_records:
                     mark_verification(
@@ -2331,6 +2371,47 @@ class MatrixBridge:
                 room_id,
                 f"Geräteverifikation abgebrochen: {event.reason or event.code}",
             )
+
+    async def _decline_verification_method(
+        self,
+        event: KeyVerificationStart,
+        room_id: str,
+    ) -> None:
+        """Reject a SAS start that does not offer the emoji comparison."""
+        transaction_id = event.transaction_id
+        begin_verification(
+            self.verification_records,
+            transaction_id,
+            room_id,
+            now=time.time(),
+        )
+        mark_verification(
+            self.verification_records,
+            transaction_id,
+            "cancelling",
+            now=time.time(),
+        )
+        self.state.save()
+        try:
+            result = await self.client.cancel_key_verification(
+                transaction_id,
+                reject=True,
+            )
+        except LocalProtocolError as exc:
+            result = exc
+        mark_verification(
+            self.verification_records,
+            transaction_id,
+            "failed" if isinstance(result, (ToDeviceError, Exception)) else "rejected",
+            now=time.time(),
+        )
+        self.state.save()
+        await self._send(
+            room_id,
+            "Geräteverifikation abgelehnt: Diese Bridge unterstützt nur den "
+            "Emoji-Vergleich. Bitte starte die Verifikation im Matrix-Client mit "
+            "Emojis.",
+        )
 
     async def _enqueue_prompt(
         self,
