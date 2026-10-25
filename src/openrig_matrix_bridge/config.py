@@ -233,7 +233,7 @@ def load_config(path: str | Path) -> BridgeConfig:
             "openrig.steering_admission_timeout_seconds must be positive"
         )
     acceptance_reaction_enabled = bool(
-        transport.get("acceptance_reaction_enabled", True)
+        transport.get("acceptance_reaction_enabled", False)
     )
     reaction_feedback_enabled = bool(transport.get("reaction_feedback_enabled", True))
     mirror_commentary = bool(transport.get("mirror_commentary", True))

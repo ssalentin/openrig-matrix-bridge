@@ -9,9 +9,10 @@
   materialization without resending.
 - Keep every source event, qitem, and canonical thread root, producing one
   coherent answer for an admitted same-thread batch.
-- Reaction 👍 once on each durably accepted human message as an acceptance
-  receipt (not completion); idempotent across retries and restarts, controlled
-  by `openrig.acceptance_reaction_enabled`.
+- Optional 👍 acceptance receipt, off by default; enable it with
+  `openrig.acceptance_reaction_enabled: true`. When enabled it is sent once on
+  each durably accepted human message (accepted, not completed) and is
+  idempotent across retries and restarts.
 - End a seat that stays busy without steering admission for
   `openrig.response_timeout_minutes` in a bounded terminal failure recorded in
   `steering_failures`, without resending.

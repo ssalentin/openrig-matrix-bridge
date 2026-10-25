@@ -2211,7 +2211,7 @@ class MatrixBridge:
         """
         if suppress_reply or not queue_tracked:
             return False
-        if not getattr(self.config, "acceptance_reaction_enabled", True):
+        if not getattr(self.config, "acceptance_reaction_enabled", False):
             return False
         acks = self.state.data.setdefault("acceptance_reactions", {})
         record = acks.get(event_id)
@@ -2294,6 +2294,8 @@ class MatrixBridge:
         return True
 
     async def _recover_acceptance_reactions(self) -> None:
+        if not getattr(self.config, "acceptance_reaction_enabled", False):
+            return
         acks = self.state.data.get("acceptance_reactions", {})
         now = time.time()
         for event_id, record in list(acks.items()):

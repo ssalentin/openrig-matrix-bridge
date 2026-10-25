@@ -65,14 +65,17 @@ that terminal, and reads the seat's own Codex transcript for progress and the
 final answer. Matrix prompts also create OpenRig queue items so work remains
 visible and durable outside the chat client.
 
-## Acceptance receipt
+## Optional acceptance receipt
 
-Once the bridge has durably accepted a message (and its OpenRig queue item is
-created when queueing is enabled; the request is queued or steered), it adds one 👍 to it. The 👍
-means *accepted*, not finished; the final answer is still the completion signal.
-Retries, restarts, and batched steering never duplicate it. Untrusted, rejected,
-and too-old messages get none. Disable it with
-`openrig.acceptance_reaction_enabled: false`.
+The bridge can add one 👍 to a human message once it has durably accepted it.
+This is off by default; enable it with
+`openrig.acceptance_reaction_enabled: true`. The 👍 means *accepted*, not
+finished; the final answer is still the completion signal. When the
+receipt is off, the status card and typing indicator are the live
+acknowledgement for top-level and idle-thread messages. Steered or
+late-admitted thread follow-ups, and any request in flight across a bridge
+restart, are tracked in issue #47. See the
+[user guide](docs/USER_GUIDE.md#optional-acceptance-receipt) for details.
 
 ## Follow-ups and steering
 

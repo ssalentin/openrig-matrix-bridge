@@ -409,6 +409,45 @@ def test_disabled_acceptance_reaction_sends_nothing(tmp_path: Path):
     assert harness.prompts == [("session-one", "root request")]
 
 
+def test_default_config_accepts_and_starts_work_without_a_reaction(
+    tmp_path: Path,
+):
+    harness = AckHarness(tmp_path)
+    del harness.bridge.config.acceptance_reaction_enabled
+    feedback: list[tuple[str, object]] = []
+
+    async def set_typing(room_id, typing):
+        feedback.append(("typing", typing))
+
+    async def update_status(agent, status, detail):
+        feedback.append(("status", status))
+
+    harness.bridge._set_typing = set_typing
+    harness.bridge._update_agent_status = update_status
+
+    harness.enqueue("$root", "root request", None)
+    asyncio.run(harness.bridge._recover_acceptance_reactions())
+
+    assert harness.client.sends == []
+    assert harness.acks() == {}
+    assert harness.prompts == [("session-one", "root request")]
+    assert feedback == [("typing", True), ("status", "busy")]
+
+
+def test_disabling_the_receipt_stops_pending_reaction_recovery(tmp_path: Path):
+    harness = AckHarness(tmp_path)
+    harness.client.fail_next = 1
+    harness.enqueue("$root", "root request", None)
+    assert harness.acks()["$root"]["phase"] == "sending"
+    sends = len(harness.client.sends)
+
+    harness.bridge.config.acceptance_reaction_enabled = False
+    recover_after_backoff(harness, "$root")
+
+    assert len(harness.client.sends) == sends
+    assert harness.client.reactions("$root") == []
+
+
 def test_silent_reaction_feedback_gets_no_acknowledgement(tmp_path: Path):
     harness = AckHarness(tmp_path)
     asyncio.run(

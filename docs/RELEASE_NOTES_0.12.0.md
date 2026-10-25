@@ -22,12 +22,15 @@ without starting a second agent or allowing concurrent Codex turns.
   ends in a bounded terminal timeout: the thread shows
   `Steering-Zeitüberschreitung`, `state.json` records the batch under
   `steering_failures`, and the input is not resent.
-- Each durably accepted human message gets exactly one 👍 (`m.annotation`),
-  sent after the qitem is persisted and the request is queued or joined to a
-  steering batch. It means accepted, not finished; the final answer remains the
-  completion signal. Retries, restarts, duplicate polls, and batch members never
+- An optional 👍 acceptance receipt, off by default, is enabled with
+  `openrig.acceptance_reaction_enabled: true`. When enabled, each durably
+  accepted human message gets exactly one 👍 (`m.annotation`), sent after the
+  request is saved and queued or joined to a steering batch. When it is
+  off, the status card and typing indicator are the live acknowledgement for
+  top-level and idle-thread messages (see Known limits). It means
+  accepted, not finished; the final answer remains the completion signal.
+  Retries, restarts, duplicate polls, and batch members never
   duplicate it, and untrusted, ignored, duplicate, or rejected events get none.
-  `openrig.acceptance_reaction_enabled` (default `true`) disables it.
 - The hybrid steering implementation is integrated with the current setup,
   attachments, voice, activity-card, restart, and release documentation from
   `main`.
@@ -53,9 +56,15 @@ the configuration and complete state directory before replacing the service.
 
 ## Known limits
 
+- Status and typing feedback is not yet reliable for steered or late-admitted
+  thread follow-ups, or for any request in flight across a bridge restart: a
+  late-admitted follow-up can show "ready" without typing, "ready" can flash
+  between queued turns, and a request in flight across a restart comes back with
+  the busy status but no typing until it is answered. Tracked in issue #47.
 - Events delivered during a restarted bridge's initial sync are not routed: the
-  message gets no 👍 and is not delivered, which makes the gap visible to the
-  owner. This predates 0.12.0 and is also present on `main`.
+  message is not delivered and, with the receipt enabled, gets no 👍, which
+  makes the gap visible to the owner. This predates 0.12.0 and is also present
+  on `main`.
 - Matrix device SAS and complete cross-signing remain tracked by Issue #1.
 - Activity-card duplication and legacy pending-state reconciliation remain
   separately tracked by Issues #39 and #41.

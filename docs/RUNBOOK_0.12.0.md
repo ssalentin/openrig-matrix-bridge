@@ -22,7 +22,7 @@ each item in the acceptance record at the end of this runbook.
   rollback artifact (sections 1 to 4).
 - [ ] `doctor` passes and exactly one bridge process runs (section 4).
 - [ ] Observe production using the smoke check (section 6), including the
-  thumbs-up receipt, and decide to accept or roll back (section 7).
+  thumbs-up receipt if you enabled it, and decide to accept or roll back (section 7).
 
 ### Evidence boundary
 
@@ -148,7 +148,8 @@ Before production ownership traffic, use a dedicated disposable Codex seat:
 5. Repeat after a bridge restart and retain redacted timing evidence. Send the
    follow-ups only after the restarted bridge has finished its initial sync:
    events delivered during that sync are not routed. This predates 0.12.0. Such
-   a message receives no 👍, which makes the gap visible to the owner.
+   a message is not delivered and, with the receipt enabled, gets no 👍, which
+   makes the gap visible to the owner.
 
 Do not use the OpenRig production bridge or this project-cell seat as the
 disposable target.
@@ -163,8 +164,10 @@ same-thread follow-ups while the seat is working. Record:
 - transcript admission time and turn ID;
 - number of transcript user records and Matrix answers;
 - qitem closure for every source event;
-- exactly one 👍 on each of your own messages once it is accepted, and none on
-  a message from an untrusted sender (the 👍 means accepted, not finished); and
+- with `openrig.acceptance_reaction_enabled: true`, exactly one 👍 on each of
+  your own messages once it is accepted, and none on a message from an
+  untrusted sender (the 👍 means accepted, not finished); with the default
+  (off), no 👍 at all; and
 - any remaining inability to observe a pane boundary.
 
 A duplicate transcript input, duplicate side effect, missing qitem, multiple
