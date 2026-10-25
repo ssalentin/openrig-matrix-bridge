@@ -23,8 +23,9 @@ queue items.
 
 ![Generic Agent inbox in Element X, with seven role-specific OpenRig agents and an OpenRig status capsule](docs/screenshots/agent-inbox-generic.png)
 
-*Edited product illustration based on a real Element X render with synthetic
-data. See [screenshot provenance](docs/screenshots/README.md).*
+*Example view in the Element X Matrix client app on Android. This screenshot is
+edited with generic sample content. See
+[screenshot provenance](docs/screenshots/README.md).*
 
 ## What you get
 
