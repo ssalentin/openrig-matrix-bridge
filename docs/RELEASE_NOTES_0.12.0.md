@@ -31,6 +31,14 @@ without starting a second agent or allowing concurrent Codex turns.
   accepted, not finished; the final answer remains the completion signal.
   Retries, restarts, duplicate polls, and batch members never
   duplicate it, and untrusted, ignored, duplicate, or rejected events get none.
+- The pinned queue card lists the active request and the ordered waiting
+  requests with source, thread marker and a sanitized preview. See
+  [The queue card](USER_GUIDE.md#the-queue-card). Starting a request that waited
+  behind a busy seat now refreshes the card.
+- Changed behavior: a final answer that fails to send three times now posts a
+  thread failure notice and keeps the request at the head of the queue until
+  Matrix accepts that notice; earlier builds dropped it silently. See Known
+  limits.
 - The hybrid steering implementation is integrated with the current setup,
   attachments, voice, activity-card, restart, and release documentation from
   `main`.
@@ -56,6 +64,9 @@ the configuration and complete state directory before replacing the service.
 
 ## Known limits
 
+- The failure-notice hold described above has no time limit: if Matrix keeps
+  rejecting every send for a room, that agent's later requests wait behind the
+  failed one. Tracked in Issue #62.
 - Matrix typing and the room status are room-wide: `m.typing` has no thread
   field (element-meta#1495), so clients may show the typing indicator only in
   the main room timeline, not inside a thread view. Element X rendering on a

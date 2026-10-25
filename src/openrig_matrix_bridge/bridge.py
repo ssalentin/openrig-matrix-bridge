@@ -215,6 +215,159 @@ def activity_card_text(request: dict[str, Any]) -> str:
     return text
 
 
+QUEUE_SOURCE_LABELS = {
+    "message": "Text",
+    "attachment": "Datei",
+    "image": "Bild",
+    "audio": "Audio",
+    "reaction": "Reaktion",
+    "decision": "Entscheidung",
+    "gallery": "Galerie",
+}
+QUEUE_FILENAME_LINE = re.compile(r"^Originaldateiname: (\".*\")$", re.MULTILINE)
+QUEUE_CAPTION_LINE = re.compile(r"^Bildunterschrift: (.+)$", re.MULTILINE)
+QUEUE_GALLERY_ITEM_LINE = re.compile(r"^\d+\. \".*\"", re.MULTILINE)
+
+
+def queue_preview(text: object, limit: int = 96) -> str:
+    summary = sanitize_activity_summary(str(text or ""))
+    if summary == "[redacted unsafe commentary]":
+        return summary
+    if len(summary) > limit:
+        return summary[: limit - 1].rstrip() + "…"
+    return summary
+
+
+def queue_request_preview(request: dict[str, Any]) -> str:
+    """Return a safe one-line description of what a queued request contains.
+
+    File, image and gallery prompts embed local inbox paths for the agent, so their
+    previews are built from the original filename or caption, never the prompt.
+    """
+    text = str(request.get("text") or "")
+    label = str(request.get("source_label") or "message")
+    caption_match = QUEUE_CAPTION_LINE.search(text)
+    caption = caption_match.group(1) if caption_match else ""
+    if label == "attachment":
+        match = QUEUE_FILENAME_LINE.search(text)
+        if match:
+            try:
+                return queue_preview(json.loads(match.group(1)))
+            except ValueError:
+                pass
+        return ""
+    if label == "image":
+        return queue_preview(caption)
+    if label == "gallery":
+        count = len(QUEUE_GALLERY_ITEM_LINE.findall(text))
+        parts = [f"{count} {'Datei' if count == 1 else 'Dateien'}"] if count else []
+        if caption:
+            parts.append(caption)
+        return queue_preview(" · ".join(parts))
+    return queue_preview(text)
+
+
+def queue_request_context(request: dict[str, Any]) -> str:
+    source_label = str(request.get("source_label") or "message")
+    source = QUEUE_SOURCE_LABELS.get(source_label, source_label)
+    event_id = str(request.get("event_id") or "")
+    thread_root = str(request.get("thread_root_event_id") or "")
+    if thread_root and thread_root != event_id:
+        return f"{source} · Thread"
+    return source
+
+
+def queue_request_entry(request: dict[str, Any]) -> str:
+    steering_entries = request.get("steering_entries")
+    if isinstance(steering_entries, list) and steering_entries:
+        preview = queue_preview(
+            "; ".join(
+                str(entry.get("text") or "")
+                for entry in steering_entries
+                if isinstance(entry, dict)
+            )
+        )
+    else:
+        preview = queue_request_preview(request)
+    context = queue_request_context(request)
+    return f'{context} · "{preview}"' if preview else context
+
+
+def queue_notice_text(
+    pending: list[dict[str, Any]],
+    *,
+    priority_label: str = "hoch",
+) -> str | None:
+    visible = [
+        request
+        for request in pending
+        if not request.get("suppress_reply")
+    ]
+    if not visible:
+        return None
+    first = visible[0]
+    active = first if first.get("started_at") is not None else None
+    steering_group = None
+    if active is not None:
+        group_id = active.get("steering_group_id")
+        if group_id:
+            steering_group = next(
+                (
+                    request
+                    for request in visible[1:]
+                    if request.get("id") == group_id
+                    and request.get("deferred_steering")
+                    and request.get("injection_phase") != "fallback"
+                ),
+                None,
+            )
+    waiting = (
+        [
+            request
+            for request in visible[1:]
+            if request is not steering_group
+        ]
+        if active is not None
+        else visible
+    )
+    noun = "Nachricht wartet" if len(waiting) == 1 else "Nachrichten warten"
+    source_ids = []
+    if active is not None:
+        active_sources = active.get("source_event_ids")
+        if isinstance(active_sources, list):
+            source_ids.extend(active_sources)
+    if steering_group is not None:
+        steering_sources = steering_group.get("source_event_ids")
+        if isinstance(steering_sources, list):
+            source_ids.extend(steering_sources)
+    source_count = len(set(source_ids)) if isinstance(source_ids, list) else 1
+    active_label = (
+        f"Aktiv ({source_count} Eingaben)"
+        if active is not None and source_count > 1
+        else "Aktiv"
+    )
+    lines = [
+        (
+            f"⏳ **Warteschlange:** {len(waiting)} {noun} · "
+            f"Priorität {priority_label}."
+        ),
+        "",
+    ]
+    if active is not None:
+        lines.append(f"**{active_label}:** {queue_request_entry(active)}")
+    else:
+        lines.append(f"**Nächste Anfrage:** {queue_request_entry(first)}")
+        waiting = waiting[1:]
+    if waiting:
+        lines.extend(
+            f"{position}. {queue_request_entry(request)}"
+            for position, request in enumerate(waiting, start=1)
+        )
+    elif active is not None:
+        lines.append("Keine weiteren Nachrichten warten.")
+    return "\n".join(lines)
+
+
 class QitemLifecycleError(GatewayError):
     pass
 
@@ -584,6 +737,7 @@ class MatrixBridge:
         await self._reconcile_pending_operations()
         await self._resume_galleries()
         await self._recover_acceptance_reactions(startup=True)
+        await self._restore_queue_notices()
         await self._restore_activity_feedback()
         poller = asyncio.create_task(self._poll_answers(), name="openrig-matrix-poller")
         status_poller = asyncio.create_task(
@@ -1164,31 +1318,70 @@ class MatrixBridge:
         notices = self.state.data.setdefault("queue_notices", {})
         notice = notices.setdefault(agent.key, {})
         event_id = notice.get("event_id")
-        if waiting <= 0:
+        pending = self.state.data.get("pending", {}).get(agent.key, [])
+        if not pending and waiting <= 0:
+            if event_id and notice.get("pinned", True):
+                await self._remove_pinned(room_id, [str(event_id)])
+                notice["pinned"] = False
+                self.state.save()
+            return
+        priority = str(
+            getattr(
+                getattr(self, "config", None),
+                "inbound_message_priority",
+                "urgent",
+            )
+        )
+        priority_label = {
+            "routine": "normal",
+            "urgent": "hoch",
+            "critical": "kritisch",
+        }.get(priority, priority)
+        text = queue_notice_text(
+            pending,
+            priority_label=priority_label,
+        )
+        if text is None and waiting > 0:
+            noun = "Nachricht wartet" if waiting == 1 else "Nachrichten warten"
+            text = (
+                f"⏳ **Warteschlange:** {waiting} {noun} · "
+                f"Priorität {priority_label}.\n\n"
+                "Diese Hinweiskarte wird aktualisiert und nach dem "
+                "Abarbeiten entpinnt."
+            )
+        if text is None:
             if event_id and notice.get("pinned", True):
                 await self._remove_pinned(room_id, [str(event_id)])
                 notice["pinned"] = False
                 self.state.save()
             return
 
-        noun = "Nachricht wartet" if waiting == 1 else "Nachrichten warten"
-        priority = str(getattr(self.config, "inbound_message_priority", "urgent"))
-        priority_label = {
-            "routine": "normal",
-            "urgent": "hoch",
-            "critical": "kritisch",
-        }.get(priority, priority)
-        text = (
-            f"⏳ **Warteschlange:** {waiting} {noun} · "
-            f"Priorität {priority_label}.\n\n"
-            "Diese Hinweiskarte wird aktualisiert und nach dem Abarbeiten entpinnt."
-        )
         target_event_id = str(event_id) if event_id else None
         response = None
         if target_event_id:
-            response = await self._edit_message(room_id, target_event_id, text)
+            try:
+                response = await self._edit_message(
+                    room_id,
+                    target_event_id,
+                    text,
+                )
+            except Exception:
+                response = None
+                LOGGER.warning(
+                    "queue notice edit raised for %s",
+                    agent.session,
+                    exc_info=True,
+                )
         if not isinstance(response, RoomSendResponse):
-            response = await self._send(room_id, text)
+            try:
+                response = await self._send(room_id, text)
+            except Exception:
+                response = None
+                LOGGER.warning(
+                    "queue notice send raised for %s",
+                    agent.session,
+                    exc_info=True,
+                )
             target_event_id = None
         if not isinstance(response, RoomSendResponse):
             LOGGER.warning(
@@ -1200,6 +1393,18 @@ class MatrixBridge:
         notice["pinned"] = True
         self.state.save()
         await self._add_pinned(room_id, [str(notice["event_id"])])
+
+    async def _restore_queue_notices(self) -> None:
+        for agent in self.config.agents.values():
+            room = self.state.data["rooms"].get(agent.key)
+            if not room:
+                continue
+            pending = self.state.data["pending"].get(agent.key, [])
+            await self._update_queue_notice(
+                agent,
+                str(room["room_id"]),
+                max(0, len(pending) - 1),
+            )
 
     async def _remove_pinned(self, room_id: str, event_ids: list[str]) -> None:
         lock = self.pin_locks.setdefault(room_id, asyncio.Lock())
@@ -2213,11 +2418,11 @@ class MatrixBridge:
             self.state.save()
             if len(pending) == 1:
                 await self._start_request(agent, pending[0], room.room_id)
-            else:
+            if not request.get("suppress_reply"):
                 await self._update_queue_notice(
                     agent,
                     room.room_id,
-                    len(pending) - 1,
+                    max(0, len(pending) - 1),
                 )
             if acknowledge:
                 await self._acknowledge_acceptance(room.room_id, event_id)
@@ -2863,6 +3068,27 @@ class MatrixBridge:
                         status_detail="bereit",
                     )
 
+    @staticmethod
+    def _request_matches_identity(
+        candidate: dict[str, Any],
+        request: dict[str, Any],
+    ) -> bool:
+        if candidate is request:
+            return True
+        request_id = request.get("id")
+        return request_id is not None and candidate.get("id") == request_id
+
+    @classmethod
+    def _is_pending_request_head(
+        cls,
+        pending: list[dict[str, Any]],
+        request: dict[str, Any],
+    ) -> bool:
+        return bool(
+            pending
+            and cls._request_matches_identity(pending[0], request)
+        )
+
     async def _fail_ambiguous_prompt(
         self,
         agent: AgentConfig,
@@ -2880,7 +3106,7 @@ class MatrixBridge:
                 request["qitem_phase"] = "done"
                 request["terminal_error"] = "Legacy request already completed"
                 pending = self.state.data["pending"][agent.key]
-                if pending and pending[0] is request:
+                if self._is_pending_request_head(pending, request):
                     pending.pop(0)
                 self.state.save()
                 return
@@ -2905,7 +3131,7 @@ class MatrixBridge:
             self.state.save()
             return
         pending = self.state.data["pending"][agent.key]
-        if pending and pending[0] is request:
+        if self._is_pending_request_head(pending, request):
             pending.pop(0)
         self.state.save()
 
@@ -2936,7 +3162,7 @@ class MatrixBridge:
             if not isinstance(response, RoomSendResponse):
                 return False
             request["failure_notice_event_id"] = response.event_id
-        if pending and pending[0] is request:
+        if self._is_pending_request_head(pending, request):
             pending.pop(0)
         self.state.save()
         return True
@@ -2986,9 +3212,19 @@ class MatrixBridge:
             self.state.save()
             return
         pending = self.state.data["pending"][agent.key]
-        was_head = bool(pending and pending[0] is request)
-        if any(item is request for item in pending):
-            pending[:] = [item for item in pending if item is not request]
+        was_head = bool(
+            pending
+            and self._request_matches_identity(pending[0], request)
+        )
+        if any(
+            self._request_matches_identity(item, request)
+            for item in pending
+        ):
+            pending[:] = [
+                item
+                for item in pending
+                if not self._request_matches_identity(item, request)
+            ]
             self.state.save()
             await self._update_queue_notice(
                 agent,
@@ -4386,7 +4622,14 @@ class MatrixBridge:
                 injection_phase = str(group.get("injection_phase") or "")
                 if injection_phase == "pending":
                     await self._attempt_steering(agent, request, group)
-                    injection_phase = str(group.get("injection_phase") or "")
+                    updated_phase = str(group.get("injection_phase") or "")
+                    if updated_phase != injection_phase:
+                        await self._update_queue_notice(
+                            agent,
+                            self._room_for_agent(agent.key),
+                            max(0, len(pending) - 1),
+                        )
+                    injection_phase = updated_phase
                     if injection_phase == "pending":
                         return
                 if injection_phase in {
@@ -4398,6 +4641,7 @@ class MatrixBridge:
                         not request.get("turn_attribution_required")
                         or expected_turn_id
                     ):
+                        phase_before_scan = injection_phase
                         await self._scan_steering_admission(
                             group,
                             Path(str(request["transcript_path"])),
@@ -4407,6 +4651,12 @@ class MatrixBridge:
                                 else None
                             ),
                         )
+                        if group.get("injection_phase") != phase_before_scan:
+                            await self._update_queue_notice(
+                                agent,
+                                self._room_for_agent(agent.key),
+                                max(0, len(pending) - 1),
+                            )
             if request.get("started_at") is None:
                 try:
                     ref = self.resolver.resolve(agent.session)
@@ -4423,6 +4673,14 @@ class MatrixBridge:
                     self._room_for_agent(agent.key),
                     ref,
                 )
+                if request.get("started_at") is not None:
+                    # The card showed this request as "next" while the seat was
+                    # busy; it is active now.
+                    await self._update_queue_notice(
+                        agent,
+                        self._room_for_agent(agent.key),
+                        max(0, len(pending) - 1),
+                    )
                 return
             if request.get("answer_text") is None:
                 if (
@@ -4548,7 +4806,20 @@ class MatrixBridge:
 
             room_id = self._room_for_agent(agent.key)
             if request.get("answer_phase") == "failed":
-                await self._complete_failed_answer(agent, request, pending)
+                timeout = request.get("terminal_error") == (
+                    "Timed out waiting for a Matrix answer"
+                )
+                await self._advance_terminal_request(
+                    agent,
+                    request,
+                    room_id,
+                    disposition="timeout" if timeout else "delivery_failed",
+                    status_detail=(
+                        "Zeitüberschreitung"
+                        if timeout
+                        else "Zustellung fehlgeschlagen"
+                    ),
+                )
                 return
             if request.get("suppress_reply"):
                 request["answer_phase"] = "suppressed"
@@ -4864,7 +5135,7 @@ class MatrixBridge:
                 self.state.save()
                 return False
             self._defer_unconfirmed_steering_group(pending, request)
-            if pending and pending[0] is request:
+            if self._is_pending_request_head(pending, request):
                 pending.pop(0)
             self.state.save()
             if not pending:
@@ -4884,7 +5155,7 @@ class MatrixBridge:
                 disposition,
                 status_detail or "Matrix request failed",
             )
-            if disposition == "timeout":
+            if disposition in {"timeout", "delivery_failed"}:
                 if not await self._complete_failed_answer(
                     agent,
                     request,
@@ -4904,22 +5175,22 @@ class MatrixBridge:
                     )
                     self.state.save()
                     return False
-            if pending and pending[0] is request:
+            if self._is_pending_request_head(pending, request):
                 pending.pop(0)
             self.state.save()
             if not pending:
                 await self._sync_typing(agent)
             await self._update_agent_status(agent, "error", status_detail)
 
+        if pending:
+            # Typing continues into the next turn; the start or the next poll
+            # cycle's _sync_typing settles it, so it never blinks off between.
+            await self._start_request(agent, pending[0], room_id)
         await self._update_queue_notice(
             agent,
             room_id,
             max(0, len(pending) - 1),
         )
-        if pending:
-            # Typing continues into the next turn; the start or the next poll
-            # cycle's _sync_typing settles it, so it never blinks off between.
-            await self._start_request(agent, pending[0], room_id)
         return True
 
     async def _restore_activity_feedback(self) -> None:

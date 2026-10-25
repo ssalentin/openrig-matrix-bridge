@@ -6,8 +6,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from openrig_matrix_bridge.bridge import MatrixBridge
+from openrig_matrix_bridge.bridge import MatrixBridge, queue_notice_text
 from openrig_matrix_bridge.config import AgentConfig
+from openrig_matrix_bridge.openrig import GatewayError
 
 
 def transcript_user_message(turn_id: str, text: str) -> dict:
@@ -65,6 +66,7 @@ class SteeringHarness:
         self.prompts: list[tuple[str, str]] = []
         self.steers: list[str] = []
         self.qitems = 0
+        self.queue_updates = []
         self.finished_qitems: list[str] = []
         self.qitem_states: dict[str, str] = {}
         self.sent_answers: list[tuple[str, str]] = []
@@ -107,7 +109,7 @@ class SteeringHarness:
             return f"$qitem-{self.qitems}"
 
         async def update_queue_notice(*args, **kwargs):
-            return None
+            self.queue_updates.append((args, kwargs))
 
         async def set_typing(*args, **kwargs):
             return None
@@ -212,6 +214,84 @@ def test_same_thread_followups_form_one_ordered_fallback_batch(
     assert "$follow-one" in pending[1]["text"]
     assert "$follow-two" in pending[1]["text"]
     assert pending[0]["steering_group_id"] == pending[1]["id"]
+
+
+def test_queue_card_uses_real_steering_batch_without_waiting_container(
+    tmp_path: Path,
+):
+    harness = SteeringHarness(tmp_path, "auto")
+    harness.enqueue("$root", "root request", None)
+    harness.busy = True
+    harness.enqueue("$follow-one", "first follow-up", "$root")
+    harness.enqueue("$follow-two", "second follow-up", "$root")
+
+    card = queue_notice_text(harness.bridge.state.data["pending"]["advisor"])
+
+    assert card is not None
+    assert "0 Nachrichten warten" in card
+    assert "Aktiv (3 Eingaben)" in card
+    assert "first follow-up" not in card
+    assert "second follow-up" not in card
+
+
+def test_queue_card_reveals_fallback_steering_batch_as_waiting(
+    tmp_path: Path,
+):
+    harness = SteeringHarness(tmp_path, "auto")
+    harness.enqueue("$root", "root request", None)
+    harness.busy = True
+    harness.enqueue("$follow-one", "first follow-up", "$root")
+    harness.enqueue("$follow-two", "second follow-up", "$root")
+    pending = harness.bridge.state.data["pending"]["advisor"]
+    pending[1]["injection_phase"] = "fallback"
+
+    card = queue_notice_text(pending)
+
+    assert card is not None
+    assert "1 Nachricht wartet" in card
+    assert "**Aktiv:** Text" in card
+    assert "Aktiv (3 Eingaben)" not in card
+    assert "1. Text · Thread" in card
+    assert "first follow-up" in card
+    assert "second follow-up" in card
+
+
+def test_refused_steering_refreshes_queue_card_and_keeps_batch_active(tmp_path: Path):
+    harness = SteeringHarness(tmp_path, "auto")
+    harness.enqueue("$root", "root request", None)
+    harness.busy = True
+    harness.enqueue("$follow-one", "first follow-up", "$root")
+    harness.enqueue("$follow-two", "second follow-up", "$root")
+    group = harness.bridge.state.data["pending"]["advisor"][1]
+    group["injection_ready_at"] = 0
+    harness.steer_error = GatewayError("pane refused")
+    harness.queue_updates.clear()
+
+    asyncio.run(harness.bridge._poll_agent(harness.agent))
+
+    # A refused pane injection waits for the admission grace before any fallback,
+    # so the follow-ups stay part of the active batch and are not shown as a
+    # separate waiting turn. The phase change refreshes the card exactly once.
+    assert group["injection_phase"] == "injecting"
+    assert group["last_injection_error"] == "pane refused"
+    assert len(harness.queue_updates) == 1
+    card = queue_notice_text(harness.bridge.state.data["pending"]["advisor"])
+    assert card is not None
+    assert "0 Nachrichten warten" in card
+    assert "**Aktiv (3 Eingaben):**" in card
+
+
+def test_queue_card_marks_busy_unstarted_request_as_next(tmp_path: Path):
+    harness = SteeringHarness(tmp_path, "auto")
+    harness.busy = True
+    harness.enqueue("$waiting", "waiting for busy seat", None)
+
+    card = queue_notice_text(harness.bridge.state.data["pending"]["advisor"])
+
+    assert card is not None
+    assert "1 Nachricht wartet" in card
+    assert "**Aktiv:**" not in card
+    assert "**Nächste Anfrage:** Text" in card
 
 
 def test_queue_mode_keeps_same_thread_followups_fifo(tmp_path: Path):
@@ -1126,3 +1206,26 @@ def test_steering_modes_queue_long_same_thread_message(
 
     assert len(pending) == 2
     assert not pending[1].get("deferred_steering")
+
+
+def test_queue_card_refreshes_when_a_waiting_head_request_starts(tmp_path: Path):
+    harness = SteeringHarness(tmp_path, "queue")
+    harness.busy = True
+    harness.enqueue("$first", "first request", None)
+    harness.enqueue("$second", "second request", None)
+    pending = harness.bridge.state.data["pending"]["advisor"]
+    assert pending[0].get("started_at") is None
+    before = queue_notice_text(pending)
+    assert before is not None
+    assert "**Nächste Anfrage:** Text" in before
+    harness.queue_updates.clear()
+    harness.busy = False
+
+    asyncio.run(harness.bridge._poll_agent(harness.agent))
+
+    assert pending[0].get("started_at") is not None
+    assert len(harness.queue_updates) >= 1
+    after = queue_notice_text(pending)
+    assert after is not None
+    assert '**Aktiv:** Text · "first request"' in after
+    assert '1. Text · "second request"' in after

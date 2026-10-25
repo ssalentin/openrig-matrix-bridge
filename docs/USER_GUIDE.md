@@ -13,8 +13,9 @@ reads the seat's own Codex transcript. It does not start another agent.
 
 The room topic and activity card tell you whether the agent is ready or
 working. Normal answers arrive in Matrix in a thread rooted at your prompt.
-Multiple prompts remain FIFO behind the active request, and a pinned queue card
-shows waiting work.
+Multiple prompts remain FIFO behind the active request, and one pinned queue
+card shows the active request and the waiting ones in order (see
+[The queue card](#the-queue-card)).
 
 The default user-facing status text is German:
 
@@ -156,6 +157,45 @@ the runtime can receive it in addition to the fallback. This late-admission case
 is a documented residual risk. Every source request remains durable until one
 answer is delivered or an explicit failure is recorded.
 
+## The queue card
+
+While an agent has work, one pinned card in its room shows what is running and
+what is waiting:
+
+```text
+⏳ Warteschlange: 2 Nachrichten warten · Priorität hoch.
+
+Aktiv: Text · "Draft the release notes"
+1. Datei · "Quarterly report.pdf"
+2. Text · Thread · "Also check the changelog"
+```
+
+- `Aktiv` is the request the agent is working on. With no one waiting the card
+  says so (`Keine weiteren Nachrichten warten.`) instead of listing anything.
+  A request the seat has not started yet, for example because the seat is busy
+  with other work, is shown as `Nächste Anfrage`, not as active.
+- Waiting requests are numbered in the order they will run. Each entry names its
+  source (`Text`, `Datei`, `Bild`, `Audio`, `Galerie`, `Entscheidung`) and
+  `Thread` when it belongs to a thread.
+- The card is edited in place, never re-posted, as requests arrive, start,
+  finish, fail or time out, and it is unpinned when the queue drains. After a
+  restart it is rebuilt from the saved queue, without a second card.
+- A same-thread follow-up that is being steered into the active turn is counted
+  in the `Aktiv (N Eingaben)` line instead of appearing as its own future turn.
+  If steering falls back to a normal queued turn, it appears as a waiting entry.
+- Previews are one line, cut to 96 characters. Text that looks like a secret, a
+  token, a credential or a private path is replaced by
+  `[redacted unsafe commentary]`. Files and images show their original filename
+  or caption, galleries show the number of files and the caption; the card never
+  shows local storage paths, hidden reasoning or tool output.
+- Messages that only carry a reaction (silent feedback) are not listed.
+- If a final answer cannot be sent after three attempts, the bridge fails that
+  request's qitem and posts a notice in its thread
+  (`Die Matrix-Antwort konnte nicht zugestellt werden: ...`), then refreshes the
+  card and starts the next request. The failed request stays at the head of the
+  queue, and later requests wait, until Matrix accepts that notice. This hold has
+  no time limit yet (Issue #62).
+
 ## OpenRig queue behavior
 
 Configured agent keys map one-to-one to live Codex sessions. Duplicate sessions
@@ -171,8 +211,8 @@ With `openrig.queue_inbound_messages: true`:
 - The bridge claims the item when work starts and closes it after the Matrix
   answer is delivered.
 - Additional Matrix requests remain FIFO behind the active request.
-- A single pinned queue-status message is edited as the count changes and
-  unpinned when the queue drains.
+- A single pinned queue card shows the active request and ordered, sanitized
+  previews of the waiting ones (see [The queue card](#the-queue-card)).
 
 Prompt and final-answer delivery persist an operation phase before remote
 effects. If a bridge exits after starting a prompt but before recording an

@@ -1557,13 +1557,28 @@ class IntegrationRun:
         owner = self.owner
         await owner.send_text(room_id, "hold first request")
         await owner.send_text(room_id, "second queued request")
-        await owner.sync_until(
-            lambda: any(
-                "Warteschlange" in str(message["body"]) for message in owner.messages
-            ),
-            self.args.timeout,
-            description="pinned queue notice",
-        )
+        try:
+            await owner.sync_until(
+                lambda: any(
+                    "Warteschlange" in str(message["body"])
+                    and '**Aktiv:** Text · "hold first request"' in str(
+                        message["body"]
+                    )
+                    and '1. Text · "second queued request"' in str(
+                        message["body"]
+                    )
+                    for message in owner.messages
+                ),
+                self.args.timeout,
+                description="pinned active and waiting queue previews",
+            )
+        except CheckFailure as exc:
+            cards = [
+                str(message["body"])
+                for message in owner.messages
+                if "Warteschlange" in str(message["body"])
+            ]
+            raise CheckFailure(f"{exc}; every queue card seen: {cards}") from exc
         await owner.sync_until(
             lambda: any(
                 "Fake integration answer: second queued request" in str(message["body"])
@@ -1606,7 +1621,8 @@ class IntegrationRun:
             "pass",
             (
                 "A second owner message arrived during a deliberately slow "
-                "first turn; Matrix showed the pinned queue notice and the "
+                "first turn; Matrix showed one pinned queue card with the active "
+                "prompt followed by the ordered waiting preview, and the "
                 "fake OpenRig transport received the second prompt only after "
                 "recording completion of the first "
                 f"({first['completed_at']} < {second['sent_at']}). Between the "
@@ -1943,6 +1959,28 @@ class IntegrationRun:
                 "event_id": fallback_root,
                 "m.in_reply_to": {"event_id": fallback_root},
             },
+        )
+        wait_for_json_state(
+            self.state_dir / "state.json",
+            lambda value: any(
+                request.get("deferred_steering")
+                and request.get("injection_phase") == "fallback"
+                for request in value.get("pending", {}).get(AGENT_KEY, [])
+            ),
+            self.args.timeout,
+            description="steering fallback durable state",
+        )
+        await owner.sync_until(
+            lambda: any(
+                "Warteschlange" in str(message["body"])
+                and "Aktiv (" not in str(message["body"])
+                and "Thread" in str(message["body"])
+                and "fallback follow one" in str(message["body"])
+                and "fallback follow two" in str(message["body"])
+                for message in owner.messages
+            ),
+            self.args.timeout,
+            description="fallback steering queue preview",
         )
         wait_for_json_state(
             fake_path,
@@ -3145,6 +3183,12 @@ class IntegrationRun:
             ]
             if not delivered:
                 raise CheckFailure(f"threaded {filename} produced no bridge messages")
+            queue_notice_event_id = (
+                self.bridge_state()
+                .get("queue_notices", {})
+                .get(AGENT_KEY, {})
+                .get("event_id")
+            )
             thread_sends = set()
             card_edits = set()
             for message in delivered:
@@ -3156,6 +3200,12 @@ class IntegrationRun:
                         f"threaded {filename} escaped its canonical root: "
                         f"{delivered_relation}"
                     )
+                if (
+                    delivered_relation.get("rel_type") == "m.replace"
+                    and delivered_relation.get("event_id")
+                    == queue_notice_event_id
+                ):
+                    continue
                 if delivered_relation.get("rel_type") == "m.thread":
                     if delivered_relation.get("event_id") != root_event_id:
                         raise CheckFailure(
