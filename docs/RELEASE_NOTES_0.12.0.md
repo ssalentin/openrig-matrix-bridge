@@ -5,6 +5,10 @@ without starting a second agent or allowing concurrent Codex turns.
 
 ## What changed
 
+- Activity commentary keeps its progress text: each local path, token,
+  authorization header, cookie, URI credential or fenced output is replaced by a
+  marker such as `[lokaler Pfad]` or `[Token entfernt]`, instead of the whole
+  message becoming `[redacted unsafe commentary]` (#70).
 - `queue`, `steer`, and default `auto` modes are supported.
 - `auto` steers only short follow-ups in the exact active Matrix thread, and
   parts of a related exchange (below) whatever their length. Other top-level

@@ -25,6 +25,13 @@ The default user-facing status text is German:
 | `arbeitet` | The seat is currently working. |
 | `Wartet auf Eingabe` | The seat is waiting for your input. |
 
+The activity card also shows the agent's latest progress commentary. Sensitive
+parts are replaced span by span, so the rest stays readable: local paths become
+`[lokaler Pfad]`, tokens, keys and authorization headers `[Token entfernt]`,
+credentials in a URI `[Zugangsdaten entfernt]`, cookies `[Cookie entfernt]`, and
+fenced command output `[Ausgabe entfernt]`. The replaced text never reaches the
+room. Commentary is cut to 600 characters.
+
 ## Verify the product manually
 
 Use the same owner account listed in `matrix.allowed_users`.
@@ -189,9 +196,9 @@ Aktiv: Text · "Draft the release notes"
 - A same-thread follow-up that is being steered into the active turn is counted
   in the `Aktiv (N Eingaben)` line instead of appearing as its own future turn.
   If steering falls back to a normal queued turn, it appears as a waiting entry.
-- Previews are one line, cut to 96 characters. Text that looks like a secret, a
-  token, a credential or a private path is replaced by
-  `[redacted unsafe commentary]`. Files and images show their original filename
+- Previews are one line, cut to 96 characters. Each part that looks like a
+  secret, token, credential or private path is replaced by a marker, as in the
+  activity card; the rest of the preview stays. Files and images show their original filename
   or caption, galleries show the number of files and the caption; the card never
   shows local storage paths, hidden reasoning or tool output.
 - Messages that only carry a reaction (silent feedback) are not listed.
