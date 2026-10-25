@@ -63,6 +63,10 @@
   states that a local path is never delivery evidence; and the integration
   harness proves a nonzero PDF by returned event ID and decrypted SHA-256 and
   that empty, missing and oversize files fail before upload.
+- Reconcile the inbound qitem with `rig queue show` before every finish attempt
+  and after a rejected finish update: a row the agent already closed counts as
+  finished, with no `note_append_fields_not_admitted` warning and no duplicate
+  transition.
 
 ## 0.11.0
 

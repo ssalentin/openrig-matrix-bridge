@@ -18,6 +18,7 @@ import uuid
 from pathlib import Path
 from typing import Any
 
+TERMINAL_STATES = {"done", "failed", "canceled", "denied"}
 SESSION = "integration-agent@local"
 TRANSCRIPT_RECORD = {
     "type": "event_msg",
@@ -416,6 +417,18 @@ def handle_queue(root: Path, args: list[str]) -> None:
                 item["state"] = "in-progress"
                 item["claimed_by"] = os.environ.get("OPENRIG_SESSION_NAME")
             else:
+                # Same admission rule as the real `rig queue update`: on a row that
+                # is already closed, an update is a state-preserving note append and
+                # accepts only --note (and an optional same --state).
+                if item["state"] in TERMINAL_STATES and any(
+                    option(args, flag)
+                    for flag in ("--closure-reason", "--closure-target", "--resolution")
+                ):
+                    raise SystemExit(
+                        "note_append_fields_not_admitted: a state-preserving note "
+                        "append accepts only --note (and an optional same --state); "
+                        "state-write fields were supplied"
+                    )
                 item["state"] = option(args, "--state") or item["state"]
                 item["closure_reason"] = option(args, "--closure-reason")
                 item["resolution"] = option(args, "--resolution")

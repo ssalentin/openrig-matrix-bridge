@@ -60,6 +60,9 @@ without starting a second agent or allowing concurrent Codex turns.
   `send-file --json` and quotes the returned Matrix event ID and SHA-256; a local
   path is never delivery evidence. See the
   [agent file delivery guide](AGENT_FILE_DELIVERY.md).
+- Before finishing an inbound qitem the bridge reads its state. A qitem the
+  agent already closed is treated as finished instead of being updated again,
+  which OpenRig rejects as `note_append_fields_not_admitted`.
 - The hybrid steering implementation is integrated with the current setup,
   attachments, voice, activity-card, restart, and release documentation from
   `main`.
