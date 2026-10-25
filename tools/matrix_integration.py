@@ -1542,7 +1542,10 @@ class IntegrationRun:
             relation = message["source"].get("content", {}).get("m.relates_to") or {}
             body = str(message["body"])
             if relation.get("rel_type") == "m.replace":
-                edits.add(str(relation.get("event_id") or ""))
+                # The pinned queue card is edited in place as well; only
+                # activity-card edits must target the single card.
+                if "**Aktivität:**" in body:
+                    edits.add(str(relation.get("event_id") or ""))
             elif f"Fake integration answer: {prompt}" in body:
                 answers += 1
             elif "**Aktivität:**" in body and relation.get("event_id") == prompt_event_id:
