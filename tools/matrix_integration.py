@@ -887,35 +887,13 @@ class IntegrationRun:
                 f"--replace-config next step: {rerun.returncode} "
                 f"{rerun.stdout}{rerun.stderr}"
             )
-        bad_token_environment = self.env()
-        bad_token_environment["MATRIX_ACCESS_TOKEN"] = "invalid-token-for-harness"
-        bad_token = run(
-            [
-                sys.executable,
-                "-m",
-                "openrig_matrix_bridge",
-                "doctor",
-                "--config",
-                str(self.config_path),
-            ],
-            env=bad_token_environment,
-            timeout=self.args.timeout,
-            check=False,
-        )
-        bad_token_output = f"{bad_token.stdout}{bad_token.stderr}"
-        if bad_token.returncode == 0 or "invalid or expired" not in bad_token_output:
-            raise CheckFailure(
-                "doctor with an invalid token did not fail with an actionable "
-                f"message: {bad_token.returncode} {bad_token_output}"
-            )
         self.record(
             "setup-and-doctor",
             "pass",
             (
                 f"`setup` wrote one agent room; `doctor` exited 0 "
                 f"({setup.stdout.splitlines()[0]}); a second `setup` without "
-                "`--replace-config` and `doctor` with an invalid token each "
-                "failed with their next step"
+                "`--replace-config` failed with that next step"
             ),
         )
         owner_store = self.work / "owner-store"
@@ -3588,15 +3566,16 @@ class IntegrationRun:
             token="invalid-integration-token",
             check=False,
         )
-        if result.returncode == 0 or "Matrix whoami failed" not in result.stdout:
+        output = f"{result.stdout}{result.stderr}"
+        if result.returncode == 0 or "invalid or expired" not in output:
             raise CheckFailure(
                 f"doctor did not report an invalid Matrix token: "
-                f"{result.stdout}{result.stderr}"
+                f"{output}"
             )
         self.record(
             "doctor-invalid-token",
             "pass",
-            "`doctor` exited non-zero and reported the invalid Matrix token.",
+            "`doctor` exited non-zero and told the owner to create a new token.",
         )
 
     async def execute(self) -> None:

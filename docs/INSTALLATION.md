@@ -382,10 +382,13 @@ shows a running entry whose runtime is `codex`. Pass the correct
 Export the token in the process that runs `doctor`, `run`, or an outbox command.
 You can also set `OPENRIG_MATRIX_CONFIG` to a non-default configuration path.
 
-### `Matrix whoami failed`
+### `Matrix access token is invalid or expired`
 
-Check the homeserver URL, token, bot user ID, and device ID in the generated
-configuration. A token from another homeserver cannot be used.
+Create a new bot device token in your Matrix client and export it as
+`MATRIX_ACCESS_TOKEN`. A token from another homeserver cannot be used. For
+`Cannot reach Matrix homeserver` or an HTTP error, check the homeserver URL and
+network. `doctor` warns when the token belongs to a different user or device
+than the configuration expects.
 
 ### `duplicate agent session`
 
