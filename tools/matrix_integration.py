@@ -105,6 +105,7 @@ CHECKS = (
     "related_unrelated_isolation",
     "related_thread",
     "restart",
+    "legacy_pending_state",
     "doctor_failure",
     "room_rejection",
 )
@@ -4520,6 +4521,150 @@ class IntegrationRun:
                 "Stopping and restarting the bridge preserved the exact Matrix "
                 "room mapping and returned the room to ready status without "
                 "creating a duplicate room."
+            ),
+        )
+
+    async def check_legacy_pending_state(self, room_id: str) -> None:
+        """A 0.10 pending request whose qitem is closed is dropped at startup."""
+        assert self.owner is not None
+        owner = self.owner
+        self.stop_bridge()
+        fake_path = self.fake_state / "fake-openrig.json"
+        fake = json.loads(fake_path.read_text(encoding="utf-8"))
+        closed = {
+            "qitem-legacy-done": "done",
+            "qitem-legacy-answered": "done",
+            "qitem-legacy-canceled": "canceled",
+            "qitem-legacy-orphan": "canceled",
+        }
+        for qitem_id, remote_state in closed.items():
+            fake["queue"][qitem_id] = {
+                "qitemId": qitem_id,
+                "state": remote_state,
+                "history": [{"state": remote_state, "at": time.time()}],
+            }
+        fake_path.write_text(json.dumps(fake), encoding="utf-8")
+        prompts_before = len(fake.get("prompts", []))
+
+        # A plain owner message that exists in the room (not an edit event, which
+        # cannot be a thread root), as a real 0.10 request's source would be.
+        real_event_id = next(
+            str(message["event_id"])
+            for message in owner.messages
+            if message["body"] == "thread root request"
+        )
+
+        def legacy_request(
+            name: str,
+            qitem_id: str,
+            event_id: str | None = None,
+            **values: Any,
+        ) -> dict[str, Any]:
+            # The shape bridge 0.10.0 saved: a qitem_id and none of the phase
+            # fields. Placeholder identifiers and text only.
+            request = {
+                "id": f"legacy-{name}",
+                "event_id": event_id or f"$legacy-{name}",
+                "reply_to_event_id": event_id or f"$legacy-{name}",
+                "thread_root_event_id": event_id or f"$legacy-{name}",
+                "source_event_ids": [event_id or f"$legacy-{name}"],
+                "source_relation": None,
+                "source_label": "message",
+                "qitem_id": qitem_id,
+                "queue_tracked": True,
+                "suppress_reply": False,
+                "priority": "urgent",
+                "text": "legacy fixture prompt",
+                "enqueued_at": time.time(),
+                "started_at": None,
+                "session_id": None,
+                "transcript_path": None,
+                "offset": None,
+                "answer_text": None,
+            }
+            request.update(values)
+            return request
+
+        state_path = self.state_dir / "state.json"
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        state["pending"][AGENT_KEY] = [
+            legacy_request("done", "qitem-legacy-done"),
+            legacy_request(
+                "answered",
+                "qitem-legacy-answered",
+                started_at=time.time(),
+                session_id="legacy-session",
+                transcript_path=str(self.work / "legacy-transcript.jsonl"),
+                offset=0,
+                answer_text="legacy fixture answer",
+            ),
+            legacy_request(
+                "canceled",
+                "qitem-legacy-canceled",
+                event_id=real_event_id,
+            ),
+            # Its source event does not exist, so Synapse rejects the notice;
+            # the request must still be dropped rather than retried forever.
+            legacy_request("orphan", "qitem-legacy-orphan"),
+        ]
+        state_path.write_text(json.dumps(state), encoding="utf-8")
+
+        def notices() -> list[str]:
+            return [
+                str(message["body"])
+                for message in owner.messages
+                if "qitem-legacy" in str(message["body"])
+            ]
+
+        def untouched() -> bool:
+            current = json.loads(fake_path.read_text(encoding="utf-8"))
+            return len(current.get("prompts", [])) == prompts_before and all(
+                len(current["queue"][qitem_id]["history"]) == 1
+                and current["queue"][qitem_id]["state"] == remote_state
+                for qitem_id, remote_state in closed.items()
+            )
+
+        self.start_bridge()
+        await self.wait_for_steering_mode_ready(room_id)
+        wait_for_json_state(
+            state_path,
+            lambda value: not value.get("pending", {}).get(AGENT_KEY),
+            self.args.timeout,
+            description="0.10 pending requests reconciled",
+        )
+        await owner.sync_until(
+            lambda: any("canceled" in body for body in notices()),
+            self.args.timeout,
+            description="one notice for the canceled legacy qitem",
+        )
+        if not untouched():
+            raise CheckFailure("legacy reconciliation claimed, prompted or edited a qitem")
+
+        self.stop_bridge()
+        self.start_bridge()
+        await self.wait_for_steering_mode_ready(room_id)
+        deadline = time.monotonic() + 2
+        while time.monotonic() < deadline:
+            await owner.sync_once()
+            await asyncio.sleep(0.2)
+        seen = notices()
+        if len(seen) != 1 or "canceled" not in seen[0]:
+            raise CheckFailure(f"expected exactly one canceled-qitem notice: {seen}")
+        if not untouched() or self.bridge_state()["pending"].get(AGENT_KEY):
+            raise CheckFailure("a second restart changed the reconciled state")
+        self.record(
+            "legacy-pending-reconcile",
+            "pass",
+            (
+                "Four bridge 0.10.0 pending requests (no prompt, answer or qitem "
+                "phase fields; one unstarted and one started with a captured "
+                "answer, both for a done qitem; two unstarted for canceled qitems, "
+                "one of them referencing an event Synapse rejects) were reconciled "
+                "against OpenRig at startup: the queue drained without a claim, a "
+                "prompt or any qitem update, the done requests left no message, the "
+                "deliverable canceled one produced exactly one factual notice, the "
+                "undeliverable one was dropped without a retry loop, and a second "
+                "restart changed nothing."
             ),
         )
 

@@ -41,6 +41,14 @@
   (`test_final_delivery_failure_retries_terminal_card_before_advancing` and
   `test_persistent_final_delivery_failure_fails_qitem_and_advances`). The retry
   and hold are unbounded; see Issue #62.
+- Reconcile pending requests saved by bridge 0.10 at startup, before any claim,
+  prompt, notice or answer: a request whose OpenRig qitem is already `done` is
+  dropped without replaying its prompt or answer, another terminal state is
+  dropped with at most one factual notice, and a still-open request keeps the
+  fail-closed ambiguous-prompt behavior. The reconciled phase is saved before
+  the request is removed, every pending request is checked (not only the head),
+  and a restart during reconciliation is idempotent. A claim is also no longer
+  attempted for a qitem whose state is unknown.
 - Rebase the hybrid steering implementation onto current `main` release docs,
   setup guidance, artifacts, and harness changes.
 - Deliver related owner messages as one context: thread and reply relations

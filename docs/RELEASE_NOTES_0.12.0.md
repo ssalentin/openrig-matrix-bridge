@@ -63,6 +63,10 @@ without starting a second agent or allowing concurrent Codex turns.
 - Before finishing an inbound qitem the bridge reads its state. A qitem the
   agent already closed is treated as finished instead of being updated again,
   which OpenRig rejects as `note_append_fields_not_admitted`.
+- Upgrading from 0.10 with requests still pending: at startup the bridge reads
+  each request's OpenRig qitem first. Requests whose qitem is already closed are
+  removed without resending the prompt or answer (a canceled, failed or denied
+  qitem produces one notice), instead of repeating claim errors.
 - The hybrid steering implementation is integrated with the current setup,
   attachments, voice, activity-card, restart, and release documentation from
   `main`.
@@ -107,7 +111,6 @@ the configuration and complete state directory before replacing the service.
   downloading or being transcribed; there is no separate timeout beyond the
   download and transcription failure paths.
 - Matrix device SAS and complete cross-signing remain tracked by Issue #1.
-- Legacy pending-state reconciliation remains tracked by Issue #41.
 - The duplicate activity card seen on the 0.11 line (#39) came from an initial
   card send without a stable transaction ID. 0.12.0 sends it as
   `activity-card-<request>`, so Matrix returns the existing card when a send is

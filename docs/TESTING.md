@@ -128,6 +128,7 @@ after the previous owner event, which makes a full run several minutes longer.
 | `related-restart` | Restart between parts, then a crash after a PDF's intake was persisted and before its download: the download resumes once (one stored copy) and the PDF and a later text arrive linked to the gallery |
 | `related-unrelated-isolation` | Two plain top-level texts two seconds apart stay separate requests with their own answers; a thread reply joins only its thread |
 | `related-thread` | A gallery and a text sent into a thread more than 45 s after its root join the root's context by relation; a top-level message sent in between stays separate |
+| `legacy-pending-reconcile` | Bridge 0.10.0 pending requests (no phase fields) for done and canceled qitems are reconciled against OpenRig at startup: no claim, prompt or qitem update, no message for done, exactly one notice for a deliverable canceled one, an undeliverable one dropped without a retry loop, and a second restart changes nothing |
 | `voice-disabled-path` | A voice-message-marked encrypted audio event reaches transcription handling while voice is deliberately disabled |
 | `decision-and-poll` | Pinned decision brief, MSC3381 poll, encrypted response, prompt forwarding, unpin |
 | `proactive-message` | Explicit encrypted `send-message` |
