@@ -680,6 +680,8 @@ def run_send_image(args: argparse.Namespace, config) -> int:
         raise SystemExit(f"unknown agent: {args.agent}")
     if not args.path:
         raise SystemExit("send-image requires --path")
+    if getattr(args, "json", False):
+        raise SystemExit("--json is supported by send-file only")
     image_path = args.path.expanduser().resolve()
     if not image_path.is_file():
         raise SystemExit(f"image not found: {image_path}")
@@ -769,6 +771,24 @@ def run_send_file(args: argparse.Namespace, config) -> int:
             pass
         raise
 
+    use_json = bool(getattr(args, "json", False))
+
+    def report(ok: bool, line: str, error: str = "", **fields: object) -> int:
+        if use_json:
+            print(
+                json.dumps(
+                    {
+                        "ok": ok,
+                        "request_id": request_id,
+                        **fields,
+                        **({} if ok else {"error": error}),
+                    }
+                )
+            )
+        else:
+            print(line)
+        return 0 if ok else 1
+
     deadline = time.monotonic() + max(0, args.wait_seconds)
     state_path = config.state_dir / "state.json"
     while time.monotonic() < deadline:
@@ -779,19 +799,28 @@ def run_send_file(args: argparse.Namespace, config) -> int:
             continue
         media = state.get("media", {}).get(request_id)
         if media:
-            print(f"{request_id} sent as {media['event_id']}")
-            return 0
+            return report(
+                True,
+                f"{request_id} sent as {media['event_id']}",
+                event_id=media["event_id"],
+                room_id=media.get("room_id"),
+                agent=args.agent,
+                filename=request["filename"],
+                mimetype=mime_type,
+                size=size,
+                sha256=sha256,
+            )
         failure = state.get("media_failures", {}).get(request_id)
         if failure:
-            print(f"{request_id} failed: {failure['error']}")
-            return 1
+            return report(
+                False,
+                f"{request_id} failed: {failure['error']}",
+                f"failed: {failure['error']}",
+            )
         time.sleep(0.2)
 
-    print(
-        f"queued {request_id}; the bridge did not confirm delivery within "
-        f"{args.wait_seconds}s"
-    )
-    return 1
+    message = f"the bridge did not confirm delivery within {args.wait_seconds}s"
+    return report(False, f"queued {request_id}; {message}", f"queued; {message}")
 
 
 def run_send_message(args: argparse.Namespace, config) -> int:
@@ -968,6 +997,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--mime-type")
     parser.add_argument("--caption")
     parser.add_argument("--wait-seconds", type=int, default=10)
+    parser.add_argument(
+        "--json",
+        action="store_true",
+        help="send-file: print one JSON result (event_id, room_id, filename, "
+        "mimetype, size, sha256) for the agent to quote",
+    )
     return parser
 
 

@@ -1314,11 +1314,13 @@ class MatrixBridge:
         self.state.data["media"][request_id] = {
             "agent": agent.key,
             "event_id": response.event_id,
+            "room_id": str(room["room_id"]),
             "path": str(file_path),
             "snapshot_path": str(snapshot_path),
             "filename": filename,
             "mime_type": mime_type,
             "size": size,
+            "sha256": expected_sha256,
             "sent_at": int(time.time() * 1000),
         }
         self.state.save()

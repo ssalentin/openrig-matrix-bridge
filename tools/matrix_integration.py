@@ -110,6 +110,46 @@ CHECKS = (
 )
 
 
+
+DEFAULT_MAX_FILE_BYTES = 26_214_400
+
+
+def shipping_label_pdf() -> bytes:
+    """Return a small, valid, nonzero PDF shaped like a one-page shipping label."""
+    lines = [
+        "SHIP TO: Example Buyer",
+        "1 Example Street, Springfield 00000",
+        "Order 15358 - watch cable",
+        "Tracking 1792918370",
+    ]
+    text = "BT /F1 14 Tf 40 250 Td 18 TL " + " T* ".join(
+        f"({line}) Tj" for line in lines
+    )
+    stream = f"{text} ET"
+    page_resources = "/Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >>"
+    objects = [
+        "<< /Type /Catalog /Pages 2 0 R >>",
+        "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+        f"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 288 288] {page_resources} >>",
+        f"<< /Length {len(stream)} >>\nstream\n{stream}\nendstream",
+        "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+    ]
+    body = b"%PDF-1.4\n"
+    offsets = []
+    for number, content in enumerate(objects, start=1):
+        offsets.append(len(body))
+        body += f"{number} 0 obj\n{content}\nendobj\n".encode("latin-1")
+    xref = len(body)
+    body += f"xref\n0 {len(objects) + 1}\n0000000000 65535 f \n".encode("ascii")
+    for offset in offsets:
+        body += f"{offset:010d} 00000 n \n".encode("ascii")
+    body += (
+        f"trailer\n<< /Size {len(objects) + 1} /Root 1 0 R >>\n"
+        f"startxref\n{xref}\n%%EOF\n"
+    ).encode("ascii")
+    return body
+
+
 class CheckFailure(RuntimeError):
     pass
 
@@ -1167,6 +1207,129 @@ class IntegrationRun:
         if process.returncode not in {0, -signal.SIGTERM}:
             raise CheckFailure(f"bridge exited with {process.returncode}")
         return process.returncode
+
+    async def check_agent_file_delivery(self, owner: Any, room_id: str) -> None:
+        """An agent can quote a Matrix event ID and SHA-256 for a delivered PDF."""
+        label_bytes = shipping_label_pdf()
+        label = self.work / "watch-cable-01-15358-1792918370.pdf"
+        label.write_bytes(label_bytes)
+        label_sha256 = hashlib.sha256(label_bytes).hexdigest()
+        delivered = self.cli(
+            "send-file",
+            "--agent",
+            AGENT_KEY,
+            "--path",
+            str(label),
+            "--json",
+            "--wait-seconds",
+            "15",
+            check=False,
+        )
+        if delivered.returncode != 0:
+            raise CheckFailure(
+                f"send-file --json failed: {delivered.stdout}{delivered.stderr}"
+            )
+        report = json.loads(delivered.stdout)
+        expected = {
+            "ok": True,
+            "room_id": room_id,
+            "agent": AGENT_KEY,
+            "filename": label.name,
+            "mimetype": "application/pdf",
+            "size": len(label_bytes),
+            "sha256": label_sha256,
+        }
+        mismatched = {
+            key: report.get(key)
+            for key, value in expected.items()
+            if report.get(key) != value
+        }
+        if mismatched or not str(report.get("event_id", "")).startswith("$"):
+            raise CheckFailure(f"send-file --json result was wrong: {report}")
+        await owner.sync_until(
+            lambda: any(item.event_id == report["event_id"] for item in owner.files),
+            self.args.timeout,
+            description="shipping label PDF by returned event ID",
+        )
+        event = next(
+            item for item in owner.files if item.event_id == report["event_id"]
+        )
+        content = event.source.get("content", {})
+        if (
+            content.get("msgtype") != "m.file"
+            or content.get("filename") != label.name
+            or content.get("info")
+            != {"mimetype": "application/pdf", "size": len(label_bytes)}
+        ):
+            raise CheckFailure(f"shipping label event metadata was wrong: {content}")
+        decrypted = await owner.download_media(event)
+        decrypted_sha256 = hashlib.sha256(decrypted).hexdigest()
+        if decrypted != label_bytes or decrypted_sha256 != report["sha256"]:
+            raise CheckFailure(
+                f"shipping label did not decrypt to the reported SHA-256: "
+                f"{decrypted_sha256} != {report['sha256']}"
+            )
+        raw = await owner.raw_event(room_id, event.event_id)
+        if raw.get("type") != "m.room.encrypted":
+            raise CheckFailure("shipping label was not encrypted on the Matrix wire")
+
+        outbox = self.state_dir / "media-outbox"
+
+        def outbox_files() -> list[str]:
+            return sorted(str(path) for path in outbox.rglob("*") if path.is_file())
+
+        empty = self.work / "empty-label.pdf"
+        empty.write_bytes(b"")
+        oversize = self.work / "oversize-label.pdf"
+        with oversize.open("wb") as handle:
+            handle.truncate(DEFAULT_MAX_FILE_BYTES + 1)
+        rejected = {
+            "empty": (empty, "between 1 and"),
+            "oversize": (oversize, f"{DEFAULT_MAX_FILE_BYTES} bytes"),
+            "missing": (self.work / "never-created.pdf", "file not found"),
+        }
+        files_before = outbox_files()
+        received_before = len(owner.files)
+        for name, (path, needle) in rejected.items():
+            result = self.cli(
+                "send-file",
+                "--agent",
+                AGENT_KEY,
+                "--path",
+                str(path),
+                "--json",
+                "--wait-seconds",
+                "2",
+                check=False,
+            )
+            if result.returncode == 0 or needle not in result.stderr:
+                raise CheckFailure(
+                    f"{name} file was not rejected before upload: "
+                    f"{result.returncode} {result.stdout}{result.stderr}"
+                )
+        await asyncio.sleep(1.5)
+        await owner.sync_once()
+        if outbox_files() != files_before or len(owner.files) != received_before:
+            raise CheckFailure("a rejected file reached the outbox or Matrix")
+
+        self.record(
+            "agent-file-delivery",
+            "pass",
+            (
+                "A nonzero shipping-label-shaped PDF sent with `send-file --json` "
+                f"returned event {report['event_id']} in the agent room; the owner "
+                f"found that exact event, decrypted it to SHA-256 {decrypted_sha256} "
+                "matching the reported value, and saw `m.file`, `application/pdf` "
+                "and the original filename on an encrypted wire event. Empty, "
+                "missing and oversize files exited non-zero before any outbox "
+                "request or Matrix event."
+            ),
+            details={
+                "event_id": report["event_id"],
+                "sha256": decrypted_sha256,
+                "size": len(label_bytes),
+            },
+        )
 
     def bridge_state(self) -> dict[str, Any]:
         path = self.state_dir / "state.json"
@@ -3131,6 +3294,8 @@ class IntegrationRun:
                 "the wire."
             ),
         )
+
+        await self.check_agent_file_delivery(owner, room_id)
 
         recovery = self.work / "restart recovery.pdf"
         recovery.write_bytes(pdf + b"restart\n")

@@ -2716,11 +2716,13 @@ def test_publishes_encrypted_generic_file_with_original_metadata(
     assert bridge.state.data["media"][request_id] == {
         "agent": "advisor",
         "event_id": f"$event-{suffix}",
+        "room_id": room_id,
         "path": str(source),
         "snapshot_path": str(snapshot),
         "filename": filename,
         "mime_type": mime_type,
         "size": len(payload),
+        "sha256": hashlib.sha256(payload).hexdigest(),
         "sent_at": bridge.state.data["media"][request_id]["sent_at"],
     }
 

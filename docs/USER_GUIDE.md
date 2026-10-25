@@ -343,6 +343,11 @@ openrig-matrix-bridge send-file \
   --caption 'Reviewed quarterly report'
 ```
 
+Add `--json` to get one machine-readable result with the Matrix `event_id`,
+`room_id`, filename, MIME type, size, and `sha256`. A path in an answer is not
+delivery: see [Agent file delivery](AGENT_FILE_DELIVERY.md) for the contract
+and a guidance block for agents that generate files.
+
 The bridge preserves the source basename and inferred MIME type. Use
 `--mime-type application/x-custom` only when the file extension is ambiguous.
 Unknown extensions use `application/octet-stream`. Non-image files use Matrix

@@ -166,7 +166,7 @@ automatic trust on every Matrix device.
 
 | Guide | What it covers |
 |---|---|
-| [User guide](docs/USER_GUIDE.md) | Statuses, threading, media, voice, decisions, queue behavior, and manual checks |
+| [User guide](docs/USER_GUIDE.md) | Statuses, threading, media, voice, decisions, queue behavior, manual checks, and [agent file delivery](docs/AGENT_FILE_DELIVERY.md) |
 | [Installation](docs/INSTALLATION.md) | Prerequisites, Matrix credentials, setup, systemd, troubleshooting, and upgrades |
 | [Security and trust](docs/SECURITY.md) | E2EE, secret handling, device verification, limits, and redaction |
 | [Verification and evidence](docs/VERIFICATION.md) | Claim-by-claim automated, integration, and manual evidence |

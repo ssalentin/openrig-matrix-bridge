@@ -56,6 +56,10 @@ without starting a second agent or allowing concurrent Codex turns.
   every stored attachment, gallery item and preview is listed with its SHA-256.
 - Element X galleries (`dm.filament.gallery`, `m.gallery`) are stored item by
   item in order, with explicit per-item failures (PR #57).
+- An agent that generates a PDF or other file for the owner delivers it with
+  `send-file --json` and quotes the returned Matrix event ID and SHA-256; a local
+  path is never delivery evidence. See the
+  [agent file delivery guide](AGENT_FILE_DELIVERY.md).
 - The hybrid steering implementation is integrated with the current setup,
   attachments, voice, activity-card, restart, and release documentation from
   `main`.

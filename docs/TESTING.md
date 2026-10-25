@@ -118,6 +118,7 @@ after the previous owner event, which makes a full run several minutes longer.
 | `encrypted-images` | Owner-to-agent encrypted PNG storage and agent-to-owner `send-image` byte round trip |
 | `voice-status-edit` | Encrypted voice note, deterministic local transcript, one threaded progress event edited by `m.replace`, no transcript-only reply, one forwarded prompt and qitem closure |
 | `encrypted-files` | Encrypted PDF and unknown-binary transfer in both directions; markerless audio fallback; generated safe inbox paths; private admitted snapshots; `m.file` metadata and byte-preserving decryption |
+| `agent-file-delivery` | A nonzero shipping-label-shaped PDF sent with `send-file --json`: the returned event ID is the exact encrypted `m.file` the owner receives, it decrypts to the reported SHA-256, and empty, missing and oversize files fail before any outbox request or Matrix event |
 | `attachment-restart-recovery` | A generic-file request queued while stopped is delivered exactly once after restart from its snapshot after the source is changed, and records the observed Matrix event ID |
 | `element-x-gallery` | One encrypted `dm.filament.gallery` with four HEIC-labelled items and JPEG previews reaches the agent as one prompt and one completed qitem, items in source order with filename, MIME type, size and dimensions, originals and previews decrypted byte-for-byte |
 | `gallery-restart` | A crash after the first of four gallery items was stored resumes the other three without downloading the first again; one prompt, one qitem |

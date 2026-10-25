@@ -268,3 +268,160 @@ def test_send_file_rejects_symlink_swapped_after_precheck(tmp_path, monkeypatch)
         run_send_file(args, config)
 
     assert not (tmp_path / "state" / "media-outbox").exists()
+
+
+def _send_file_args(path, **overrides):
+    values = {
+        "agent": "advisor",
+        "path": path,
+        "caption": None,
+        "mime_type": None,
+        "wait_seconds": 0,
+        "json": False,
+    }
+    values.update(overrides)
+    return SimpleNamespace(**values)
+
+
+def _send_file_config(tmp_path, max_file_bytes=1024):
+    return SimpleNamespace(
+        agents={"advisor": object()},
+        state_dir=tmp_path / "state",
+        media=SimpleNamespace(max_file_bytes=max_file_bytes),
+    )
+
+
+def _assert_nothing_queued(tmp_path):
+    outbox = tmp_path / "state" / "media-outbox"
+    assert not outbox.exists() or not any(outbox.rglob("*.json"))
+    assert not (outbox / "files").exists() or not any((outbox / "files").iterdir())
+
+
+def test_send_file_rejects_empty_file_before_queueing(tmp_path):
+    source = tmp_path / "label.pdf"
+    source.write_bytes(b"")
+
+    with pytest.raises(SystemExit, match="between 1 and 1024 bytes"):
+        run_send_file(_send_file_args(source), _send_file_config(tmp_path))
+
+    _assert_nothing_queued(tmp_path)
+
+
+def test_send_file_rejects_missing_file_before_queueing(tmp_path):
+    with pytest.raises(SystemExit, match="file not found"):
+        run_send_file(
+            _send_file_args(tmp_path / "missing.pdf"),
+            _send_file_config(tmp_path),
+        )
+
+    _assert_nothing_queued(tmp_path)
+
+
+def test_send_file_rejects_unreadable_file_before_queueing(tmp_path):
+    source = tmp_path / "private.pdf"
+    source.write_bytes(b"%PDF-1.7\nprivate\n")
+    source.chmod(0)
+    try:
+        source.read_bytes()
+    except PermissionError:
+        pass
+    else:
+        pytest.skip("this account can read a mode 000 file (root or DAC capability)")
+
+    with pytest.raises(SystemExit, match="could not be opened"):
+        run_send_file(_send_file_args(source), _send_file_config(tmp_path))
+
+    _assert_nothing_queued(tmp_path)
+
+
+def _confirm_delivery_from_a_fake_bridge(state_dir, event_id, room_id):
+    import threading
+    import time
+
+    def bridge():
+        outbox = state_dir / "media-outbox"
+        for _ in range(200):
+            requests = list(outbox.glob("file-*.json")) if outbox.exists() else []
+            if requests:
+                request = json.loads(requests[0].read_text(encoding="utf-8"))
+                (state_dir / "state.json").write_text(
+                    json.dumps(
+                        {
+                            "media": {
+                                request["id"]: {
+                                    "event_id": event_id,
+                                    "room_id": room_id,
+                                }
+                            }
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+                return
+            time.sleep(0.05)
+
+    thread = threading.Thread(target=bridge)
+    thread.start()
+    return thread
+
+
+def test_send_file_json_reports_the_event_for_the_agent_to_quote(tmp_path, capsys):
+    payload = b"%PDF-1.7\nshipping label\n"
+    source = tmp_path / "Shipping label.pdf"
+    source.write_bytes(payload)
+    config = _send_file_config(tmp_path)
+    thread = _confirm_delivery_from_a_fake_bridge(
+        config.state_dir,
+        "$event-label",
+        "!advisor:matrix.example.org",
+    )
+
+    result = run_send_file(
+        _send_file_args(source, json=True, wait_seconds=10),
+        config,
+    )
+    thread.join()
+
+    assert result == 0
+    report = json.loads(capsys.readouterr().out)
+    assert report == {
+        "ok": True,
+        "request_id": report["request_id"],
+        "event_id": "$event-label",
+        "room_id": "!advisor:matrix.example.org",
+        "agent": "advisor",
+        "filename": "Shipping label.pdf",
+        "mimetype": "application/pdf",
+        "size": len(payload),
+        "sha256": hashlib.sha256(payload).hexdigest(),
+    }
+    assert report["request_id"].startswith("file-")
+
+
+def test_send_file_json_reports_an_unconfirmed_delivery_as_failure(tmp_path, capsys):
+    source = tmp_path / "label.pdf"
+    source.write_bytes(b"%PDF-1.7\nlabel\n")
+
+    result = run_send_file(
+        _send_file_args(source, json=True),
+        _send_file_config(tmp_path),
+    )
+
+    assert result == 1
+    report = json.loads(capsys.readouterr().out)
+    assert report["ok"] is False
+    assert report["request_id"].startswith("file-")
+    assert "event_id" not in report
+    assert "did not confirm delivery" in report["error"]
+
+
+def test_send_file_plain_output_is_unchanged_without_json(tmp_path, capsys):
+    source = tmp_path / "label.pdf"
+    source.write_bytes(b"%PDF-1.7\nlabel\n")
+
+    result = run_send_file(_send_file_args(source), _send_file_config(tmp_path))
+
+    assert result == 1
+    output = capsys.readouterr().out.strip()
+    assert output.startswith("queued file-")
+    assert output.endswith("the bridge did not confirm delivery within 0s")
