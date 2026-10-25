@@ -507,21 +507,16 @@ class MatrixOwner:
         body: str,
         extra_content: dict[str, Any] | None = None,
     ) -> str:
-        upload, encryption = await self.client.upload(
-            io.BytesIO(data),
-            content_type=mimetype,
-            filename=filename,
-            encrypt=True,
-            filesize=len(data),
-        )
-        if not hasattr(upload, "content_uri") or not isinstance(encryption, dict):
-            raise CheckFailure(f"owner encrypted upload failed: {upload}")
         content = {
             "msgtype": msgtype,
             "body": body,
             "filename": filename,
             "info": {"mimetype": mimetype, "size": len(data)},
-            "file": {"url": upload.content_uri, **encryption},
+            "file": await self.upload_encrypted(
+                data,
+                filename=filename,
+                mimetype=mimetype,
+            ),
         }
         if extra_content:
             content.update(extra_content)
@@ -533,6 +528,42 @@ class MatrixOwner:
         )
         if not isinstance(response, RoomSendResponse):
             raise CheckFailure(f"owner encrypted file send failed: {response}")
+        return response.event_id
+
+    async def upload_encrypted(
+        self,
+        data: bytes,
+        *,
+        filename: str,
+        mimetype: str,
+    ) -> dict[str, Any]:
+        upload, encryption = await self.client.upload(
+            io.BytesIO(data),
+            content_type=mimetype,
+            filename=filename,
+            encrypt=True,
+            filesize=len(data),
+        )
+        if not hasattr(upload, "content_uri") or not isinstance(encryption, dict):
+            raise CheckFailure(f"owner encrypted upload failed: {upload}")
+        return {"url": upload.content_uri, **encryption}
+
+    async def send_gallery(
+        self,
+        room_id: str,
+        items: list[dict[str, Any]],
+        *,
+        body: str,
+    ) -> str:
+        """Send one Element X style dm.filament.gallery event."""
+        response = await self.client.room_send(
+            room_id,
+            "m.room.message",
+            {"msgtype": "dm.filament.gallery", "body": body, "itemtypes": items},
+            ignore_unverified_devices=True,
+        )
+        if not isinstance(response, RoomSendResponse):
+            raise CheckFailure(f"owner gallery send failed: {response}")
         return response.event_id
 
     async def download_media(self, event: Any) -> bytes:
@@ -2863,6 +2894,184 @@ class IntegrationRun:
             ),
         )
 
+    async def build_gallery(
+        self,
+        tag: str,
+    ) -> tuple[list[dict[str, Any]], list[tuple[str, bytes, bytes]]]:
+        """Four encrypted HEIC items with JPEG previews, like Element X sends."""
+        assert self.owner is not None
+        items: list[dict[str, Any]] = []
+        expected: list[tuple[str, bytes, bytes]] = []
+        for number in (5667, 5666, 5665, 5664):
+            name = f"{tag}-{number}.heic"
+            original = (
+                b"\x00\x00\x00\x18ftypheic\x00\x00\x00\x00"
+                + f"{tag}:{number}:".encode()
+                + bytes(range(256))
+            )
+            preview = b"\xff\xd8\xff\xe0" + f"{tag}:{number}".encode() + b"\xff\xd9"
+            items.append(
+                {
+                    "itemtype": "m.image",
+                    "body": name,
+                    "filename": name,
+                    "file": await self.owner.upload_encrypted(
+                        original,
+                        filename=name,
+                        mimetype="image/heic",
+                    ),
+                    "info": {
+                        "mimetype": "image/heic",
+                        "size": len(original),
+                        "w": 3024,
+                        "h": 4032,
+                        "thumbnail_file": await self.owner.upload_encrypted(
+                            preview,
+                            filename=f"{name}.jpg",
+                            mimetype="image/jpeg",
+                        ),
+                        "thumbnail_info": {
+                            "mimetype": "image/jpeg",
+                            "size": len(preview),
+                            "w": 600,
+                            "h": 800,
+                        },
+                    },
+                }
+            )
+            expected.append((name, original, preview))
+        return items, expected
+
+    async def verify_gallery_delivery(
+        self,
+        event_id: str,
+        expected: list[tuple[str, bytes, bytes]],
+    ) -> str:
+        assert self.owner is not None
+        owner = self.owner
+        first_name = expected[0][0]
+        await owner.sync_until(
+            lambda: any(
+                message["sender"] == BRIDGE_USER
+                and "Fake integration answer: Galerie von" in str(message["body"])
+                and event_id
+                in {
+                    relation.get("event_id"),
+                    relation.get("m.in_reply_to", {}).get("event_id"),
+                }
+                for message in owner.messages
+                for relation in [
+                    message["source"].get("content", {}).get("m.relates_to") or {}
+                ]
+            ),
+            self.args.timeout,
+            description="answer for the gallery prompt",
+        )
+        wait_for_json_state(
+            self.state_dir / "state.json",
+            lambda value: not value.get("pending", {}).get(AGENT_KEY),
+            self.args.timeout,
+            description="pending queue to drain after the gallery",
+        )
+        fake = json.loads((self.fake_state / "fake-openrig.json").read_text())
+        prompts = [
+            str(item["prompt"])
+            for item in fake["prompts"]
+            if first_name in str(item["prompt"])
+        ]
+        if len(prompts) != 1:
+            raise CheckFailure(f"gallery reached the agent {len(prompts)} times")
+        prompt = prompts[0]
+        positions: list[int] = []
+        inbox = self.state_dir / "media-inbox" / AGENT_KEY
+        for index, (name, original, preview) in enumerate(expected, start=1):
+            marker = f'{index}. "{name}" — image/heic, {len(original)} Bytes, 3024×4032'
+            if marker not in prompt:
+                raise CheckFailure(f"gallery prompt lacks item {index}: {prompt}")
+            positions.append(prompt.index(marker))
+            block = prompt[prompt.index(marker) :].split("\n\n")[0]
+            local = Path(block.split("Lokale Datei: ")[1].split("\n")[0])
+            shown = Path(block.split("Vorschau: ")[1].split(" ")[0])
+            if local.parent != inbox or shown.parent != inbox:
+                raise CheckFailure("gallery item escaped the generated agent inbox")
+            if local.read_bytes() != original:
+                raise CheckFailure(f"gallery item {index} bytes differ")
+            if shown.read_bytes() != preview:
+                raise CheckFailure(f"gallery preview {index} bytes differ")
+            stored_copies = [
+                path for path in inbox.glob("*.heic") if path.read_bytes() == original
+            ]
+            if len(stored_copies) != 1:
+                raise CheckFailure(
+                    f"gallery item {index} stored {len(stored_copies)} times"
+                )
+        if positions != sorted(positions):
+            raise CheckFailure("gallery items reached the agent out of order")
+        qitems = [
+            item
+            for item in fake["queue"].values()
+            if first_name in str(item.get("body") or "")
+        ]
+        if len(qitems) != 1 or qitems[0]["state"] != "done":
+            raise CheckFailure(f"gallery qitem is wrong: {qitems}")
+        validate_qitem_history(qitems[0])
+        return prompt
+
+    async def check_gallery(self, room_id: str) -> None:
+        assert self.owner is not None
+        items, expected = await self.build_gallery("gallery")
+        event_id = await self.owner.send_gallery(
+            room_id,
+            items,
+            body="Listing photos",
+        )
+        prompt = await self.verify_gallery_delivery(event_id, expected)
+        if "Bildunterschrift: Listing photos" not in prompt:
+            raise CheckFailure("gallery caption did not reach the agent")
+        self.record(
+            "element-x-gallery",
+            "pass",
+            (
+                "One encrypted dm.filament.gallery event with four HEIC items and "
+                "JPEG thumbnails reached the fake transport as one prompt and one "
+                "completed qitem. The prompt listed every item in source order "
+                "with filename, MIME type, size and dimensions; each original and "
+                "each preview was decrypted into the generated agent inbox "
+                "byte-for-byte, and the answer was threaded to the gallery event."
+            ),
+        )
+
+    async def check_gallery_restart(self, room_id: str) -> None:
+        assert self.owner is not None
+        self.stop_bridge()
+        self.start_bridge(crash_after="gallery_item")
+        await self.wait_for_steering_mode_ready(room_id)
+        items, expected = await self.build_gallery("restart")
+        event_id = await self.owner.send_gallery(room_id, items, body="")
+        self.wait_for_bridge_crash()
+        record = self.bridge_state().get("galleries", {}).get(event_id, {})
+        phases = [item.get("phase") for item in record.get("items", [])]
+        if record.get("phase") != "downloading" or phases != [
+            "stored",
+            "pending",
+            "pending",
+            "pending",
+        ]:
+            raise CheckFailure(f"gallery crash left unexpected state: {phases}")
+        self.start_bridge()
+        await self.verify_gallery_delivery(event_id, expected)
+        self.record(
+            "gallery-restart",
+            "pass",
+            (
+                "The bridge exited immediately after persisting the first of four "
+                "gallery items. Restart resumed the remaining three without "
+                "downloading the first again: each original exists exactly once in "
+                "the agent inbox, the single prompt lists all four in order, and one "
+                "qitem completed."
+            ),
+        )
+
     async def check_threaded_files(self, room_id: str) -> None:
         assert self.owner is not None
         owner = self.owner
@@ -3383,6 +3592,8 @@ class IntegrationRun:
         await self.check_images(room_id)
         await self.check_files(room_id)
         await self.check_threaded_files(room_id)
+        await self.check_gallery(room_id)
+        await self.check_gallery_restart(room_id)
         await self.check_audio_gap(room_id)
         await self.check_voice_status_edit(room_id)
         await self.check_decision_and_poll(room_id)

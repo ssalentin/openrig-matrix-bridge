@@ -14,6 +14,7 @@ import uuid
 from dataclasses import dataclass
 from io import BytesIO
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 from nio import (
@@ -39,6 +40,7 @@ from nio import (
     RoomMessageFile,
     RoomMessageImage,
     RoomMessageText,
+    RoomMessageUnknown,
     RoomSendResponse,
     SyncResponse,
     ToDeviceError,
@@ -309,6 +311,91 @@ def message_relation(event: Any) -> dict[str, Any] | None:
     return relation if isinstance(relation, dict) else None
 
 
+GALLERY_MSGTYPES = {"dm.filament.gallery", "m.gallery"}
+GALLERY_FILE_ITEMTYPES = {"m.image", "m.file", "m.video", "m.audio"}
+# MSC4274: the 64 KiB event limit caps a gallery at about 60 items.
+MAX_GALLERY_ITEMS = 60
+_UNSAFE_DISPLAY = re.compile(r"[\x00-\x1f\x7f-\x9f\u2028\u2029]+")
+
+
+def display_text(value: object, limit: int = 120) -> str:
+    """Render sender-controlled text as one bounded line."""
+    text = _UNSAFE_DISPLAY.sub(" ", str(value or "")).strip()
+    return f"{text[:limit]}…" if len(text) > limit else text
+
+
+def elements_dative(count: int) -> str:
+    return f"{count} Element" if count == 1 else f"{count} Elementen"
+
+
+def elements_nominative(count: int) -> str:
+    return f"{count} Element" if count == 1 else f"{count} Elemente"
+
+
+def _media_source(container: dict[str, Any], file_key: str, url_key: str) -> dict:
+    encrypted = container.get(file_key)
+    if isinstance(encrypted, dict):
+        return dict(encrypted)
+    url = container.get(url_key)
+    return {"url": url} if isinstance(url, str) else {}
+
+
+def _positive_int(value: object) -> int | None:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        return None
+    return value
+
+
+def gallery_items(content: dict[str, Any]) -> list[dict[str, Any]]:
+    """Persistable per-item records for a gallery, in source order."""
+    raw_items = content.get("itemtypes")
+    if not isinstance(raw_items, list):
+        return []
+    items: list[dict[str, Any]] = []
+    for index, raw in enumerate(raw_items, start=1):
+        if not isinstance(raw, dict):
+            items.append(
+                {
+                    "index": index,
+                    "itemtype": "",
+                    "filename": f"Element {index}",
+                    "phase": "failed",
+                    "error": "ungültiger Galerieeintrag",
+                }
+            )
+            continue
+        info = raw.get("info") if isinstance(raw.get("info"), dict) else {}
+        item: dict[str, Any] = {
+            "index": index,
+            "itemtype": display_text(raw.get("itemtype"), 40),
+            "filename": display_text(
+                raw.get("filename") or raw.get("body") or f"Element {index}"
+            ),
+            "mimetype": normalize_mime_type(info.get("mimetype")),
+            "declared_size": _positive_int(info.get("size")),
+            "width": _positive_int(info.get("w")),
+            "height": _positive_int(info.get("h")),
+            "source": _media_source(raw, "file", "url"),
+            "thumbnail_source": _media_source(info, "thumbnail_file", "thumbnail_url"),
+            "phase": "pending",
+        }
+        if index > MAX_GALLERY_ITEMS:
+            item.update(
+                phase="failed",
+                error=f"Galerie überschreitet {MAX_GALLERY_ITEMS} Elemente",
+            )
+        elif item["itemtype"] not in GALLERY_FILE_ITEMTYPES:
+            item.update(
+                phase="failed",
+                error=f"Elementtyp {item['itemtype'] or '?'} wird nicht unterstützt",
+            )
+        if item["phase"] == "failed":
+            item.pop("source")
+            item.pop("thumbnail_source")
+        items.append(item)
+    return items
+
+
 def voice_transaction_id(voice_event_id: str, operation: str) -> str:
     return str(
         uuid.uuid5(
@@ -470,6 +557,11 @@ class MatrixBridge:
         self.client.add_event_callback(
             self._on_file, (RoomMessageFile, RoomEncryptedFile)
         )
+        # Encrypted and plain messages with an unknown msgtype both arrive as
+        # RoomMessageUnknown; Element X galleries are one of them.
+        self.client.add_event_callback(
+            self._on_room_message_unknown, RoomMessageUnknown
+        )
         self.client.add_event_callback(self._on_invite, InviteMemberEvent)
         self.client.add_event_callback(self._on_member, RoomMemberEvent)
         self.client.add_event_callback(self._on_unknown_event, UnknownEvent)
@@ -490,6 +582,7 @@ class MatrixBridge:
         self._initialize_transcript_offsets()
         self._repair_decision_reply_targets()
         await self._reconcile_pending_operations()
+        await self._resume_galleries()
         await self._recover_acceptance_reactions(startup=True)
         await self._restore_activity_feedback()
         poller = asyncio.create_task(self._poll_answers(), name="openrig-matrix-poller")
@@ -1443,6 +1536,14 @@ class MatrixBridge:
         if isinstance(event, (RoomMessageAudio, RoomEncryptedAudio)):
             return
         asyncio.create_task(self._handle_file(room, event))
+
+    def _on_room_message_unknown(
+        self,
+        room: MatrixRoom,
+        event: RoomMessageUnknown,
+    ) -> None:
+        if event.msgtype in GALLERY_MSGTYPES:
+            asyncio.create_task(self._handle_gallery(room, event))
 
     def _on_unknown_event(self, room: MatrixRoom, event: UnknownEvent) -> None:
         if event.type in {POLL_RESPONSE_TYPE, STABLE_POLL_RESPONSE_TYPE}:
@@ -3450,29 +3551,7 @@ class MatrixBridge:
                     f"Bytes überein ({declared_size} statt {len(attachment)})"
                 )
 
-            suffix = Path(filename).suffix
-            if not re.fullmatch(r"\.[A-Za-z0-9]{1,10}", suffix):
-                suffix = ".bin"
-            agent_inbox = safe_agent_directory(self.config.media.inbox_dir, agent.key)
-            agent_inbox.mkdir(parents=True, exist_ok=True, mode=0o700)
-            stored = agent_inbox / f"{uuid.uuid4().hex}{suffix.lower()}"
-            temporary = agent_inbox / f".{stored.name}.part"
-
-            def write_file() -> None:
-                try:
-                    with temporary.open("xb") as handle:
-                        handle.write(attachment)
-                        handle.flush()
-                        os.fsync(handle.fileno())
-                    temporary.chmod(0o600)
-                    os.replace(temporary, stored)
-                finally:
-                    try:
-                        temporary.unlink()
-                    except FileNotFoundError:
-                        pass
-
-            await asyncio.to_thread(write_file)
+            stored = await self._write_inbox_file(agent, attachment, filename)
         except Exception as exc:
             LOGGER.exception("file download failed")
             await self._send_to_event(
@@ -3500,6 +3579,316 @@ class MatrixBridge:
             "attachment",
             relates_to=message_relation(event),
         )
+
+    async def _write_inbox_file(
+        self,
+        agent: AgentConfig,
+        data: bytes,
+        filename: str,
+    ) -> Path:
+        """Store bytes under a generated name in the agent inbox, atomically."""
+        suffix = Path(filename).suffix
+        if not re.fullmatch(r"\.[A-Za-z0-9]{1,10}", suffix):
+            suffix = ".bin"
+        agent_inbox = safe_agent_directory(self.config.media.inbox_dir, agent.key)
+        agent_inbox.mkdir(parents=True, exist_ok=True, mode=0o700)
+        stored = agent_inbox / f"{uuid.uuid4().hex}{suffix.lower()}"
+        temporary = agent_inbox / f".{stored.name}.part"
+
+        def write_file() -> None:
+            try:
+                with temporary.open("xb") as handle:
+                    handle.write(data)
+                    handle.flush()
+                    os.fsync(handle.fileno())
+                temporary.chmod(0o600)
+                os.replace(temporary, stored)
+            finally:
+                try:
+                    temporary.unlink()
+                except FileNotFoundError:
+                    pass
+
+        await asyncio.to_thread(write_file)
+        return stored
+
+    async def _download_media(self, source: dict[str, Any], limit: int) -> bytes:
+        """Download one plain or encrypted media payload within `limit` bytes."""
+        mxc = source.get("url")
+        if not isinstance(mxc, str) or not mxc.startswith("mxc://"):
+            raise MediaError("keine Medienadresse")
+        download = await self.client.download(mxc=mxc)
+        body = getattr(download, "body", None)
+        if not isinstance(body, bytes):
+            raise ConnectionError(display_text(download))
+        if len(body) > limit + 4096:
+            raise MediaError(f"überschreitet das konfigurierte Limit von {limit} Bytes")
+        data = body
+        if "key" in source:
+            key_value = source.get("key")
+            key = (
+                key_value.get("k")
+                if isinstance(key_value, dict)
+                else key_value
+            )
+            hashes = source.get("hashes")
+            digest = (
+                hashes.get("sha256")
+                if isinstance(hashes, dict)
+                else None
+            )
+            iv = source.get("iv")
+            if not isinstance(key, str) or not isinstance(digest, str) or not isinstance(
+                iv, str
+            ):
+                raise MediaError("verschlüsselte Mediendaten sind unvollständig")
+            data = decrypt_attachment(
+                body,
+                key,
+                digest,
+                iv,
+            )
+        if not data:
+            raise MediaError("Datei ist leer")
+        if len(data) > limit:
+            raise MediaError(f"überschreitet das konfigurierte Limit von {limit} Bytes")
+        return data
+
+    async def _handle_gallery(
+        self,
+        room: MatrixRoom,
+        event: RoomMessageUnknown,
+    ) -> None:
+        if not self.config.media.enabled:
+            return
+        if event.sender == self.config.user_id:
+            return
+        agent = self._agent_for_room(room.room_id)
+        if agent is None or event.sender not in self.config.allowed_users:
+            return
+        if event.event_id in self.processed_events:
+            return
+        if self.config.max_message_age_minutes >= 0:
+            age_ms = int(time.time() * 1000) - int(event.server_timestamp)
+            if age_ms > self.config.max_message_age_minutes * 60_000:
+                await self._send_to_event(
+                    room.room_id,
+                    "Galerie ist zu alt und wurde nicht verarbeitet.",
+                    event,
+                )
+                return
+
+        items = gallery_items(event.content)
+        # The record and the processed marker are saved together, so a
+        # restart resumes the gallery instead of skipping or losing it.
+        self.processed_events.add(event.event_id)
+        self.state.data["processed_events"] = list(self.processed_events)[-2000:]
+        if not items:
+            self.state.save()
+            await self._send_to_event(
+                room.room_id,
+                "Galerie enthält keine Elemente.",
+                event,
+            )
+            return
+        self.state.data.setdefault("galleries", {})[event.event_id] = {
+            "room_id": room.room_id,
+            "agent_key": agent.key,
+            "sender": event.sender,
+            "server_timestamp": int(event.server_timestamp),
+            "relates_to": message_relation(event),
+            "caption": display_text(event.content.get("body"), 500),
+            "items": items,
+            "phase": "downloading",
+        }
+        self.state.save()
+        await self._send_to_event(
+            room.room_id,
+            f"Galerie mit {elements_dative(len(items))} empfangen, "
+            "lade und entschlüssele …",
+            event,
+            tx_id=f"gallery-received-{event.event_id}",
+        )
+        await self._process_gallery(event.event_id)
+
+    async def _resume_galleries(self) -> None:
+        galleries = self.state.data.get("galleries", {})
+        for event_id, record in list(galleries.items()):
+            if isinstance(record, dict) and record.get("phase") == "downloading":
+                await self._process_gallery(event_id)
+
+    async def _process_gallery(self, event_id: str) -> None:
+        record = self.state.data["galleries"][event_id]
+        agent = self.config.agents.get(str(record.get("agent_key")))
+        if agent is None:
+            record["phase"] = "failed"
+            self.state.save()
+            return
+        for item in record["items"]:
+            if item.get("phase") != "pending":
+                continue
+            try:
+                await self._store_gallery_item(agent, item)
+                item["phase"] = "stored"
+            except Exception as exc:
+                LOGGER.warning(
+                    "gallery item %s of %s failed",
+                    item["index"],
+                    event_id,
+                    exc_info=True,
+                )
+                item["phase"] = "failed"
+                item["error"] = display_text(exc)
+            item.pop("source", None)
+            item.pop("thumbnail_source", None)
+            self.state.save()
+            self._crash_after_effect("gallery_item")
+
+        room_id = str(record["room_id"])
+        relation = record.get("relates_to")
+        event = SimpleNamespace(
+            event_id=event_id,
+            source={"content": {"m.relates_to": relation}} if relation else {},
+        )
+        items = record["items"]
+        stored = [item for item in items if item.get("phase") == "stored"]
+        failures = [
+            f"• Element {item['index']} ({item['filename']}): {item.get('error')}"
+            for item in items
+            if item.get("phase") == "failed"
+        ]
+        if not stored:
+            record["phase"] = "failed"
+            self.state.save()
+            await self._send_to_event(
+                room_id,
+                "\n".join(
+                    [
+                        (
+                            "Galerie konnte nicht übernommen werden: kein Element "
+                            "ließ sich speichern."
+                        ),
+                        *failures,
+                    ]
+                ),
+                event,
+                tx_id=f"gallery-failed-{event_id}",
+            )
+            return
+        await self._send_to_event(
+            room_id,
+            "\n".join(
+                [
+                    (
+                        f"Galerie gespeichert: {len(stored)} von "
+                        f"{elements_dative(len(items))}."
+                    ),
+                    *failures,
+                ]
+            ),
+            event,
+            tx_id=f"gallery-stored-{event_id}",
+        )
+        # Saved together with the enqueued request by _enqueue_prompt.
+        record["phase"] = "enqueued"
+        await self._enqueue_prompt(
+            agent,
+            SimpleNamespace(room_id=room_id),
+            event_id,
+            int(record["server_timestamp"]),
+            self._gallery_prompt(record),
+            "gallery",
+            relates_to=relation,
+        )
+        self.state.save()
+
+    async def _store_gallery_item(
+        self,
+        agent: AgentConfig,
+        item: dict[str, Any],
+    ) -> None:
+        limit = self.config.media.max_file_bytes
+        declared = item.get("declared_size")
+        if declared is not None and declared > limit:
+            raise MediaError(f"überschreitet das konfigurierte Limit von {limit} Bytes")
+        data = await self._download_media(item.get("source") or {}, limit)
+        if declared is not None and declared != len(data):
+            # Some Element X galleries declare metadata sizes exactly 90 bytes
+            # below the digest-verified plaintext. Preserve the usable payload,
+            # but retain the discrepancy in the agent-facing prompt.
+            item["declared_size_mismatch"] = declared
+        filename = item["filename"]
+        if item.get("itemtype") == "m.image":
+            detected = detect_image_type(data)
+            if detected is not None:
+                filename = f"{Path(filename).stem}{detected.suffix}"
+                item["filename"] = filename
+                item["mimetype"] = detected.mime_type
+        stored = await self._write_inbox_file(agent, data, filename)
+        item["stored_path"] = str(stored)
+        item["size"] = len(data)
+        thumbnail = item.get("thumbnail_source") or {}
+        if not thumbnail:
+            return
+        try:
+            preview = await self._download_media(
+                thumbnail,
+                self.config.media.max_image_bytes,
+            )
+            preview_type = detect_image_type(preview)
+            if preview_type is None:
+                raise MediaError("Vorschau ist kein unterstütztes Bild")
+            path = await self._write_inbox_file(
+                agent,
+                preview,
+                f"preview{preview_type.suffix}",
+            )
+        except Exception as exc:
+            LOGGER.warning("gallery preview download failed", exc_info=True)
+            item["preview_error"] = display_text(exc)
+            return
+        item["preview_path"] = str(path)
+        item["preview_mimetype"] = preview_type.mime_type
+
+    @staticmethod
+    def _gallery_prompt(record: dict[str, Any]) -> str:
+        items = record["items"]
+        lines = [
+            (
+                f"Galerie von {record['sender']} via Matrix empfangen: "
+                f"{elements_nominative(len(items))} in Originalreihenfolge."
+            )
+        ]
+        if record.get("caption"):
+            lines.append(f"Bildunterschrift: {record['caption']}")
+        blocks = ["\n".join(lines)]
+        for item in items:
+            filename = json.dumps(item["filename"], ensure_ascii=False)
+            title = f"{item['index']}. {filename}"
+            if item.get("phase") != "stored":
+                blocks.append(f"{title} — nicht übernommen: {item.get('error')}")
+                continue
+            details = f"{item['mimetype']}, {item['size']} Bytes"
+            if "declared_size_mismatch" in item:
+                details += f", Metadaten: {item['declared_size_mismatch']} Bytes"
+            if item.get("width") and item.get("height"):
+                details += f", {item['width']}×{item['height']}"
+            if item.get("preview_path"):
+                preview = (
+                    f"{item['preview_path']} "
+                    f"({'JPEG' if item.get('preview_mimetype') == 'image/jpeg' else 'Bild'}"
+                    "-Vorschau aus der Galerie)"
+                )
+            elif item.get("preview_error"):
+                preview = f"nicht verfügbar ({item['preview_error']})"
+            else:
+                preview = "keine in der Galerie enthalten"
+            blocks.append(
+                f"{title} — {details}\n"
+                f"   Lokale Datei: {item['stored_path']}\n"
+                f"   Vorschau: {preview}"
+            )
+        return "\n\n".join(blocks)
 
     @staticmethod
     def _steering_group(
