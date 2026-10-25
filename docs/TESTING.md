@@ -101,10 +101,12 @@ after the previous owner event, which makes a full run several minutes longer.
 
 | Check | What is exercised |
 |---|---|
+| `ephemeral-matrix` | The harness started a disposable Synapse on loopback; the container and state directory are removed at exit unless `--keep-workdir` is set |
 | `setup-and-doctor` | Public `setup` and `doctor` commands against Synapse and the fake OpenRig transport, plus a second `setup` without `--replace-config` that must fail with that next step |
 | `room-status-avatar` | Private room creation, owner invite/join, Megolm room state, managed avatar, ready topic, structured status |
 | `encrypted-chat-queue-typing` | Owner text, typing indicator, activity-labelled commentary card, separate thread-related final answer, recorded pending -> in-progress -> done qitem history, raw `m.room.encrypted` event |
 | `threaded-prompt-restart` | Encrypted owner prompt already in `m.thread`; commentary and final answer under the canonical root; single qitem closure; bridge typing and `arbeitet` status for the reply; bridge restart without duplicate prompt or response and with typing restored for the in-flight request |
+| `qitem-claim-crash-recovery` | Test-only process exit immediately after the bridge claimed an OpenRig qitem; the restart recognizes the in-progress qitem, resumes the unsent prompt exactly once and completes the same qitem |
 | `answer-crash-recovery` | Test-only process exit immediately after final answer send; stable transaction retry produces no duplicate Matrix event and reconciles one qitem |
 | `activity-card-crash-recovery` | Issue #39: process exit right after Matrix accepted the initial activity card and before its event ID was recorded; the restart retries with the stable transaction ID and the request keeps exactly one card that every edit targets, one answer, one completed qitem |
 | `commentary-redaction` | Issue #70: an advisor-style commentary with two internal `/root/.openrig/...` paths reaches the room's activity card as the full progress text with each path replaced by `[lokaler Pfad]`; no bridge message carries the path bytes |
