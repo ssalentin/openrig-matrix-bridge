@@ -8,12 +8,13 @@ illustrations, not live-Codex proof and not device-verification evidence.
 
 ![Generic Agent inbox in Element X, with seven role-specific OpenRig agents and an OpenRig status capsule](agent-inbox-generic.png)
 
-This 1200 x 2608 README hero is an edited marketing illustration derived from
-the owner-provided Element X chat-list screenshot. The visible role names,
-previews, timestamps, and top status capsule were replaced with generic text
-and an OpenRig/Relay mark. The seven agent avatars, dark interface, and core
-layout remain visible. It is not an unedited verification artifact and must not
-be cited as evidence for Matrix protocol behavior.
+This 1200 x 2608 README hero shows an example view in the Element X Matrix
+client app on Android. It is an edited marketing illustration derived from the
+owner-provided Element X chat-list screenshot. The visible role names, previews,
+timestamps, and top status capsule were replaced with generic text and an
+OpenRig/Relay mark. The seven agent avatars, dark interface, and core layout
+remain visible. It is not an unedited verification artifact and must not be
+cited as evidence for Matrix protocol behavior.
 
 ## `element-web-thread.png`
 
