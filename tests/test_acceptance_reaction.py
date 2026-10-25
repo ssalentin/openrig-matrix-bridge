@@ -302,7 +302,7 @@ def test_restart_after_ack_send_reuses_transaction_without_duplicate(
     assert harness.client.reactions("$root") == ["$reaction-1"]
 
     harness.bridge._crash_after_effect = lambda point: None
-    asyncio.run(harness.bridge._recover_acceptance_reactions())
+    asyncio.run(harness.bridge._recover_acceptance_reactions(startup=True))
 
     assert [
         send["tx_id"]
@@ -555,3 +555,30 @@ def test_prompt_injection_does_not_wait_for_acknowledgement(tmp_path: Path):
 
     assert prompts_at_reaction == [1]
     assert harness.acks()["$root"]["phase"] == "sent"
+
+
+def test_poller_recovery_never_makes_the_first_attempt_during_prompt_send(
+    tmp_path: Path,
+):
+    harness = AckHarness(tmp_path)
+    sends_during_prompt: list[int] = []
+    send_prompt = harness.send_prompt
+
+    async def send_prompt_with_poller_tick(ref, text):
+        await harness.bridge._recover_acceptance_reactions()
+        sends_during_prompt.append(len(harness.client.sends))
+        await send_prompt(ref, text)
+
+    harness.bridge.gateway.send_prompt = send_prompt_with_poller_tick
+    harness.send_prompt = send_prompt_with_poller_tick
+
+    harness.enqueue("$root", "root request", None)
+
+    assert sends_during_prompt == [0]
+    assert harness.client.reactions("$root") == ["$reaction-1"]
+    assert len(harness.client.sends) == 1
+    record = harness.acks()["$root"]
+    assert record["attempts"] == 1
+    assert record["phase"] == "sent"
+    assert record["last_error"] is None
+    assert "retry_at" not in record
