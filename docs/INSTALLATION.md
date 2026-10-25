@@ -247,6 +247,28 @@ The command above is the complete non-interactive setup path when OpenRig and
 Matrix are already working. If an argument is omitted, `setup` prompts for the
 missing value and prints where to find the corresponding Matrix ID.
 
+### What setup infers and what you provide
+
+| Value | Source |
+|---|---|
+| Homeserver URL, owner Matrix user ID | You provide them (flag or prompt); setup cannot infer them. |
+| Bot user ID and device ID | You provide them, but when `MATRIX_ACCESS_TOKEN` is set setup takes both from the homeserver `whoami` answer for that token and prints a note if they differ from yours. |
+| Codex seats and their sessions | Discovered from `rig ps --nodes -A --json`. |
+| Access token | Only from the environment. Setup checks it with `whoami`, never accepts it as an argument, and never prints or writes it. |
+
+Setup stops with a next step in these states:
+
+| State | What setup says to do |
+|---|---|
+| Config file already exists | Pass `--replace-config`, or choose another `--config` path. |
+| A bridge is already running for the state directory | Stop that bridge first; only one bridge may own a state directory and device. |
+| Token invalid, expired or forbidden | Create a new bot device token and export it again. |
+| Homeserver unreachable | Check the homeserver URL and network. |
+| No running Codex seat, or a duplicate seat name | Start a Codex seat and confirm it with `rig ps --nodes -A --json`. |
+| `rig` not found or not answering | Pass `--rig-command` with the full path. |
+| OpenRig human registry unavailable | Pass `--no-human-registration`. |
+| Voice model download fails | The config is already written; pass `--skip-model` to defer the download. |
+
 Use `--no-human-registration` if you do not want the setup command to modify the
 OpenRig human registry. Use `--without-voice` for a text-only bridge. Use
 `--skip-model` to finish setup now and download later:

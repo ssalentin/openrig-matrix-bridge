@@ -466,8 +466,18 @@ def run_setup(args: argparse.Namespace) -> None:
             inferred_user_id = whoami.get("user_id")
             inferred_device_id = whoami.get("device_id")
             if inferred_user_id:
+                if user_id and user_id != inferred_user_id:
+                    print(
+                        f"note: bot user ID {user_id} differs from the access token; "
+                        f"using {inferred_user_id}"
+                    )
                 user_id = inferred_user_id
             if inferred_device_id:
+                if device_id and device_id != inferred_device_id:
+                    print(
+                        f"note: device ID {device_id} differs from the access token; "
+                        f"using {inferred_device_id}"
+                    )
                 device_id = inferred_device_id
         except RuntimeError as exc:
             raise SystemExit(f"Matrix token validation failed: {exc}") from exc

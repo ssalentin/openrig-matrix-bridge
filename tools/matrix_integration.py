@@ -832,38 +832,39 @@ class IntegrationRun:
             OWNER_PASSWORD,
             "OPENRIG_OWNER",
         )
+        setup_command = [
+            sys.executable,
+            "-m",
+            "openrig_matrix_bridge",
+            "setup",
+            "--config",
+            str(self.config_path),
+            "--homeserver",
+            self.homeserver,
+            "--user-id",
+            BRIDGE_USER,
+            "--device-id",
+            bridge_device,
+            "--allowed-user",
+            OWNER_USER,
+            "--state-dir",
+            str(self.state_dir),
+            "--download-root",
+            str(self.work / "parakeet"),
+            "--rig-command",
+            str(ROOT / "tools" / "fake_openrig.py"),
+            "--codex-home",
+            str(self.work / "codex"),
+            "--sender-session",
+            "matrix-bridge@local",
+            "--human-destination",
+            "owner@external",
+            "--human-id",
+            "owner",
+            "--skip-model",
+        ]
         setup = run(
-            [
-                sys.executable,
-                "-m",
-                "openrig_matrix_bridge",
-                "setup",
-                "--config",
-                str(self.config_path),
-                "--homeserver",
-                self.homeserver,
-                "--user-id",
-                BRIDGE_USER,
-                "--device-id",
-                bridge_device,
-                "--allowed-user",
-                OWNER_USER,
-                "--state-dir",
-                str(self.state_dir),
-                "--download-root",
-                str(self.work / "parakeet"),
-                "--rig-command",
-                str(ROOT / "tools" / "fake_openrig.py"),
-                "--codex-home",
-                str(self.work / "codex"),
-                "--sender-session",
-                "matrix-bridge@local",
-                "--human-destination",
-                "owner@external",
-                "--human-id",
-                "owner",
-                "--skip-model",
-            ],
+            setup_command,
             env=self.env(),
             timeout=self.args.timeout,
         )
@@ -874,12 +875,47 @@ class IntegrationRun:
         doctor = self.cli("doctor")
         if doctor.returncode != 0:
             raise CheckFailure(f"bridge doctor failed: {doctor.stdout}{doctor.stderr}")
+        rerun = run(
+            setup_command,
+            env=self.env(),
+            timeout=self.args.timeout,
+            check=False,
+        )
+        if rerun.returncode == 0 or "--replace-config" not in rerun.stderr:
+            raise CheckFailure(
+                "setup over an existing config did not fail with the "
+                f"--replace-config next step: {rerun.returncode} "
+                f"{rerun.stdout}{rerun.stderr}"
+            )
+        bad_token_environment = self.env()
+        bad_token_environment["MATRIX_ACCESS_TOKEN"] = "invalid-token-for-harness"
+        bad_token = run(
+            [
+                sys.executable,
+                "-m",
+                "openrig_matrix_bridge",
+                "doctor",
+                "--config",
+                str(self.config_path),
+            ],
+            env=bad_token_environment,
+            timeout=self.args.timeout,
+            check=False,
+        )
+        bad_token_output = f"{bad_token.stdout}{bad_token.stderr}"
+        if bad_token.returncode == 0 or "invalid or expired" not in bad_token_output:
+            raise CheckFailure(
+                "doctor with an invalid token did not fail with an actionable "
+                f"message: {bad_token.returncode} {bad_token_output}"
+            )
         self.record(
             "setup-and-doctor",
             "pass",
             (
                 f"`setup` wrote one agent room; `doctor` exited 0 "
-                f"({setup.stdout.splitlines()[0]})"
+                f"({setup.stdout.splitlines()[0]}); a second `setup` without "
+                "`--replace-config` and `doctor` with an invalid token each "
+                "failed with their next step"
             ),
         )
         owner_store = self.work / "owner-store"

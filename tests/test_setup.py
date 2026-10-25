@@ -232,3 +232,39 @@ def test_setup_refuses_when_state_has_running_bridge(tmp_path, monkeypatch):
         lock.close()
 
     assert not args.config.exists()
+
+
+def test_setup_reports_when_token_identity_replaces_provided_ids(
+    tmp_path,
+    monkeypatch,
+    capsys,
+):
+    monkeypatch.setenv("MATRIX_ACCESS_TOKEN", "test-token-never-persist")
+    _mock_existing_install(monkeypatch)
+    monkeypatch.setattr(cli, "instance_is_running", lambda _: False)
+
+    cli.run_setup(_setup_args(tmp_path, "--without-voice"))
+
+    output = capsys.readouterr().out
+    assert "bot user ID @bot:matrix.example.org differs from the access token" in output
+    assert "using @relay-bot:matrix.example.org" in output
+    assert "device ID TESTDEVICE differs from the access token" in output
+    assert "using RELAY_BRIDGE" in output
+    assert "test-token-never-persist" not in output
+
+
+def test_setup_is_quiet_when_provided_ids_match_the_token(
+    tmp_path,
+    monkeypatch,
+    capsys,
+):
+    monkeypatch.setenv("MATRIX_ACCESS_TOKEN", "test-token-never-persist")
+    _mock_existing_install(monkeypatch)
+    monkeypatch.setattr(cli, "instance_is_running", lambda _: False)
+    args = _setup_args(tmp_path, "--without-voice")
+    args.user_id = "@relay-bot:matrix.example.org"
+    args.device_id = "RELAY_BRIDGE"
+
+    cli.run_setup(args)
+
+    assert "differs from the access token" not in capsys.readouterr().out
