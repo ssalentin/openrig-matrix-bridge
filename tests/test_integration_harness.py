@@ -288,9 +288,37 @@ def test_fake_transport_records_best_effort_steering_inside_active_turn(
     )
 
 
+def read_complete_transcript_records(path: Path) -> list[dict[str, object]]:
+    """Parse only newline-terminated lines; a writer may be mid-append."""
+    if not path.exists():
+        return []
+    *complete, _unterminated = path.read_text(encoding="utf-8").split("\n")
+    return [json.loads(line) for line in complete if line]
+
+
+def wait_for_final_answers(path: Path, expected: list[str], timeout: float = 30.0):
+    """Poll until every expected final answer is in the transcript, or fail."""
+    deadline = time.monotonic() + timeout
+    records: list[dict[str, object]] = []
+    while time.monotonic() < deadline:
+        records = read_complete_transcript_records(path)
+        answers = [
+            str(record)
+            for record in records
+            if record.get("payload", {}).get("item", {}).get("phase")
+            == "final_answer"
+        ]
+        if all(any(text in answer for answer in answers) for text in expected):
+            return records
+        time.sleep(0.05)
+    raise AssertionError(f"transcript never contained final answers {expected}")
+
+
 def test_fake_transport_can_materialize_steering_after_completion(
     tmp_path: Path,
 ):
+    # The first turn must outlast the time the steering `send` needs to start its
+    # Python process, which can be hundreds of milliseconds on a loaded runner.
     first = fake(
         tmp_path,
         "send",
@@ -298,9 +326,9 @@ def test_fake_transport_can_materialize_steering_after_completion(
         "active prompt",
         "--raw",
         "--json",
-        delay="0.2",
+        delay="3.0",
     )
-    assert first.returncode == 0
+    assert first.returncode == 0, first.stderr
 
     steer = fake(
         tmp_path,
@@ -312,24 +340,13 @@ def test_fake_transport_can_materialize_steering_after_completion(
         allow_steering=True,
         extra_env={"OPENRIG_FAKE_LATE_STEER_SECONDS": "0.4"},
     )
-    assert steer.returncode == 0
+    assert steer.returncode == 0, steer.stderr
     assert json.loads(steer.stdout)["materialization"] == "late"
 
-    transcript = tmp_path / "transcript.jsonl"
-    deadline = time.monotonic() + 3
-    records: list[dict[str, object]] = []
-    while time.monotonic() < deadline:
-        records = [
-            json.loads(line)
-            for line in transcript.read_text(encoding="utf-8").splitlines()
-        ]
-        if any(
-            record.get("payload", {}).get("item", {}).get("phase") == "final_answer"
-            and "Late steering answer:" in str(record)
-            for record in records
-        ):
-            break
-        time.sleep(0.05)
+    records = wait_for_final_answers(
+        tmp_path / "transcript.jsonl",
+        ["Fake integration answer: active prompt", "Late steering answer:"],
+    )
 
     user_records = [
         record
