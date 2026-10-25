@@ -4673,6 +4673,14 @@ class MatrixBridge:
                     self._room_for_agent(agent.key),
                     ref,
                 )
+                if request.get("started_at") is not None:
+                    # The card showed this request as "next" while the seat was
+                    # busy; it is active now.
+                    await self._update_queue_notice(
+                        agent,
+                        self._room_for_agent(agent.key),
+                        max(0, len(pending) - 1),
+                    )
                 return
             if request.get("answer_text") is None:
                 if (

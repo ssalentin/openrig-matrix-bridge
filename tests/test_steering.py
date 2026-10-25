@@ -1206,3 +1206,26 @@ def test_steering_modes_queue_long_same_thread_message(
 
     assert len(pending) == 2
     assert not pending[1].get("deferred_steering")
+
+
+def test_queue_card_refreshes_when_a_waiting_head_request_starts(tmp_path: Path):
+    harness = SteeringHarness(tmp_path, "queue")
+    harness.busy = True
+    harness.enqueue("$first", "first request", None)
+    harness.enqueue("$second", "second request", None)
+    pending = harness.bridge.state.data["pending"]["advisor"]
+    assert pending[0].get("started_at") is None
+    before = queue_notice_text(pending)
+    assert before is not None
+    assert "**Nächste Anfrage:** Text" in before
+    harness.queue_updates.clear()
+    harness.busy = False
+
+    asyncio.run(harness.bridge._poll_agent(harness.agent))
+
+    assert pending[0].get("started_at") is not None
+    assert len(harness.queue_updates) >= 1
+    after = queue_notice_text(pending)
+    assert after is not None
+    assert '**Aktiv:** Text · "first request"' in after
+    assert '1. Text · "second request"' in after

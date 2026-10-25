@@ -1972,9 +1972,9 @@ class IntegrationRun:
         )
         await owner.sync_until(
             lambda: any(
-                "1 Nachricht wartet" in str(message["body"])
-                and '**Aktiv:** Text · "hold first fallback mode root"'
-                in str(message["body"])
+                "Warteschlange" in str(message["body"])
+                and "Aktiv (" not in str(message["body"])
+                and "Thread" in str(message["body"])
                 and "fallback follow one" in str(message["body"])
                 and "fallback follow two" in str(message["body"])
                 for message in owner.messages
