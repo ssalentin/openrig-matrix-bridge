@@ -502,3 +502,119 @@ def test_source_provenance_requires_clean_known_commit():
         validate_source_provenance(digest, " M tools/matrix_integration.py", digest)
     with pytest.raises(CheckFailure, match="does not match"):
         validate_source_provenance(digest, "", "b" * 40)
+
+
+def write_fake_state(root: Path, **overrides: object) -> None:
+    state: dict[str, object] = {
+        "queue": {},
+        "prompts": [],
+        "steers": [],
+        "calls": [],
+        "human_registered": False,
+        "busy_until": 0.0,
+        **overrides,
+    }
+    (root / "fake-openrig.json").write_text(json.dumps(state), encoding="utf-8")
+
+
+def read_fake_state(root: Path) -> dict:
+    return json.loads((root / "fake-openrig.json").read_text(encoding="utf-8"))
+
+
+def test_fake_transport_stays_busy_until_its_turn_completes(tmp_path: Path):
+    now = time.time()
+    root_prompt = {
+        "id": "root-prompt",
+        "turn_id": "root-turn",
+        "destination": "integration-agent@local",
+        "prompt": "root",
+        "sent_at": now - 5.0,
+        "completed_at": None,
+    }
+    write_fake_state(tmp_path, prompts=[root_prompt], busy_until=now - 1.0)
+
+    nodes = fake(tmp_path, "ps", "--json")
+    assert json.loads(nodes.stdout)[0]["agentActivity"]["state"] == "running"
+    steer = fake(
+        tmp_path,
+        "send",
+        "integration-agent@local",
+        "follow-up after the hold",
+        "--raw",
+        "--json",
+        allow_steering=True,
+    )
+    assert steer.returncode == 0, steer.stderr
+    assert json.loads(steer.stdout)["turnId"] == "root-turn"
+    state = read_fake_state(tmp_path)
+    assert len(state["prompts"]) == 1
+    assert [item["turn_id"] for item in state["steers"]] == ["root-turn"]
+
+    state["prompts"][0]["completed_at"] = time.time()
+    (tmp_path / "fake-openrig.json").write_text(json.dumps(state), encoding="utf-8")
+    nodes = fake(tmp_path, "ps", "--json")
+    assert json.loads(nodes.stdout)[0]["agentActivity"]["state"] == "idle"
+
+
+def test_fake_transport_hold_for_held_prompts_is_configurable(tmp_path: Path):
+    sent = fake(
+        tmp_path,
+        "send",
+        "integration-agent@local",
+        "hold first configurable root",
+        "--raw",
+        "--json",
+        extra_env={"OPENRIG_FAKE_HOLD_SECONDS": "0.6"},
+    )
+    assert sent.returncode == 0, sent.stderr
+    state = read_fake_state(tmp_path)
+    prompt = state["prompts"][0]
+    assert state["busy_until"] - prompt["sent_at"] == pytest.approx(0.6, abs=0.05)
+
+
+def test_fake_late_steer_materializes_only_after_its_root_completes(
+    tmp_path: Path,
+):
+    now = time.time()
+    write_fake_state(
+        tmp_path,
+        prompts=[
+            {
+                "id": "root-prompt",
+                "turn_id": "root-turn",
+                "destination": "integration-agent@local",
+                "prompt": "root",
+                "sent_at": now,
+                "completed_at": None,
+            }
+        ],
+        busy_until=now + 30.0,
+    )
+    (tmp_path / "transcript.jsonl").write_text("", encoding="utf-8")
+    steer = fake(
+        tmp_path,
+        "send",
+        "integration-agent@local",
+        "late follow-up",
+        "--raw",
+        "--json",
+        allow_steering=True,
+        extra_env={"OPENRIG_FAKE_LATE_STEER_SECONDS": "0.1"},
+    )
+    assert json.loads(steer.stdout)["materialization"] == "late"
+    transcript = tmp_path / "transcript.jsonl"
+    time.sleep(0.8)
+    assert "late follow-up" not in transcript.read_text(encoding="utf-8")
+
+    state = read_fake_state(tmp_path)
+    state["prompts"][0]["completed_at"] = time.time()
+    (tmp_path / "fake-openrig.json").write_text(json.dumps(state), encoding="utf-8")
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        if "Late steering answer: late follow-up" in transcript.read_text(
+            encoding="utf-8"
+        ):
+            break
+        time.sleep(0.05)
+    else:
+        raise AssertionError("late steer did not materialize after root completion")
