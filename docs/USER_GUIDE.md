@@ -29,8 +29,10 @@ The activity card also shows the agent's latest progress commentary. Sensitive
 parts are replaced span by span, so the rest stays readable: local paths become
 `[lokaler Pfad]`, tokens, keys and authorization headers `[Token entfernt]`,
 credentials in a URI `[Zugangsdaten entfernt]`, cookies `[Cookie entfernt]`, and
-fenced command output `[Ausgabe entfernt]`. The replaced text never reaches the
-room. Commentary is cut to 600 characters.
+fenced command output `[Ausgabe entfernt]`. A cookie or authorization header,
+and a quoted secret value, is replaced up to the end of its line, so a malformed
+or truncated value cannot leave part of it behind. The replaced text never
+reaches the room. Commentary is cut to 600 characters.
 
 ## Verify the product manually
 

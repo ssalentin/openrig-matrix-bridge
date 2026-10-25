@@ -71,7 +71,7 @@ def test_credentials_are_replaced_by_a_category_marker(text, secret, marker):
         (
             "Cookie: theme=dark; session=ZmFrZS1zZXNzaW9uLXNlY3JldA gesetzt",
             "ZmFrZS1zZXNzaW9uLXNlY3JldA",
-            f"{COOKIE} gesetzt",
+            COOKIE,
         ),
         (
             "Set-Cookie: lang=de; sid=Q2hhbmdlTWVOb3c; Path=/",
@@ -81,35 +81,161 @@ def test_credentials_are_replaced_by_a_category_marker(text, secret, marker):
         (
             "Cookie theme=dark; __Host-sess=abc123XYZ789qq gesetzt",
             "abc123XYZ789qq",
-            f"{COOKIE} gesetzt",
+            COOKIE,
         ),
         (
             'Cookie: a="x y"; sid=SECRETSIDVALUE123456 gesetzt',
             "SECRETSIDVALUE123456",
-            f"{COOKIE} gesetzt",
+            COOKIE,
         ),
         (
             "Cookie: a='x y'; sid=SECRETSIDVALUE123456 gesetzt",
             "SECRETSIDVALUE123456",
-            f"{COOKIE} gesetzt",
+            COOKIE,
+        ),
+        (
+            'Cookie: a="x\\"y z"; sid=SECRETSIDVALUE123456 gesetzt',
+            "SECRETSIDVALUE123456",
+            COOKIE,
+        ),
+        (
+            'Cookie: a="x y; sid=SECRETSIDVALUE123456 gesetzt\nNächster Schritt',
+            "SECRETSIDVALUE123456",
+            f"{COOKIE} Nächster Schritt",
+        ),
+        (
+            "Cookie: a=1; ; sid=SECRETSIDVALUE123456 gesetzt",
+            "SECRETSIDVALUE123456",
+            COOKIE,
         ),
         (
             "Cookie: theme=dark; connect.sid=s%3AabcSECRET gesetzt",
             "abcSECRET",
-            f"{COOKIE} gesetzt",
+            COOKIE,
         ),
         (
             "Cookie: session=abcdef1234567890 gesetzt und weiter",
             "abcdef1234567890",
-            f"{COOKIE} gesetzt und weiter",
+            COOKIE,
         ),
     ],
 )
-def test_every_pair_of_a_cookie_header_is_replaced(text, secret, expected):
+def test_every_byte_of_a_cookie_header_is_replaced(text, secret, expected):
     summary = sanitize_activity_summary(text)
 
     assert secret not in summary
     assert summary == expected
+
+
+SID = "SIDSECRET1234567890"
+COOKIE_HEADERS = ["Cookie: ", "cookie ", "Set-Cookie: ", "Cookie="]
+COOKIE_FIRST_VALUES = [
+    "1",
+    "",
+    '"x y"',
+    "'x y'",
+    '"x\\"y z"',
+    "'x\\'y z'",
+    '"x y',
+    "'x y",
+    'x"y z"',
+    '"a;b"',
+    "x\\y",
+]
+COOKIE_SEPARATORS = [";", "; ", " ; ", "; ; ", ",", ", ", " "]
+TAILS = [" ok", "\nweiter", ""]
+
+
+@pytest.mark.parametrize("header", COOKIE_HEADERS)
+@pytest.mark.parametrize("value", COOKIE_FIRST_VALUES)
+@pytest.mark.parametrize("separator", COOKIE_SEPARATORS)
+@pytest.mark.parametrize("tail", TAILS)
+def test_no_cookie_quoting_or_separator_lets_a_later_value_through(
+    header, value, separator, tail
+):
+    text = f"Login {header}a={value}{separator}sid={SID}{tail}"
+
+    summary = sanitize_activity_summary(text)
+
+    assert SID not in summary
+    assert "SIDSECRET" not in summary
+    assert summary.startswith(f"Login {COOKIE}")
+
+
+@pytest.mark.parametrize("scheme", ["Bearer", "Basic", "Token", "Digest"])
+@pytest.mark.parametrize(
+    "value",
+    [
+        "SECRETVALUE123=",
+        '"abc SECRETVALUE123"',
+        '"abc SECRETVALUE123',
+        '"a\\"b SECRETVALUE123"',
+        'username="bob", nonce="SECRETVALUE123", response="SECRETVALUE123"',
+        'abc"d SECRETVALUE123"',
+    ],
+)
+@pytest.mark.parametrize("tail", TAILS)
+def test_no_authorization_quoting_lets_part_of_the_credential_through(
+    scheme, value, tail
+):
+    text = f"curl -H Authorization: {scheme} {value}{tail}"
+
+    summary = sanitize_activity_summary(text)
+
+    assert "SECRETVALUE" not in summary
+    assert summary.startswith(f"curl -H {TOKEN}")
+
+
+@pytest.mark.parametrize(
+    "label", ["API_KEY=", "token: ", "password=", "client_secret: "]
+)
+@pytest.mark.parametrize(
+    "value",
+    [
+        '"abc SECRETVALUE123"',
+        '"abc SECRETVALUE123',
+        '"a\\"b SECRETVALUE123"',
+        "'abc SECRETVALUE123",
+        "'a\\'b SECRETVALUE123'",
+    ],
+)
+@pytest.mark.parametrize("tail", TAILS)
+def test_no_quoting_of_a_labelled_credential_lets_part_of_it_through(
+    label, value, tail
+):
+    summary = sanitize_activity_summary(f"Setze {label}{value}{tail}")
+
+    assert "SECRETVALUE" not in summary
+    assert summary.startswith(f"Setze {TOKEN}")
+
+
+def test_header_redaction_stops_at_the_end_of_the_line():
+    summary = sanitize_activity_summary(
+        'Cookie: a="x y; sid=SECRETSID1234 gesetzt\nNächster Schritt läuft'
+    )
+
+    assert summary == f"{COOKIE} Nächster Schritt läuft"
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Cookie: a=1;\n  sid=SECRETSID1234\nweiter",
+        "Cookie:\nsid=SECRETSID1234\nweiter",
+        "Authorization: Digest username=bob,\n\tresponse=SECRETSID1234\nweiter",
+    ],
+)
+def test_folded_or_next_line_header_values_are_replaced(text):
+    summary = sanitize_activity_summary(text)
+
+    assert "SECRETSID" not in summary
+    assert summary.endswith("] weiter")
+
+
+def test_cookie_words_that_are_not_headers_are_kept():
+    text = "Cookie-Banner geprüft, cookies bleiben aus."
+
+    assert sanitize_activity_summary(text) == text
 
 
 def test_password_containing_at_sign_is_fully_replaced():
@@ -237,5 +363,5 @@ def test_multi_pair_cookie_header_never_reaches_the_card(tmp_path):
     asyncio.run(bridge._poll_agent(agent))
 
     card = sent[0][0]
-    assert card == f"**Aktivität:** Arbeitet\n\nLogin geprüft, {COOKIE} ok."
+    assert card == f"**Aktivität:** Arbeitet\n\nLogin geprüft, {COOKIE}"
     assert "SIDVALUE" not in card

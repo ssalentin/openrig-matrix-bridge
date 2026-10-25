@@ -136,21 +136,23 @@ FENCED_OUTPUT = re.compile(
     r"(?ms)^[ \t]*(?:`{3,}|~{3,}).*?"
     r"(?:^[ \t]*(?:`{3,}|~{3,})[ \t]*$|\Z)"
 )
+# A header or quoted value is redacted to the end of its line (and any folded
+# continuation lines) instead of being parsed, so no quote, escape or separator
+# inside it can leave part of the secret behind.
+_TO_LINE_END = r"[^\r\n]*(?:\r?\n[ \t]+[^\r\n]*)*"
 CREDENTIAL_VALUE = re.compile(
     r"(?i)\b(?:[a-z0-9_]*(?:token|key|secret|password)|authorization)\b"
-    r"\s*[:=]\s*(?:\"[^\"]*\"|'[^']*'|\S+)"
+    r"\s*[:=]\s*(?:[\"']" + _TO_LINE_END + r"|\S+)"
 )
 URI_USERINFO = re.compile(
     r"(?i)\b[a-z][a-z0-9+.-]*://[^\s/:]*:[^\s/]+@"
 )
 AUTHORIZATION_SCHEME = re.compile(
     r"(?i)\b(?:proxy-)?authorization\b[^\r\n]{0,40}"
-    r"\b(?:basic|bearer|digest|token)\s+\S+"
+    r"\b(?:basic|bearer|digest|token)\s+" + _TO_LINE_END
 )
 COOKIE_VALUE = re.compile(
-    r"(?i)\b(?:set-)?cookie\b(?:\s*[:=]\s*|\s+)"
-    r"(?:[^\s;=]+\s*=\s*)?(?:\"[^\"]*\"|'[^']*'|[^\s;]+)"
-    r"(?:\s*;\s*[^\s;=]+(?:\s*=\s*(?:\"[^\"]*\"|'[^']*'|[^\s;]+))?)*"
+    r"(?i)\b(?:set-)?cookie\b(?:\s*[:=]\s*|\s+)" + _TO_LINE_END
 )
 BARE_TOKEN = re.compile(
     r"(?i)\b(?:"
