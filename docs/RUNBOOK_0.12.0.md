@@ -50,15 +50,18 @@ latency and must not be copied into the live table.
 
 Deterministic harness latency, from the `steering_latency` section of
 `docs/artifacts/final-0.12.0-integration-report.json`: fake OpenRig transport and
-a loopback Synapse, not a live seat. Admission includes up to one bridge poll interval.
-Maxima include the crash, restart and delayed-probe scenarios.
+a loopback Synapse, not a live seat. Admission includes up to one bridge poll
+interval. Maxima include the crash, restart and delayed-probe scenarios. These
+latencies depend on host load: they are higher than in the earlier `0f533e7`
+report (prompt injection and admission medians 124.4 and 315.4 ms), which ran on
+a less busy host. They are not a performance benchmark.
 
 | Boundary (harness) | Median | Max |
 |---|---|---|
-| Prompt: intake to injection | 124.4 ms | 5504.3 ms |
-| Prompt: intake to admission | 315.4 ms | 5756.8 ms |
-| Prompt: intake to 👍 | 165.0 ms | 846.9 ms |
-| Steer: intake to admission | 496.9 ms | 1056.8 ms |
+| Prompt: intake to injection | 429.9 ms | 6733.2 ms |
+| Prompt: intake to admission | 989.3 ms | 7072.1 ms |
+| Prompt: intake to 👍 | 776.1 ms | 2779.4 ms |
+| Steer: intake to admission | 1101.0 ms | 2928.8 ms |
 
 ## 1. Record the approved candidate
 

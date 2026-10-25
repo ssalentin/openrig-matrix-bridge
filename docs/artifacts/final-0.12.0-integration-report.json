@@ -1,10 +1,10 @@
 {
   "bridge_state_summary": {
-    "processed_matrix_events": 34,
+    "processed_matrix_events": 35,
     "rejected_rooms": 1,
     "rooms": 0
   },
-  "duration_seconds": 108.0,
+  "duration_seconds": 173.4,
   "environment": {
     "command": "python tools/matrix_integration.py",
     "element_sas": "not exercised; requires a human client action",
@@ -14,7 +14,7 @@
     "voice_model": "not downloaded or executed"
   },
   "evidence_valid": true,
-  "generated_at": "2026-10-25T07:15:43.164053+00:00",
+  "generated_at": "2026-10-25T07:55:22.670067+00:00",
   "known_gaps": [
     "Real Codex prompt delivery and native transcript completion are represented by the fake OpenRig subprocess transport.",
     "The Parakeet model and real voice transcription were not run.",
@@ -36,7 +36,7 @@
     },
     {
       "automated": true,
-      "evidence": "`setup` wrote one agent room; `doctor` exited 0 (wrote /tmp/openrig-matrix-integration.y9sukrw4/config.yaml with 1 agent room(s))",
+      "evidence": "`setup` wrote one agent room; `doctor` exited 0 (wrote /tmp/openrig-matrix-integration.vi7f9l1g/config.yaml with 1 agent room(s))",
       "id": "setup-and-doctor",
       "status": "pass"
     },
@@ -72,7 +72,7 @@
     },
     {
       "automated": true,
-      "evidence": "A second owner message arrived during a deliberately slow first turn; Matrix showed the pinned queue notice and the fake OpenRig transport received the second prompt only after recording completion of the first (1792912461.3206284 < 1792912461.6339922).",
+      "evidence": "A second owner message arrived during a deliberately slow first turn; Matrix showed the pinned queue notice and the fake OpenRig transport received the second prompt only after recording completion of the first (1792914787.0218492 < 1792914787.6335716).",
       "id": "fifo-queue-notice",
       "status": "pass"
     },
@@ -104,6 +104,12 @@
       "automated": true,
       "evidence": "Synapse's relation index showed exactly one bridge `m.annotation` reaction with key \ud83d\udc4d on each of 25 accepted owner events, including 4 events joined into steering batches. A bridge crash immediately after the reaction send left the acknowledgement pending; restart reused the persisted transaction and still showed one reaction. An untrusted room member's message received no reaction, no acceptance record and no OpenRig prompt.",
       "id": "acceptance-reaction",
+      "status": "pass"
+    },
+    {
+      "automated": true,
+      "evidence": "With `openrig.acceptance_reaction_enabled` removed from the bridge config (the default), an owner message was queued, the bridge typing indicator was observed, the answer arrived and its single qitem completed, while Synapse's relation index showed no bridge reaction and the bridge recorded no acceptance. The room status topic was not separately asserted for this probe.",
+      "id": "acceptance-reaction-default-off",
       "status": "pass"
     },
     {
@@ -181,69 +187,69 @@
       "fallback": {
         "intake_to_acknowledgement_ms": {
           "count": 2,
-          "max": 104.0,
-          "median": 70.0
+          "max": 394.6,
+          "median": 337.5
         },
         "intake_to_admission_ms": {
           "count": 2,
-          "max": 6905.1,
-          "median": 6898.0
+          "max": 6508.2,
+          "median": 6427.8
         },
         "intake_to_injection_ms": {
           "count": 2,
-          "max": 6651.6,
-          "median": 6644.5
+          "max": 6080.0,
+          "median": 5999.6
         }
       },
       "late_steer": {
         "intake_to_acknowledgement_ms": {
           "count": 1,
-          "max": 71.0,
-          "median": 71.0
+          "max": 793.9,
+          "median": 793.9
         },
         "intake_to_admission_ms": {
           "count": 1,
-          "max": 6598.4,
-          "median": 6598.4
+          "max": 7589.7,
+          "median": 7589.7
         },
         "intake_to_injection_ms": {
           "count": 1,
-          "max": 427.9,
-          "median": 427.9
+          "max": 1411.6,
+          "median": 1411.6
         }
       },
       "prompt": {
         "intake_to_acknowledgement_ms": {
           "count": 26,
-          "max": 846.9,
-          "median": 165.0
+          "max": 2779.4,
+          "median": 776.1
         },
         "intake_to_admission_ms": {
-          "count": 27,
-          "max": 5756.8,
-          "median": 315.4
+          "count": 28,
+          "max": 7072.1,
+          "median": 989.3
         },
         "intake_to_injection_ms": {
-          "count": 27,
-          "max": 5504.3,
-          "median": 124.4
+          "count": 28,
+          "max": 6733.2,
+          "median": 429.9
         }
       },
       "steer": {
         "intake_to_acknowledgement_ms": {
           "count": 4,
-          "max": 98.1,
-          "median": 41.5
+          "max": 557.5,
+          "median": 378.0
         },
         "intake_to_admission_ms": {
           "count": 4,
-          "max": 1056.8,
-          "median": 496.9
+          "max": 2928.8,
+          "median": 1101.0
         },
         "intake_to_injection_ms": {
           "count": 3,
-          "max": 504.9,
-          "median": 485.1
+          "max": 1172.8,
+          "median": 1010.8
         }
       }
     },
@@ -252,7 +258,7 @@
   "target": {
     "package": "openrig-matrix-bridge",
     "source": {
-      "commit": "0f533e7d2688d1d848cacfaa0084dbd1e5de4b18",
+      "commit": "badd15887538bbf7209bb240d61f89928f860259",
       "source": "git",
       "worktree_clean": true
     },
