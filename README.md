@@ -72,9 +72,8 @@ This is off by default; enable it with
 `openrig.acceptance_reaction_enabled: true`. The 👍 means *accepted*, not
 finished; the final answer is still the completion signal. When the
 receipt is off, the status card and typing indicator are the live
-acknowledgement for top-level and idle-thread messages. Steered or
-late-admitted thread follow-ups, and any request in flight across a bridge
-restart, are tracked in issue #47. See the
+acknowledgement; both follow the queue, including thread follow-ups and
+requests in flight across a bridge restart. See the
 [user guide](docs/USER_GUIDE.md#optional-acceptance-receipt) for details.
 
 ## Follow-ups and steering

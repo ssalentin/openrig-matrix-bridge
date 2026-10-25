@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import re
+import signal
 import stat
 import tempfile
 import time
@@ -490,7 +491,7 @@ class MatrixBridge:
         self._repair_decision_reply_targets()
         await self._reconcile_pending_operations()
         await self._recover_acceptance_reactions(startup=True)
-        await self._refresh_agent_statuses(force=True)
+        await self._restore_activity_feedback()
         poller = asyncio.create_task(self._poll_answers(), name="openrig-matrix-poller")
         status_poller = asyncio.create_task(
             self._poll_agent_statuses(),
@@ -516,13 +517,40 @@ class MatrixBridge:
             self._poll_verification_timeouts(),
             name="openrig-matrix-verification-timeouts",
         )
+        # systemd stops the service with SIGTERM. Without a handler the
+        # process dies before the cleanup below, leaving Matrix typing on
+        # until its server-side timeout.
+        loop = asyncio.get_running_loop()
+        main_task = asyncio.current_task()
+        stop_requested = False
+
+        def request_stop() -> None:
+            nonlocal stop_requested
+            stop_requested = True
+            if main_task is not None:
+                main_task.cancel()
+
+        try:
+            loop.add_signal_handler(signal.SIGTERM, request_stop)
+        except (NotImplementedError, RuntimeError):
+            LOGGER.debug("SIGTERM handler unavailable", exc_info=True)
         try:
             await self.client.sync_forever(
                 timeout=30000,
                 full_state=True,
                 set_presence="online",
             )
+        except asyncio.CancelledError:
+            if not stop_requested:
+                raise
+            if main_task is not None:
+                main_task.uncancel()
+            LOGGER.info("stopping on SIGTERM")
         finally:
+            try:
+                loop.remove_signal_handler(signal.SIGTERM)
+            except (NotImplementedError, RuntimeError):
+                pass
             poller.cancel()
             status_poller.cancel()
             decision_poller.cancel()
@@ -3614,6 +3642,9 @@ class MatrixBridge:
         group["injection_phase"] = "injected_unconfirmed"
         group["injected_at"] = time.time()
         self.state.save()
+        if not active.get("suppress_reply"):
+            await self._set_typing(self._room_for_agent(agent.key), True)
+            await self._update_agent_status(agent, "busy", "arbeitet")
         await self._scan_steering_admission(
             group,
             ref.transcript_path,
@@ -3893,13 +3924,18 @@ class MatrixBridge:
         while True:
             try:
                 await asyncio.sleep(self.config.poll_interval_seconds)
-                await self._recover_acceptance_reactions()
-                for agent in self.config.agents.values():
-                    await self._poll_agent(agent)
+                await self._poll_answers_once()
             except asyncio.CancelledError:
                 raise
             except Exception:
                 LOGGER.exception("answer polling failed")
+
+    async def _poll_answers_once(self) -> None:
+        await self._recover_acceptance_reactions()
+        for agent in self.config.agents.values():
+            await self._poll_agent(agent)
+            async with self.locks[agent.key]:
+                await self._sync_typing(agent)
 
     async def _poll_agent(self, agent: AgentConfig) -> None:
         async with self.locks[agent.key]:
@@ -4438,12 +4474,13 @@ class MatrixBridge:
                 )
                 self.state.save()
                 return False
-            await self._set_typing(room_id, False)
-            await self._update_agent_status(agent, "ready", "bereit")
             self._defer_unconfirmed_steering_group(pending, request)
             if pending and pending[0] is request:
                 pending.pop(0)
             self.state.save()
+            if not pending:
+                await self._sync_typing(agent)
+                await self._update_agent_status(agent, "ready", "bereit")
         else:
             self._defer_unconfirmed_steering_group(pending, request)
             resolutions = {
@@ -4478,11 +4515,12 @@ class MatrixBridge:
                     )
                     self.state.save()
                     return False
-            await self._set_typing(room_id, False)
-            await self._update_agent_status(agent, "error", status_detail)
             if pending and pending[0] is request:
                 pending.pop(0)
             self.state.save()
+            if not pending:
+                await self._sync_typing(agent)
+            await self._update_agent_status(agent, "error", status_detail)
 
         await self._update_queue_notice(
             agent,
@@ -4490,8 +4528,16 @@ class MatrixBridge:
             max(0, len(pending) - 1),
         )
         if pending:
+            # Typing continues into the next turn; the start or the next poll
+            # cycle's _sync_typing settles it, so it never blinks off between.
             await self._start_request(agent, pending[0], room_id)
         return True
+
+    async def _restore_activity_feedback(self) -> None:
+        await self._refresh_agent_statuses(force=True)
+        for agent in self.config.agents.values():
+            async with self.locks[agent.key]:
+                await self._sync_typing(agent)
 
     async def _poll_agent_statuses(self) -> None:
         while True:
@@ -4597,6 +4643,41 @@ class MatrixBridge:
             )
             return
         self.agent_statuses[agent.key] = status
+
+    @staticmethod
+    def _request_being_handled(request: dict[str, Any]) -> bool:
+        """Whether the agent is working on this queue head for a visible reply.
+
+        A normal request counts once its prompt is being sent; a deferred
+        steering batch counts once its input is in the pane, including while
+        the bridge still waits to see it admitted as a later turn.
+        """
+        if request.get("suppress_reply"):
+            return False
+        if request.get("answer_phase") in {"sent", "suppressed"}:
+            return False
+        if request.get("deferred_steering") and request.get("injection_phase") in {
+            "injecting",
+            "injected_unconfirmed",
+            "admitted",
+        }:
+            return True
+        return request.get("started_at") is not None and request.get(
+            "prompt_phase"
+        ) in {"sending", "sent"}
+
+    async def _sync_typing(self, agent: AgentConfig) -> None:
+        """Keep one typing loop exactly while the queue head is being handled."""
+        room = self.state.data["rooms"].get(agent.key)
+        if not room:
+            return
+        room_id = str(room["room_id"])
+        pending = self.state.data["pending"].get(agent.key, [])
+        wanted = bool(pending) and self._request_being_handled(pending[0])
+        task = getattr(self, "typing_tasks", {}).get(room_id)
+        running = task is not None and not task.done()
+        if wanted != running:
+            await self._set_typing(room_id, wanted)
 
     async def _set_typing(self, room_id: str, typing: bool) -> None:
         if not hasattr(self, "typing_tasks"):

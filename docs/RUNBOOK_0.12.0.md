@@ -86,6 +86,15 @@ sudo systemctl stop openrig-matrix-bridge.service
 pgrep -af openrig_matrix_bridge || true
 ```
 
+`deploy/openrig-matrix-start` execs the bridge, so systemd's default SIGTERM
+reaches it directly. The bridge handles SIGTERM by running its existing
+shutdown cleanup (stop the pollers, clear Matrix typing, close the client) and
+exiting 0. If cleanup cannot finish, for example because the homeserver is
+unreachable, systemd sends SIGKILL after `TimeoutStopSec=20`, as before. SIGINT
+behavior is unchanged. Without the SIGTERM handling, a stop or restart left
+"OpenRig schreibt …" visible for up to 30 seconds; a crash or SIGKILL still
+does, because the homeserver's typing timeout is 30 seconds.
+
 Back up the service definition, configuration, and complete state directory:
 
 ```bash

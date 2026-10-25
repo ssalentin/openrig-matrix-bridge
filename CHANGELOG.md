@@ -9,6 +9,12 @@
   materialization without resending.
 - Keep every source event, qitem, and canonical thread root, producing one
   coherent answer for an admitted same-thread batch.
+- Derive typing and the room status from the queue head on every poll and at
+  startup: thread replies, steered and late-admitted follow-ups keep typing and
+  `arbeitet`, `bereit` is written only when the queue drains, a restarted
+  bridge restores typing for in-flight requests, and a SIGTERM stop (systemd
+  stop or restart) runs the normal cleanup, clears typing and exits 0 instead
+  of leaving it visible for up to 30 seconds.
 - Optional 👍 acceptance receipt, off by default; enable it with
   `openrig.acceptance_reaction_enabled: true`. When enabled it is sent once on
   each durably accepted human message (accepted, not completed) and is
