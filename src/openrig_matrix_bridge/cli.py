@@ -434,18 +434,52 @@ def run_setup(args: argparse.Namespace) -> None:
     except ConfigError as exc:
         raise SystemExit(str(exc)) from exc
 
-    if not args.user_id:
+    # Validate the Matrix token BEFORE prompting for what it can tell us, discovering
+    # agents or writing config. The token answers the bot user ID and device ID.
+    user_id = (args.user_id or "").strip()
+    device_id = (args.device_id or "").strip()
+    token = os.environ.get("MATRIX_ACCESS_TOKEN", "")
+    if token:
+        print("validating Matrix access token...")
+        try:
+            whoami = asyncio.run(_validate_matrix_token(homeserver, token))
+        except RuntimeError as exc:
+            raise SystemExit(f"Matrix token validation failed: {exc}") from exc
+        print(f"✓ Matrix token valid for {whoami.get('user_id')}")
+        inferred_user_id = whoami.get("user_id")
+        inferred_device_id = whoami.get("device_id")
+        if inferred_user_id:
+            if user_id and user_id != inferred_user_id:
+                print(
+                    f"note: bot user ID {user_id} differs from the access token; "
+                    f"using {inferred_user_id}"
+                )
+            user_id = inferred_user_id
+        if inferred_device_id:
+            if device_id and device_id != inferred_device_id:
+                print(
+                    f"note: device ID {device_id} differs from the access token; "
+                    f"using {inferred_device_id}"
+                )
+            device_id = inferred_device_id
+    else:
+        print(
+            "warning: MATRIX_ACCESS_TOKEN not set. "
+            "Set it before starting the bridge: export MATRIX_ACCESS_TOKEN='your-token'"
+        )
+
+    if not user_id:
         print("\nTo find your bot's Matrix user ID:")
         print("  1. Open your Matrix client (Element, etc.)")
         print("  2. Click on the bot account's profile")
         print("  3. Copy the full user ID (e.g., @openrig-bot:matrix.org)")
-    user_id = (args.user_id or input("Bot Matrix user ID: ")).strip()
+        user_id = input("Bot Matrix user ID: ").strip()
 
-    if not args.device_id:
+    if not device_id:
         print("\nTo find your bot's device ID:")
         print("  1. In Element: Settings → All Settings → Sessions")
         print("  2. Find the current session and copy the device ID")
-    device_id = (args.device_id or input("Bot Matrix device ID: ")).strip()
+        device_id = input("Bot Matrix device ID: ").strip()
 
     if not args.allowed_user:
         print("\nTo find your owner Matrix user ID:")
@@ -454,42 +488,12 @@ def run_setup(args: argparse.Namespace) -> None:
         print("  3. Copy the full user ID (e.g., @you:matrix.org)")
     allowed_user = (args.allowed_user or input("Owner Matrix user ID: ")).strip()
 
-    # Validate Matrix token BEFORE discovering agents or writing config
-    # Infer user_id and device_id from whoami when token is present
-    token = os.environ.get("MATRIX_ACCESS_TOKEN", "")
-    if token:
-        print("validating Matrix access token...")
-        try:
-            whoami = asyncio.run(_validate_matrix_token(homeserver, token))
-            print(f"✓ Matrix token valid for {whoami.get('user_id')}")
-            # Use whoami response to override args if provided
-            inferred_user_id = whoami.get("user_id")
-            inferred_device_id = whoami.get("device_id")
-            if inferred_user_id:
-                if user_id and user_id != inferred_user_id:
-                    print(
-                        f"note: bot user ID {user_id} differs from the access token; "
-                        f"using {inferred_user_id}"
-                    )
-                user_id = inferred_user_id
-            if inferred_device_id:
-                if device_id and device_id != inferred_device_id:
-                    print(
-                        f"note: device ID {device_id} differs from the access token; "
-                        f"using {inferred_device_id}"
-                    )
-                device_id = inferred_device_id
-        except RuntimeError as exc:
-            raise SystemExit(f"Matrix token validation failed: {exc}") from exc
-    else:
-        print(
-            "warning: MATRIX_ACCESS_TOKEN not set. "
-            "Set it before starting the bridge: export MATRIX_ACCESS_TOKEN='your-token'"
-        )
-
     # Discover running Codex seats
     print(f"discovering Codex seats via {args.rig_command}...")
-    agents = discover_openrig_agents(args.rig_command)
+    try:
+        agents = discover_openrig_agents(args.rig_command)
+    except RuntimeError as exc:
+        raise SystemExit(str(exc)) from exc
     print(f"found {len(agents)} running Codex seat(s): {', '.join(agents.keys())}")
     download_root = Path(
         args.download_root

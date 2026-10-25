@@ -51,13 +51,6 @@ def _mock_existing_install(monkeypatch):
             }
         }
 
-    async def whoami(homeserver, token):
-        calls.append(("whoami", homeserver, token))
-        return {
-            "user_id": "@relay-bot:matrix.example.org",
-            "device_id": "RELAY_BRIDGE",
-        }
-
     async def validate_token(homeserver, token):
         calls.append(("validate-token", homeserver, token))
         return {
@@ -73,7 +66,6 @@ def _mock_existing_install(monkeypatch):
 
     monkeypatch.setattr(cli, "discover_openrig_agents", discover)
     monkeypatch.setattr(cli, "_validate_matrix_token", validate_token)
-    monkeypatch.setattr(cli, "_matrix_whoami", whoami, raising=False)
     monkeypatch.setattr(cli, "_set_matrix_display_name", display_name)
     monkeypatch.setattr(cli, "_set_matrix_device_name", device_name)
     return calls
@@ -268,3 +260,90 @@ def test_setup_is_quiet_when_provided_ids_match_the_token(
     cli.run_setup(args)
 
     assert "differs from the access token" not in capsys.readouterr().out
+
+
+def _interactive_args(tmp_path: Path):
+    args = _setup_args(tmp_path, "--without-voice")
+    args.user_id = None
+    args.device_id = None
+    args.allowed_user = None
+    return args
+
+
+def test_setup_with_token_prompts_only_for_the_owner(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("MATRIX_ACCESS_TOKEN", "test-token-never-persist")
+    _mock_existing_install(monkeypatch)
+    monkeypatch.setattr(cli, "instance_is_running", lambda _: False)
+    prompts = []
+
+    def fake_input(prompt=""):
+        prompts.append(prompt)
+        return "@owner:matrix.example.org"
+
+    monkeypatch.setattr("builtins.input", fake_input)
+    args = _interactive_args(tmp_path)
+
+    cli.run_setup(args)
+
+    assert prompts == ["Owner Matrix user ID: "]
+    config = yaml.safe_load(args.config.read_text(encoding="utf-8"))
+    assert config["matrix"]["user_id"] == "@relay-bot:matrix.example.org"
+    assert config["matrix"]["device_id"] == "RELAY_BRIDGE"
+    assert config["matrix"]["allowed_users"] == ["@owner:matrix.example.org"]
+    assert "differs from the access token" not in capsys.readouterr().out
+
+
+def test_setup_without_token_prompts_for_bot_ids_and_owner(tmp_path, monkeypatch):
+    monkeypatch.delenv("MATRIX_ACCESS_TOKEN", raising=False)
+    _mock_existing_install(monkeypatch)
+    monkeypatch.setattr(cli, "instance_is_running", lambda _: False)
+    answers = {
+        "Bot Matrix user ID: ": "@typed-bot:matrix.example.org",
+        "Bot Matrix device ID: ": "TYPEDDEVICE",
+        "Owner Matrix user ID: ": "@owner:matrix.example.org",
+    }
+    prompts = []
+
+    def fake_input(prompt=""):
+        prompts.append(prompt)
+        return answers[prompt]
+
+    monkeypatch.setattr("builtins.input", fake_input)
+    args = _interactive_args(tmp_path)
+
+    cli.run_setup(args)
+
+    assert prompts == list(answers)
+    config = yaml.safe_load(args.config.read_text(encoding="utf-8"))
+    assert config["matrix"]["user_id"] == "@typed-bot:matrix.example.org"
+    assert config["matrix"]["device_id"] == "TYPEDDEVICE"
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "OpenRig command not found: /opt/rig. Install OpenRig or pass --rig-command",
+        "no running Codex seats found. Start at least one Codex seat",
+        "duplicate Codex seat name 'advisor'",
+    ],
+)
+def test_setup_exits_with_the_discovery_next_step_and_no_traceback(
+    tmp_path,
+    monkeypatch,
+    message,
+):
+    monkeypatch.delenv("MATRIX_ACCESS_TOKEN", raising=False)
+    _mock_existing_install(monkeypatch)
+    monkeypatch.setattr(cli, "instance_is_running", lambda _: False)
+
+    def fail(_command):
+        raise RuntimeError(message)
+
+    monkeypatch.setattr(cli, "discover_openrig_agents", fail)
+    args = _setup_args(tmp_path)
+
+    with pytest.raises(SystemExit) as exc_info:
+        cli.run_setup(args)
+
+    assert str(exc_info.value) == message
+    assert not args.config.exists()
