@@ -1986,6 +1986,25 @@ class IntegrationRun:
         )
         if queue_fake.get("steers"):
             raise CheckFailure(f"queue mode attempted steering: {queue_fake['steers']}")
+        # Restart only after the follow-up turn completed. The fake records a
+        # prompt before it spawns the turn's completion; stopping the bridge in
+        # between kills that `rig send` child and leaves the seat busy forever.
+        wait_for_json_state(
+            fake_path,
+            lambda value: any(
+                item.get("prompt") == "queue mode follow-up"
+                and isinstance(item.get("completed_at"), (int, float))
+                for item in value.get("prompts", [])
+            ),
+            self.args.timeout,
+            description="queue-mode follow-up turn to complete before the restart",
+        )
+        wait_for_json_state(
+            self.state_dir / "state.json",
+            lambda value: not value.get("pending", {}).get(AGENT_KEY),
+            self.args.timeout,
+            description="queue-mode queue to drain before the restart",
+        )
 
         self.stop_bridge()
         self.set_steering_mode("steer")
