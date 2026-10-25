@@ -41,7 +41,10 @@ without starting a second agent or allowing concurrent Codex turns.
   Matrix accepts that notice; earlier builds dropped it silently. See Known
   limits.
 - Related owner messages reach the agent as one context. A thread or reply
-  relation always links parts; top-level events from the same owner link while
+  relation links parts without an inactivity limit, within
+  `openrig.burst_max_span_seconds` (300 s) of the exchange's first part (a later
+  thread reply is answered in the thread as a new exchange); top-level events
+  from the same owner link while
   each gap stays within `openrig.burst_inactivity_seconds` (45 s) and the whole
   exchange within `openrig.burst_max_span_seconds` (300 s), when the new event
   or the previous one carries an attachment. Two plain texts never link. A

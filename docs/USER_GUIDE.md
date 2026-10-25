@@ -207,9 +207,12 @@ agent as one related context.
 
 Which events belong together:
 
-- A reply inside a thread belongs to that thread's exchange, however long after
-  the root it arrives. A rich reply belongs to the exchange of the event it
-  answers. Relations always win over timing.
+- A reply inside a thread belongs to that thread's exchange with no inactivity
+  limit, as long as it arrives within `openrig.burst_max_span_seconds` (300 by
+  default) of the exchange's first event. A later thread reply starts a new
+  exchange in the same thread: its answer stays in the thread, but earlier parts
+  are not restated. A rich reply belongs to the exchange of the event it
+  answers, within the same span. Inside the span, relations win over timing.
 - Top-level events from the same owner in the same room join while each gap
   stays within `openrig.burst_inactivity_seconds` (45 by default), the whole
   exchange stays within `openrig.burst_max_span_seconds` (300 by default), and
