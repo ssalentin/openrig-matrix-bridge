@@ -339,6 +339,9 @@ def test_finish_failure_remains_pending_for_reconciliation():
     }
 
     class Gateway:
+        async def queue_show(self, qitem_id):
+            return {"state": "in-progress"}
+
         async def queue_finish(self, qitem_id, session, resolution):
             raise GatewayError("finish unavailable")
 

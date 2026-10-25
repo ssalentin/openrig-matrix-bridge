@@ -534,6 +534,9 @@ def test_restart_completes_already_sent_answer_without_resend(tmp_path):
     finishes = []
 
     class Gateway:
+        async def queue_show(self, qitem_id):
+            return {"state": "in-progress"}
+
         async def queue_finish(self, qitem_id, session, resolution):
             finishes.append((qitem_id, session, resolution))
 
@@ -662,6 +665,9 @@ def test_crash_after_answer_send_retries_same_transaction(tmp_path):
     finishes = []
 
     class Gateway:
+        async def queue_show(self, qitem_id):
+            return {"state": "in-progress"}
+
         async def queue_finish(self, qitem_id, session, resolution):
             finishes.append((qitem_id, session, resolution))
 

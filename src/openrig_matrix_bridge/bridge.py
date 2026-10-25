@@ -2937,23 +2937,17 @@ class MatrixBridge:
                 continue
             if phase in TERMINAL_QITEM_PHASES:
                 return False
-            if phase == "finishing":
-                try:
-                    item = await self.gateway.queue_show(qitem_id)
-                except (GatewayError, OSError):
-                    LOGGER.warning(
-                        "could not inspect Matrix qitem %s",
-                        qitem_id,
-                        exc_info=True,
-                    )
-                    return False
-                state = str(item.get("state") or "")
-                if state in TERMINAL_QITEM_PHASES:
-                    self._set_request_qitem_phase(request, qitem_id, state)
-                    self.state.save()
-                    if state == "done":
-                        continue
-                    return False
+            # Reconcile before every attempt: the agent may have closed the row
+            # itself, and a second state-writing update on a closed row is rejected.
+            state = await self._inspect_qitem_state(qitem_id)
+            if state is None:
+                return False
+            if state in TERMINAL_QITEM_PHASES:
+                self._set_request_qitem_phase(request, qitem_id, state)
+                self.state.save()
+                if state == "done":
+                    continue
+                return False
             self._set_request_qitem_phase(request, qitem_id, "finishing")
             self.state.save()
             try:
@@ -2963,6 +2957,15 @@ class MatrixBridge:
                     "Matrix answer delivered",
                 )
             except (GatewayError, OSError):
+                # The row can close between the show and the update; re-read it
+                # and accept a terminal state instead of reporting a failure.
+                state = await self._inspect_qitem_state(qitem_id)
+                if state in TERMINAL_QITEM_PHASES:
+                    self._set_request_qitem_phase(request, qitem_id, state)
+                    self.state.save()
+                    if state == "done":
+                        continue
+                    return False
                 LOGGER.warning(
                     "could not finish Matrix qitem %s",
                     qitem_id,
@@ -2973,6 +2976,18 @@ class MatrixBridge:
             self._set_request_qitem_phase(request, qitem_id, "done")
             self.state.save()
         return True
+
+    async def _inspect_qitem_state(self, qitem_id: str) -> str | None:
+        try:
+            item = await self.gateway.queue_show(qitem_id)
+        except (GatewayError, OSError):
+            LOGGER.warning(
+                "could not inspect Matrix qitem %s",
+                qitem_id,
+                exc_info=True,
+            )
+            return None
+        return str(item.get("state") or "")
 
     async def _fail_inbound_qitem(
         self,
