@@ -69,6 +69,9 @@ without starting a second agent or allowing concurrent Codex turns.
   qitem produces one notice), instead of repeating claim errors.
 - A 👍 that was still pending when the acceptance receipt was turned off is
   expired instead of being sent if the receipt is turned on again later.
+- Human decisions are serialized and deduplicated by qitem ID, preventing the
+  automatic human-queue mirror and a manual `decision` command from posting the
+  same brief and poll twice.
 - The hybrid steering implementation is integrated with the current setup,
   attachments, voice, activity-card, restart, and release documentation from
   `main`.

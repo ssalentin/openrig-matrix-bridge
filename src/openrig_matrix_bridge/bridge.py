@@ -679,6 +679,7 @@ class MatrixBridge:
         self.gateway = OpenRigGateway(config.rig_command, config.sender_session)
         self.transcriber = Transcriber(config.transcription)
         self.locks = {key: asyncio.Lock() for key in config.agents}
+        self.decision_publish_lock = asyncio.Lock()
         self.room_agents: dict[str, str] = {}
         self.processed_events: set[str] = set(
             self.state.data.get("processed_events", [])
@@ -913,6 +914,10 @@ class MatrixBridge:
             os.replace(path, self.decision_sent / path.name)
 
     async def _publish_decision(self, request: dict[str, Any]) -> None:
+        async with self.decision_publish_lock:
+            await self._publish_decision_locked(request)
+
+    async def _publish_decision_locked(self, request: dict[str, Any]) -> None:
         request_id = str(request.get("id") or "").strip()
         agent_key = str(request.get("agent") or "").strip()
         title = str(request.get("title") or "").strip()
@@ -924,6 +929,21 @@ class MatrixBridge:
             raise DecisionError("decision request needs an id and title")
         if agent is None:
             raise DecisionError(f"unknown agent: {agent_key}")
+        decisions = self.state.data.setdefault("decisions", {})
+        if request_id in decisions:
+            LOGGER.info("decision %s already published; skipping duplicate", request_id)
+            return
+        if qitem_id:
+            for existing_id, decision in decisions.items():
+                if str(decision.get("qitem_id") or "") == qitem_id:
+                    LOGGER.info(
+                        "decision for qitem %s already published as %s; "
+                        "skipping duplicate %s",
+                        qitem_id,
+                        existing_id,
+                        request_id,
+                    )
+                    return
 
         room = self.state.data["rooms"].get(agent.key)
         if not room:

@@ -53,6 +53,9 @@
   turned off, so turning it back on never sends an old 👍, and let the
   immediate steering admission scan match when the active request has no
   recorded turn id (state saved before turn attribution existed).
+- Serialize decision publication and deduplicate by qitem ID, so the automatic
+  human-queue mirror and a manual decision command cannot publish the same
+  brief and poll twice.
 - Rebase the hybrid steering implementation onto current `main` release docs,
   setup guidance, artifacts, and harness changes.
 - Deliver related owner messages as one context: thread and reply relations
