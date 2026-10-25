@@ -42,26 +42,36 @@ prompt:
 3. Compare them with Element and click **They match**.
 4. Type `ja` in that Matrix room to confirm the bridge side.
 
+Steps 3 and 4 may happen in either order. If Element confirmed first, the
+bridge completes the verification when you type `ja`; otherwise it waits for
+Element. If the keys do not match, the bridge reports the failure with its
+Matrix code (for example `m.key_mismatch`) and the device stays unverified.
+A request that does not offer the emoji comparison is declined with an
+explanation. `openrig-matrix-bridge doctor` lists the owner devices the bridge
+has verified and the latest verification outcome.
+
 After an interrupted verification, plain `ja` and `nein` remain reserved in
 that room so they cannot accidentally become agent prompts. To intentionally
 send ordinary confirmation text to the agent, use an explicit `agent:` prefix,
 for example `agent: ja`.
 
-Verification applies to the specific Element device. `matrix-nio` does not
-currently provide complete cross-signing setup, so the bridge does not create a
-cross-signed identity that Element automatically trusts across devices. In the
+Verification applies to the specific Element device. `matrix-nio` 0.25.2 has no
+cross-signing support (see the [cross-signing evaluation](CROSS_SIGNING.md)),
+so the bridge does not create a cross-signed identity that Element
+automatically trusts across devices. In the
 2026-10-24 Element Web investigation, Element showed
 `(User verification unavailable)` for the bridge account even with a synthetic
 client and disposable homeserver. Treat direct SAS as unverified until a
 real-client run records success; do not infer it from unit tests.
 
 Live Element SAS verification is not covered by the automated test suite.
-Restart interruption, timeout, cancellation and confirmation state are
-unit-tested. Interruption and timeout notifications persist an outbox intent
-and use a stable Matrix transaction ID so startup reconciliation retries them
-exactly once. The real-client flow and cross-signing limitation remain tracked
-in [Issue #1](https://github.com/ssalentin/openrig-matrix-bridge/issues/1); do
-not describe them as fully verified until a real client check is recorded.
+Restart interruption, timeout, cancellation, key mismatch, both confirmation
+orders, declining a non-emoji request, and confirmation state are unit-tested.
+Interruption and timeout notifications persist an outbox intent and use a stable
+Matrix transaction ID so startup reconciliation retries them exactly once. The
+real-client flow and cross-signing limitation remain tracked in
+[Issue #1](https://github.com/ssalentin/openrig-matrix-bridge/issues/1); do not
+describe them as fully verified until a real client check is recorded.
 
 The committed Element Web screenshots are synthetic demo evidence for visual
 rendering. They do not prove device verification or cross-signing. See

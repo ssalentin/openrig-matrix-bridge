@@ -20,6 +20,7 @@ from urllib.parse import quote
 
 import aiohttp
 import yaml
+from nio.store.file_trustdb import Key
 
 from . import __version__
 from .bridge import MatrixBridge
@@ -572,6 +573,11 @@ def run_setup(args: argparse.Namespace) -> None:
 
     _write_private_yaml(args.config, config)
     print(f"wrote {args.config} with {len(agents)} agent room(s)")
+    print(
+        "next: after the bridge runs, verify the bot device from each owner "
+        "Element device with 'Verify by emoji' and type `ja` in the room "
+        f"({VERIFICATION_GUIDE}); trust is per device"
+    )
     if human_result:
         print(
             f"OpenRig human {human_entity_id}@external: {human_result} "
@@ -865,6 +871,65 @@ def run_send_message(args: argparse.Namespace, config) -> int:
     return 1
 
 
+VERIFICATION_GUIDE = "docs/SECURITY.md#matrix-device-verification"
+
+
+def device_verification_report(config) -> tuple[list[str], list[str]]:
+    """Owner devices this bot trusts, from matrix-nio's trust file, and the
+    latest recorded verification outcome. Returns (info lines, warnings).
+
+    Trust is per device: matrix-nio cannot cross-sign, so every owner device
+    the owner wants trusted needs its own emoji verification.
+    """
+    trust_file = (
+        config.state_dir
+        / "matrix-store"
+        / f"{config.user_id}_{config.device_id}.trusted_devices"
+    )
+    trusted: dict[str, list[str]] = {user: [] for user in config.allowed_users}
+    try:
+        lines = trust_file.read_text(encoding="utf-8").splitlines()
+    except FileNotFoundError:
+        lines = []
+    for line in lines:
+        key = Key.from_line(line)
+        if key is not None and key.user_id in trusted:
+            trusted[key.user_id].append(key.device_id)
+    info: list[str] = []
+    warnings: list[str] = []
+    for user, devices in trusted.items():
+        if devices:
+            info.append(
+                f"Device verification: {user} devices verified by this bot: "
+                + ", ".join(sorted(devices))
+                + " (trust is per device; cross-signing is not provided)"
+            )
+        else:
+            warnings.append(
+                f"no device of {user} is verified by this bot; Element may show "
+                "the bot device as unverified. In Element open the bot device, "
+                "start 'Verify by emoji', compare, then type `ja` in the room. "
+                f"Each owner device is verified separately (see {VERIFICATION_GUIDE})"
+            )
+    try:
+        state = json.loads((config.state_dir / "state.json").read_text("utf-8"))
+    except (FileNotFoundError, json.JSONDecodeError):
+        state = {}
+    records = state.get("verifications") if isinstance(state, dict) else None
+    if isinstance(records, dict) and records:
+        latest = max(
+            (record for record in records.values() if isinstance(record, dict)),
+            key=lambda record: float(record.get("updated_at") or 0),
+            default=None,
+        )
+        if latest is not None:
+            outcome = str(latest.get("phase") or "unknown")
+            if latest.get("cancel_code"):
+                outcome += f" ({latest['cancel_code']})"
+            info.append(f"Latest device verification: {outcome}")
+    return info, warnings
+
+
 async def _doctor(config_path: Path) -> int:
     """Run health checks on the bridge configuration.
 
@@ -925,6 +990,10 @@ async def _doctor(config_path: Path) -> int:
             print(f"Parakeet: ready ({MODEL_NAME})")
         else:
             warnings.append("Parakeet model is not downloaded")
+    verification_info, verification_warnings = device_verification_report(config)
+    for line in verification_info:
+        print(line)
+    warnings.extend(verification_warnings)
     for warning in warnings:
         print(f"warning: {warning}")
     for error in errors:

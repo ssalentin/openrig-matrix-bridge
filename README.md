@@ -150,8 +150,8 @@ the [installation guide](docs/INSTALLATION.md). Omitted `setup` flags are prompt
 ## Current boundaries
 
 - Codex seats are supported; other OpenRig runtimes are not.
-- Element device SAS and complete cross-signing remain unverified. See
-  [Issue #1](https://github.com/ssalentin/openrig-matrix-bridge/issues/1).
+- Device trust is per Element device and cross-signing is unsupported; see
+  [device verification](docs/SECURITY.md#matrix-device-verification) and [Issue #1](https://github.com/ssalentin/openrig-matrix-bridge/issues/1).
 - Voice model download is local, but recognition quality is not an automated
   product guarantee.
 - Ordinary terminal chat is not mirrored into Matrix.
