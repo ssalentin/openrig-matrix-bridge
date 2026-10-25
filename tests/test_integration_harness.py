@@ -381,22 +381,15 @@ def test_fake_transport_can_emit_unrelated_human_final_before_owner_answer(
         delay="0.1",
         unrelated_turn=True,
     )
-    assert result.returncode == 0
+    assert result.returncode == 0, result.stderr
 
-    deadline = time.monotonic() + 3
-    records = []
-    while time.monotonic() < deadline:
-        records = [
-            json.loads(line)
-            for line in (tmp_path / "transcript.jsonl").read_text().splitlines()
-        ]
-        if any(
-            record.get("payload", {}).get("item", {}).get("phase") == "final_answer"
-            and "Fake integration answer" in str(record)
-            for record in records
-        ):
-            break
-        time.sleep(0.05)
+    records = wait_for_final_answers(
+        tmp_path / "transcript.jsonl",
+        [
+            "Unrelated human answer that must not reach Matrix.",
+            "Fake integration answer: owner prompt",
+        ],
+    )
 
     finals = [
         record["payload"]["item"]["content"][0]["text"]
