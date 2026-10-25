@@ -1557,20 +1557,28 @@ class IntegrationRun:
         owner = self.owner
         await owner.send_text(room_id, "hold first request")
         await owner.send_text(room_id, "second queued request")
-        await owner.sync_until(
-            lambda: any(
-                "Warteschlange" in str(message["body"])
-                and '**Aktiv:** Text · "hold first request"' in str(
-                    message["body"]
-                )
-                and '1. Text · "second queued request"' in str(
-                    message["body"]
-                )
+        try:
+            await owner.sync_until(
+                lambda: any(
+                    "Warteschlange" in str(message["body"])
+                    and '**Aktiv:** Text · "hold first request"' in str(
+                        message["body"]
+                    )
+                    and '1. Text · "second queued request"' in str(
+                        message["body"]
+                    )
+                    for message in owner.messages
+                ),
+                self.args.timeout,
+                description="pinned active and waiting queue previews",
+            )
+        except CheckFailure as exc:
+            cards = [
+                str(message["body"])
                 for message in owner.messages
-            ),
-            self.args.timeout,
-            description="pinned active and waiting queue previews",
-        )
+                if "Warteschlange" in str(message["body"])
+            ]
+            raise CheckFailure(f"{exc}; every queue card seen: {cards}") from exc
         await owner.sync_until(
             lambda: any(
                 "Fake integration answer: second queued request" in str(message["body"])
