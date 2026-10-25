@@ -131,15 +131,6 @@ dedicated Matrix bot account. A Matrix homeserver must be reachable over HTTPS.
      --config "$HOME/.config/openrig-matrix-bridge/config.yaml"
    ```
 
-   Any of `--homeserver`, `--user-id`, `--device-id` and `--allowed-user` you
-   leave out is prompted for, with a short note on where to find it in your
-   Matrix client. With `MATRIX_ACCESS_TOKEN` set, setup checks the token against
-   the homeserver before writing anything and takes the bot user ID and device
-   ID from it (it prints a note if they differ from what you typed). The token
-   is never written to the config or printed. Setup stops with a next step if
-   the config already exists (`--replace-config`), a bridge is already running
-   for the state directory, or no Codex seat is running.
-
 4. Check the configuration, then start the bridge:
 
    ```bash
@@ -153,7 +144,8 @@ dedicated Matrix bot account. A Matrix homeserver must be reachable over HTTPS.
 
 The bridge creates one private encrypted room per discovered Codex seat. For
 prerequisites, secret-safe setup, systemd, upgrades, and troubleshooting, use
-the [installation guide](docs/INSTALLATION.md).
+the [installation guide](docs/INSTALLATION.md). Omitted `setup` flags are prompted for; see
+[what setup infers](docs/INSTALLATION.md#what-setup-infers-and-what-you-provide).
 
 ## Current boundaries
 
