@@ -7,7 +7,7 @@ import unicodedata
 import pytest
 from test_activity_card import activity_bridge, message_record
 
-from openrig_matrix_bridge.bridge import QUOTATION_MARKS, sanitize_activity_summary
+from openrig_matrix_bridge.bridge import sanitize_activity_summary
 
 PATH = "[lokaler Pfad]"
 TOKEN = "[Token entfernt]"
@@ -333,18 +333,37 @@ def test_every_quotation_mark_starts_a_value_to_the_end_of_the_line(
     assert summary in (COOKIE, TOKEN)
 
 
-def test_quotation_marks_cover_every_unicode_quote():
-    derived = {
-        char
-        for char in map(chr, range(sys.maxunicode + 1))
-        if unicodedata.category(char) in ("Pi", "Pf")
-        or (
-            unicodedata.category(char) in ("Ps", "Pe", "Po")
-            and "QUOTATION MARK" in unicodedata.name(char, "")
-        )
-    }
+UNICODE_QUOTATION_MARKS = sorted(
+    char
+    for char in map(chr, range(sys.maxunicode + 1))
+    if unicodedata.category(char) in ("Pi", "Pf")
+    or (
+        unicodedata.category(char) in ("Ps", "Pe", "Po")
+        and "QUOTATION MARK" in unicodedata.name(char, "")
+    )
+)
+QUOTE_LOOKALIKES = list("\"'`´′″ʹʺʻʼˮ＂＇｀「」『』｢｣")
 
-    assert derived | set("\"'`＂＇｀「」『』｢｣") <= set(QUOTATION_MARKS)
+
+@pytest.mark.parametrize("mark", UNICODE_QUOTATION_MARKS + QUOTE_LOOKALIKES)
+def test_any_quote_glyph_starts_a_value_to_the_end_of_the_line(mark):
+    for text in (
+        f"cookie word {mark}a b SECRETQ3{mark} ok",
+        f"Cookie {mark}a b SECRETQ3{mark} ok",
+        f"API_KEY={mark}secret with SPACE SECRETQ3{mark} ok",
+        f"password: {mark}two words SECRETQ3 ok",
+    ):
+        assert "SECRETQ3" not in sanitize_activity_summary(text), text
+
+
+def test_punctuation_after_a_bare_cookie_token_redacts_the_rest_of_the_line():
+    # Documented cost of the quote rule: any value starting with punctuation
+    # counts as quoted, so the prose after it on that line is hidden too.
+    summary = sanitize_activity_summary(
+        "cookie banner (optional) bleibt sichtbar\nTests laufen."
+    )
+
+    assert summary == f"{COOKIE} Tests laufen."
 
 
 def test_apostrophes_and_later_quotes_after_a_bare_cookie_word_are_kept():

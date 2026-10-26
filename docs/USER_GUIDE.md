@@ -31,10 +31,13 @@ parts are replaced span by span, so the rest stays readable: local paths become
 credentials in a URI `[Zugangsdaten entfernt]`, cookies `[Cookie entfernt]`, and
 fenced command output `[Ausgabe entfernt]`. A cookie or authorization header,
 and a quoted secret value, is replaced up to the end of its line, so a malformed
-or truncated value cannot leave part of it behind. A bare "cookie" in prose
-replaces only the next word, or the rest of the line when a quote follows that
-word; a value further back in such a sentence ("cookie word more "…"") is not
-recognised. The replaced text never reaches the room. Commentary is cut to 600 characters.
+or truncated value cannot leave part of it behind. A value that starts with a
+quote or any other punctuation counts as quoted and also runs to the end of the
+line. A bare "cookie" in prose replaces only the next word, or the rest of the
+line when the following word starts with punctuation. Not recognised: a quoted
+value further back in such a sentence ("cookie word more "…""), and a quote
+inside a value that starts with a letter or digit (`API_KEY=abc"def ghi"`).
+The replaced text never reaches the room. Commentary is cut to 600 characters.
 
 ## Verify the product manually
 
