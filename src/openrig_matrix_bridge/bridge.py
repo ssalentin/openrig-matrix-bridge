@@ -140,9 +140,14 @@ FENCED_OUTPUT = re.compile(
 # continuation lines) instead of being parsed, so no quote, escape or separator
 # inside it can leave part of the secret behind.
 _TO_LINE_END = r"[^\r\n]*(?:\r?\n[ \t]+[^\r\n]*)*"
+# Every character that can open or close a quotation: Unicode categories Pi and
+# Pf, other punctuation named QUOTATION MARK, ASCII and fullwidth quotes,
+# backticks and CJK corner brackets. A test derives the same set.
+QUOTATION_MARKS = "\"'`«»‘’‚‛“”„‟‹›❮❯⸂⸃⸄⸅⸉⸊⸌⸍⸜⸝⸠⸡⹂「」『』〝〞〟＂＇｀｢｣"
+_QUOTE = "[" + re.escape(QUOTATION_MARKS) + "]"
 CREDENTIAL_VALUE = re.compile(
     r"(?i)\b(?:[a-z0-9_]*(?:token|key|secret|password)|authorization)\b"
-    r"\s*[:=]\s*(?:[\"']" + _TO_LINE_END + r"|\S+)"
+    r"\s*[:=]\s*(?:" + _QUOTE + _TO_LINE_END + r"|\S+)"
 )
 URI_USERINFO = re.compile(
     r"(?i)\b[a-z][a-z0-9+.-]*://[^\s/:]*:[^\s/]+@"
@@ -159,8 +164,9 @@ AUTHORIZATION_SCHEME = re.compile(
 # end of the line, like a header, so no quote or escape inside it is parsed.
 COOKIE_VALUE = re.compile(
     r"(?i)\b(?:set-)?cookie\b(?:"
-    r"(?:\s*[:=]\s*|\s+(?=(?:[^\r\n]|\r?\n[ \t])*=|[\"'„“]))" + _TO_LINE_END
-    + r"|\s+\S+(?:[ \t]+[\"'„“]" + _TO_LINE_END + r")?)"
+    r"(?:\s*[:=]\s*|\s+(?=(?:[^\r\n]|\r?\n[ \t])*=|" + _QUOTE + r"))"
+    + _TO_LINE_END
+    + r"|\s+\S+(?:[ \t]+" + _QUOTE + _TO_LINE_END + r")?)"
 )
 BARE_TOKEN = re.compile(
     r"(?i)\b(?:"

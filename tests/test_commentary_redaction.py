@@ -1,11 +1,13 @@
 """Issue #70: redact sensitive spans in activity commentary, keep safe prose."""
 
 import asyncio
+import sys
+import unicodedata
 
 import pytest
 from test_activity_card import activity_bridge, message_record
 
-from openrig_matrix_bridge.bridge import sanitize_activity_summary
+from openrig_matrix_bridge.bridge import QUOTATION_MARKS, sanitize_activity_summary
 
 PATH = "[lokaler Pfad]"
 TOKEN = "[Token entfernt]"
@@ -296,6 +298,53 @@ def test_quoted_value_after_a_bare_cookie_token_is_replaced(text, expected):
 
     assert "SECRETQ1" not in summary
     assert summary == expected
+
+
+QUOTE_PAIRS = [
+    ("‚", "‘"),
+    ("‘", "’"),
+    ("“", "”"),
+    ("«", "»"),
+    ("‹", "›"),
+    ("`", "`"),
+    ("「", "」"),
+    ("『", "』"),
+    ("＂", "＂"),
+    ("＇", "＇"),
+]
+
+
+@pytest.mark.parametrize(("opening", "closing"), QUOTE_PAIRS)
+@pytest.mark.parametrize(
+    "template",
+    [
+        "cookie word {o}a b SECRETQ2{c} ok",
+        "Cookie {o}a b SECRETQ2{c} ok",
+        "API_KEY={o}secret with SPACE SECRETQ2{c} ok",
+        "password: {o}two words SECRETQ2{c} ok",
+    ],
+)
+def test_every_quotation_mark_starts_a_value_to_the_end_of_the_line(
+    template, opening, closing
+):
+    summary = sanitize_activity_summary(template.format(o=opening, c=closing))
+
+    assert "SECRETQ2" not in summary
+    assert summary in (COOKIE, TOKEN)
+
+
+def test_quotation_marks_cover_every_unicode_quote():
+    derived = {
+        char
+        for char in map(chr, range(sys.maxunicode + 1))
+        if unicodedata.category(char) in ("Pi", "Pf")
+        or (
+            unicodedata.category(char) in ("Ps", "Pe", "Po")
+            and "QUOTATION MARK" in unicodedata.name(char, "")
+        )
+    }
+
+    assert derived | set("\"'`＂＇｀「」『』｢｣") <= set(QUOTATION_MARKS)
 
 
 def test_apostrophes_and_later_quotes_after_a_bare_cookie_word_are_kept():
