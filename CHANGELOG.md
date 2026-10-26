@@ -3,8 +3,7 @@
 ## 0.12.0
 
 Release tracker: [Issue #46](https://github.com/ssalentin/openrig-matrix-bridge/issues/46).
-All pull requests of the milestone are merged. The one item marked PLACEHOLDER, the
-retained final integration report, is filled in by a follow-up commit.
+All pull requests of the milestone are merged.
 
 ### Steering and follow-ups (#4, #36)
 
@@ -41,7 +40,7 @@ retained final integration report, is filled in by a follow-up commit.
   stop or restart) runs the normal cleanup, clears typing and exits 0 instead
   of leaving it visible for up to 30 seconds.
 
-### Test harness (#52, #50)
+### Test harness (#52, #50, #65, #78)
 
 - Keep the fake OpenRig transport busy until its turn completes, make the hold
   of "hold first" prompts configurable (`OPENRIG_FAKE_HOLD_SECONDS`), and let a
@@ -55,6 +54,9 @@ retained final integration report, is filled in by a follow-up commit.
   replaces the state atomically and waits for the answer with a bounded poll, and
   a regression fails if a poller can see a half-written file; the unrelated-human-
   final test waits with the same bounded poll (#65). Tests only.
+- Count only activity-card edits in the `activity-card-crash-recovery` harness
+  check, so an in-place edit of the pinned queue card is no longer taken for a
+  second activity card (#78). Test tooling only.
 
 ### Related messages, galleries and voice (#54, #57)
 
@@ -168,6 +170,11 @@ retained final integration report, is filled in by a follow-up commit.
 - Document per-device trust and keep `matrix-nio` below 0.26; see
   `docs/CROSS_SIGNING.md` for the 2026-10-25 evaluation. A SAS on a real device
   has not been recorded; it remains a human-only gate (Issue #1).
+
+### Documentation (#42)
+
+- Reframe the README as a product landing page, with the detailed guides linked
+  from it (#43).
 
 ## 0.11.0
 

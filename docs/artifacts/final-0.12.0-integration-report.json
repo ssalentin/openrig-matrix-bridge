@@ -1,10 +1,10 @@
 {
   "bridge_state_summary": {
-    "processed_matrix_events": 35,
+    "processed_matrix_events": 62,
     "rejected_rooms": 1,
     "rooms": 0
   },
-  "duration_seconds": 173.0,
+  "duration_seconds": 611.0,
   "environment": {
     "command": "python tools/matrix_integration.py",
     "element_sas": "not exercised; requires a human client action",
@@ -14,7 +14,7 @@
     "voice_model": "not downloaded or executed"
   },
   "evidence_valid": true,
-  "generated_at": "2026-10-25T08:25:37.881550+00:00",
+  "generated_at": "2026-10-26T04:18:38.995315+00:00",
   "known_gaps": [
     "Real Codex prompt delivery and native transcript completion are represented by the fake OpenRig subprocess transport.",
     "The Parakeet model and real voice transcription were not run.",
@@ -36,7 +36,7 @@
     },
     {
       "automated": true,
-      "evidence": "`setup` wrote one agent room; `doctor` exited 0 (wrote /tmp/openrig-matrix-integration.v1vugr1q/config.yaml with 1 agent room(s))",
+      "evidence": "`setup` wrote one agent room; `doctor` exited 0 (validating Matrix access token...); a second `setup` without `--replace-config` failed with that next step. Single-message checks run with timing correlation off (burst_inactivity_seconds: 0); the related-context checks run with the production defaults.",
       "id": "setup-and-doctor",
       "status": "pass"
     },
@@ -72,7 +72,13 @@
     },
     {
       "automated": true,
-      "evidence": "A second owner message arrived during a deliberately slow first turn; Matrix showed the pinned queue notice and the fake OpenRig transport received the second prompt only after recording completion of the first (1792916610.7928958 < 1792916611.1701999). Between the two answers the owner timeline showed no ready status and no gap in the bridge typing indicator.",
+      "evidence": "The bridge exited right after Matrix accepted the initial activity card and before the card's event ID was recorded. The restarted bridge resent it with the same transaction ID, Matrix returned the same event, and the request kept exactly one card; every edit targeted it, one answer was sent and the single qitem completed (issue #39).",
+      "id": "activity-card-crash-recovery",
+      "status": "pass"
+    },
+    {
+      "automated": true,
+      "evidence": "A second owner message arrived during a deliberately slow first turn; Matrix showed one pinned queue card with the active prompt followed by the ordered waiting preview, and the fake OpenRig transport received the second prompt only after recording completion of the first (1792987744.7787714 < 1792987745.0631676). Between the two answers the owner timeline showed no ready status and no gap in the bridge typing indicator.",
       "id": "fifo-queue-notice",
       "status": "pass"
     },
@@ -102,7 +108,7 @@
     },
     {
       "automated": true,
-      "evidence": "Synapse's relation index showed exactly one bridge `m.annotation` reaction with key \ud83d\udc4d on each of 25 accepted owner events, including 4 events joined into steering batches. A bridge crash immediately after the reaction send left the acknowledgement pending; restart reused the persisted transaction and still showed one reaction. An untrusted room member's message received no reaction, no acceptance record and no OpenRig prompt.",
+      "evidence": "Synapse's relation index showed exactly one bridge `m.annotation` reaction with key \ud83d\udc4d on each of 26 accepted owner events, including 4 events joined into steering batches. A bridge crash immediately after the reaction send left the acknowledgement pending; restart reused the persisted transaction and still showed one reaction. An untrusted room member's message received no reaction, no acceptance record and no OpenRig prompt.",
       "id": "acceptance-reaction",
       "status": "pass"
     },
@@ -126,14 +132,37 @@
     },
     {
       "automated": true,
+      "details": {
+        "event_id": "$O14-6ZARbwdVbQhLthxvURWKk2FTtzowcRGlN_SadlM",
+        "sha256": "b8ca16cd0d5fd17a7319ff2c7eed389c769c2f4374a4e78ba6d4f562f10380ab",
+        "size": 710
+      },
+      "evidence": "A nonzero shipping-label-shaped PDF sent with `send-file --json` returned event $O14-6ZARbwdVbQhLthxvURWKk2FTtzowcRGlN_SadlM in the agent room; the owner found that exact event, decrypted it to SHA-256 b8ca16cd0d5fd17a7319ff2c7eed389c769c2f4374a4e78ba6d4f562f10380ab matching the reported value, and saw `m.file`, `application/pdf` and the original filename on an encrypted wire event. Empty, missing and oversize files exited non-zero before any outbox request or Matrix event.",
+      "id": "agent-file-delivery",
+      "status": "pass"
+    },
+    {
+      "automated": true,
       "evidence": "A generic-file request was durably queued while the bridge was stopped, then delivered exactly once after restart. The persisted success record names the same Matrix event ID observed by the owner; the delivered bytes came from the private snapshot even after the mutable source was replaced.",
       "id": "attachment-restart-recovery",
       "status": "pass"
     },
     {
       "automated": true,
-      "evidence": "A PDF and markerless audio sent from inside an existing m.thread were stored and forwarded. Every file status and final bridge message used the original canonical thread root, and each input created one completed qitem.",
+      "evidence": "A PDF and markerless audio sent from inside an existing m.thread were stored and forwarded (within the burst span as related context of the thread). Every file status and final bridge message used the original canonical thread root, and each input created one completed qitem.",
       "id": "threaded-files",
+      "status": "pass"
+    },
+    {
+      "automated": true,
+      "evidence": "One encrypted dm.filament.gallery event with four HEIC items and JPEG thumbnails reached the fake transport as one prompt and one completed qitem. The prompt listed every item in source order with filename, MIME type, size and dimensions; each original and each preview was decrypted into the generated agent inbox byte-for-byte, and the answer was threaded to the gallery event.",
+      "id": "element-x-gallery",
+      "status": "pass"
+    },
+    {
+      "automated": true,
+      "evidence": "The bridge exited immediately after persisting the first of four gallery items. Restart resumed the remaining three without downloading the first again: each original exists exactly once in the agent inbox, the single prompt lists all four in order, and one qitem completed.",
+      "id": "gallery-restart",
       "status": "pass"
     },
     {
@@ -162,13 +191,103 @@
     },
     {
       "automated": true,
+      "details": {
+        "related-1s": {
+          "origin_gap_ms": 1114,
+          "text_delivered_by": "steer"
+        },
+        "related-30s": {
+          "origin_gap_ms": 30119,
+          "text_delivered_by": "prompt"
+        }
+      },
+      "evidence": "With the production defaults (45 s inactivity, 300 s span), a top-level four-item gallery followed by a top-level text about 1 s and about 30 s later reached the agent as one related exchange each time: the text was linked to the gallery, every item and the text arrived in source order, every local path matched its SHA-256, each event completed exactly one qitem, and every answer was threaded under the gallery. After 30 s the gallery turn had ended, so the text arrived as a continuation restating all four items.",
+      "id": "related-gallery-then-text",
+      "status": "pass"
+    },
+    {
+      "automated": true,
+      "details": {
+        "delivered_by": [
+          "prompt",
+          "prompt",
+          "steer",
+          "steer"
+        ]
+      },
+      "evidence": "A voice note with 4 s injected transcription latency, then a text, an image and a PDF one second apart reached the agent in source order: the text and attachments waited for the transcript instead of overtaking it, every path matched its SHA-256, each event completed exactly one qitem, and every answer was threaded under the voice note.",
+      "id": "related-voice-text-attachments",
+      "status": "pass"
+    },
+    {
+      "automated": true,
+      "details": {
+        "delivered_by": [
+          "prompt",
+          "prompt",
+          "prompt",
+          "steer",
+          "prompt"
+        ]
+      },
+      "evidence": "Two four-item galleries, a PDF, a CSV and a text sent as one exchange reached the agent linked to the first gallery, in source order, with every gallery item and file path matching its SHA-256; each event completed exactly one qitem and every answer was threaded under the first gallery.",
+      "id": "related-galleries-and-files",
+      "status": "pass"
+    },
+    {
+      "automated": true,
+      "details": {
+        "delivered_by": [
+          "prompt",
+          "prompt",
+          "prompt"
+        ]
+      },
+      "evidence": "After a gallery completed, the bridge restarted; the next part, a PDF, crashed the bridge right after its intake was persisted and before its download. On restart the download resumed once (one stored copy), and the PDF and a later text reached the agent linked to the gallery, in order, with digests verified, one completed qitem per event, and every answer under the gallery.",
+      "id": "related-restart",
+      "status": "pass"
+    },
+    {
+      "automated": true,
+      "evidence": "Two plain top-level texts two seconds apart, inside the inactivity boundary, stayed separate requests with their own answers; a thread reply to the first joined only the first text's thread.",
+      "id": "related-unrelated-isolation",
+      "status": "pass"
+    },
+    {
+      "automated": true,
+      "details": {
+        "delivered_by": [
+          "prompt",
+          "prompt",
+          "steer"
+        ],
+        "root_to_gallery_ms": 53751
+      },
+      "evidence": "A gallery and a text sent into an existing thread more than 45 s after its root joined the root's context by relation: all three reached the agent in order, linked, digest-verified, once each, with every answer in the thread. A top-level message sent in between stayed a separate request with its own answer.",
+      "id": "related-thread",
+      "status": "pass"
+    },
+    {
+      "automated": true,
+      "evidence": "An advisor-style commentary with two internal /root/.openrig paths reached the room's activity card as the full progress text with each path replaced by [lokaler Pfad]; no bridge message carried the path bytes (issue #70).",
+      "id": "commentary-redaction",
+      "status": "pass"
+    },
+    {
+      "automated": true,
       "evidence": "Stopping and restarting the bridge preserved the exact Matrix room mapping and returned the room to ready status without creating a duplicate room.",
       "id": "restart-recovery",
       "status": "pass"
     },
     {
       "automated": true,
-      "evidence": "`doctor` exited non-zero and reported the invalid Matrix token.",
+      "evidence": "Four bridge 0.10.0 pending requests (no prompt, answer or qitem phase fields; one unstarted and one started with a captured answer, both for a done qitem; two unstarted for canceled qitems, one of them referencing an event Synapse rejects) were reconciled against OpenRig at startup: the queue drained without a claim, a prompt or any qitem update, the done requests left no message, the deliverable canceled one produced exactly one factual notice, the undeliverable one was dropped without a retry loop, and a second restart changed nothing.",
+      "id": "legacy-pending-reconcile",
+      "status": "pass"
+    },
+    {
+      "automated": true,
+      "evidence": "`doctor` exited non-zero and told the owner to create a new token.",
       "id": "doctor-invalid-token",
       "status": "pass"
     },
@@ -187,69 +306,69 @@
       "fallback": {
         "intake_to_acknowledgement_ms": {
           "count": 2,
-          "max": 328.0,
-          "median": 284.1
+          "max": 191.4,
+          "median": 140.3
         },
         "intake_to_admission_ms": {
           "count": 2,
-          "max": 5985.0,
-          "median": 5926.1
+          "max": 10506.1,
+          "median": 10506.1
         },
         "intake_to_injection_ms": {
           "count": 2,
-          "max": 5776.5,
-          "median": 5717.6
+          "max": 10249.0,
+          "median": 10249.0
         }
       },
       "late_steer": {
         "intake_to_acknowledgement_ms": {
           "count": 1,
-          "max": 395.5,
-          "median": 395.5
+          "max": 60.3,
+          "median": 60.3
         },
         "intake_to_admission_ms": {
-          "count": 1,
-          "max": 7105.1,
-          "median": 7105.1
+          "count": 2,
+          "max": 8873.2,
+          "median": 4993.1
         },
         "intake_to_injection_ms": {
-          "count": 1,
-          "max": 932.0,
-          "median": 932.0
+          "count": 2,
+          "max": 623.3,
+          "median": 515.6
         }
       },
       "prompt": {
         "intake_to_acknowledgement_ms": {
-          "count": 25,
-          "max": 1605.8,
-          "median": 433.8
+          "count": 29,
+          "max": 1175.8,
+          "median": 395.2
         },
         "intake_to_admission_ms": {
-          "count": 27,
-          "max": 6060.7,
-          "median": 643.6
+          "count": 48,
+          "max": 9451.8,
+          "median": 679.8
         },
         "intake_to_injection_ms": {
-          "count": 27,
-          "max": 5842.6,
-          "median": 266.5
+          "count": 48,
+          "max": 9216.6,
+          "median": 270.1
         }
       },
       "steer": {
         "intake_to_acknowledgement_ms": {
           "count": 4,
-          "max": 611.0,
-          "median": 320.6
+          "max": 229.8,
+          "median": 136.1
         },
         "intake_to_admission_ms": {
-          "count": 4,
-          "max": 1873.6,
-          "median": 1351.9
+          "count": 8,
+          "max": 1282.6,
+          "median": 818.0
         },
         "intake_to_injection_ms": {
-          "count": 3,
-          "max": 1386.3,
-          "median": 1290.3
+          "count": 7,
+          "max": 1076.2,
+          "median": 815.3
         }
       }
     },
@@ -258,7 +377,7 @@
   "target": {
     "package": "openrig-matrix-bridge",
     "source": {
-      "commit": "44c28323acfa435efd807709438b5be6798d8b49",
+      "commit": "d999efb8b7eb847306f7eabcac66efc6df9e795e",
       "source": "git",
       "worktree_clean": true
     },

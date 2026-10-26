@@ -7,8 +7,7 @@ photo after it) to the agent as one context, shows the queue in a pinned card,
 makes agent file delivery explicit and verifiable, and makes setup and the
 upgrade from 0.10 safer.
 
-All pull requests of the milestone are merged. The one item marked PLACEHOLDER,
-the retained final integration report, is filled in by a follow-up commit.
+All pull requests of the milestone are merged.
 
 ## What changed
 
@@ -158,8 +157,12 @@ reconciliation also has one locked diagnostic run that passed); that is why the
 final candidate is re-run locked and its report retained. The claim-by-claim list
 is in
 [Verification and evidence](VERIFICATION.md); the retained report for the final
-candidate is `final-0.12.0-integration-report.json`
-(PLACEHOLDER: committed once from the final locked runs).
+candidate is `final-0.12.0-integration-report.json`: the third of three
+sequential locked exact-source runs at `d999efb`, 37 of 37 checks passed,
+`evidence_valid: true`, `worktree_clean: true`. The wheel and sdist of that
+candidate have the SHA-256 values in
+[Artifacts](artifacts/README.md), verified with `tools/verify_release.py` and a
+clean-venv wheel install.
 
 - Steering admission, batching, fallback and restart recovery against the
   transcript the fake transport writes.
