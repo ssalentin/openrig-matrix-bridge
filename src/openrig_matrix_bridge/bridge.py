@@ -658,18 +658,39 @@ def formatted_message_content(text: str) -> dict[str, Any]:
     return content
 
 
+def steering_entry_origin(thread_root: str, entry: dict[str, Any]) -> str:
+    """How an entry from outside the active thread arrived (#87), else ""."""
+    root = str(entry.get("thread_root_event_id") or thread_root)
+    if root == thread_root:
+        return ""
+    if root == entry["event_id"]:
+        return "new top-level message"
+    return f"sent in thread {root}"
+
+
 def steering_batch_text(thread_root: str, entries: list[dict[str, Any]]) -> str:
-    lines = [
-        (
+    origins = [steering_entry_origin(thread_root, entry) for entry in entries]
+    if any(origins):
+        header = (
+            "Matrix messages that arrived while another request was active. Items "
+            "marked as a new top-level message or as sent in another thread came "
+            "from outside this thread; treat every numbered item below as ordered "
+            "input to the active turn."
+        )
+    else:
+        header = (
             "Matrix follow-up batch for this thread. Treat every numbered item below "
             "as ordered input to the same task."
-        ),
+        )
+    lines = [
+        header,
         f"Canonical thread root: {thread_root}",
         "Source events: " + ", ".join(entry["event_id"] for entry in entries),
         "",
     ]
-    for index, entry in enumerate(entries, start=1):
-        lines.append(f"{index}. [{entry['event_id']}] {entry['text']}")
+    for index, (entry, origin) in enumerate(zip(entries, origins), start=1):
+        marker = f" ({origin})" if origin else ""
+        lines.append(f"{index}. [{entry['event_id']}]{marker} {entry['text']}")
     return "\n".join(lines)
 
 
@@ -2642,6 +2663,7 @@ class MatrixBridge:
             suppress_reply=suppress_reply,
             queue_tracked=queue_tracked,
             linked=linked,
+            source_label=source_label,
         ):
             if linked and burst is not None:
                 self._steer_burst_parts(agent, pending, request, burst)
@@ -2717,6 +2739,7 @@ class MatrixBridge:
         suppress_reply: bool,
         queue_tracked: bool,
         linked: bool = False,
+        source_label: str = "message",
     ) -> bool:
         mode = str(getattr(self.config, "steering_mode", "auto"))
         if mode not in {"steer", "auto"}:
@@ -2737,10 +2760,14 @@ class MatrixBridge:
             )
             if group is not None and group.get("injection_phase") != "pending":
                 return False
+        same_thread = active.get("thread_root_event_id") == target.thread_root_event_id
+        # Issue #87: steer mode also steers a short text message from the top
+        # level or another thread; media, bursts and auto mode stay same-thread.
+        cross_thread = mode == "steer" and source_label == "message" and not linked
         return (
             active.get("prompt_phase") == "sent"
             and active.get("answer_phase") is None
-            and active.get("thread_root_event_id") == target.thread_root_event_id
+            and (same_thread or cross_thread)
             and not active.get("suppress_reply")
         )
 
@@ -2767,6 +2794,7 @@ class MatrixBridge:
             "event_id": event_id,
             "text": text,
             "qitem_id": incoming.get("qitem_id"),
+            "thread_root_event_id": incoming.get("thread_root_event_id"),
             "reply_to_event_id": incoming["reply_to_event_id"],
             "source_relation": incoming.get("source_relation"),
             "intake_at": incoming.get("intake_at"),
@@ -2792,6 +2820,11 @@ class MatrixBridge:
                 "injection_text": None,
                 "injection_turn_id": None,
             }
+            if group["thread_root_event_id"] != active["thread_root_event_id"]:
+                # A batch started from outside the active thread still answers
+                # there once; each entry keeps its own root.
+                group["thread_root_event_id"] = active["thread_root_event_id"]
+                group["reply_to_event_id"] = active["reply_to_event_id"]
             pending.append(group)
             active["steering_group_id"] = group["id"]
         else:

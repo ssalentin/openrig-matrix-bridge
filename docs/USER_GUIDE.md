@@ -150,18 +150,30 @@ answer in the thread remains the completion signal.
 working:
 
 - `queue` keeps all requests FIFO.
-- `steer` attempts best-effort delivery for eligible same-thread follow-ups.
-- `auto` is the default and uses the same strict eligibility rule.
+- `auto` is the default and attempts best-effort delivery only for eligible
+  follow-ups in the active request's exact thread.
+- `steer` attempts best-effort delivery for every short text message in the
+  agent's room, whether it is a reply in the active thread, a new top-level
+  message, or a reply in another thread.
 
-A follow-up is eligible only when it is in the active request's exact thread,
-is no longer than `openrig.steering_max_chars` (2000 by default), and arrives
-while the original turn is active. Parts of a related exchange (see
+In `auto`, a follow-up is eligible only when it is in the active request's exact
+thread, is no longer than `openrig.steering_max_chars` (2000 by default), and
+arrives while the original turn is active; top-level prompts and prompts in
+another thread remain separate FIFO requests. `steer` drops the thread
+condition for short text messages: everything the owner types while the agent
+works reaches that turn, like typing into its terminal. This deliberately mixes
+simultaneous short messages into one turn, so the agent answers them together in
+the active request's thread instead of once per thread. The steered input marks
+each message that came from the top level or another thread. Voice notes,
+files, images, galleries, reactions and decisions keep their usual handling in
+every mode, and a text above `openrig.steering_max_chars` is queued. Parts of a
+related exchange (see
 [Related messages](#related-messages-galleries-and-voice-notes)) are steered
-whatever their length. Top-level prompts and prompts in another
-thread remain separate FIFO requests. Events received inside
+whatever their length. Events received inside
 `openrig.steering_batch_window_seconds` (0.5 by default) form one ordered batch.
-Every source event keeps its event ID, qitem, and canonical thread root; an
-admitted batch receives one answer carrying all source event IDs.
+Every source event keeps its event ID, qitem, and its own thread root; an
+admitted batch receives one answer in the active request's thread carrying all
+source event IDs. A batch that falls back to its own turn answers there too.
 
 Before pane input, the bridge records the complete batch and the exact
 transcript boundary. It adopts steering only after the matching user message and
@@ -219,7 +231,7 @@ Aktiv: Text · "Draft the release notes"
   restart it is rebuilt from the saved queue, without a second card, and a card
   left pinned with nothing waiting is unpinned. Silent feedback such as a
   reaction never counts as waiting.
-- A same-thread follow-up that is being steered into the active turn is counted
+- A follow-up that is being steered into the active turn is counted
   in the `Aktiv (N Eingaben)` line instead of appearing as its own future turn.
   If steering falls back to a normal queued turn, it appears as a waiting entry.
 - Previews are one line, cut to 96 characters. Each part that looks like a

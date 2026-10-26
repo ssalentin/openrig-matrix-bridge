@@ -78,12 +78,12 @@ requests in flight across a bridge restart. See the
 
 ## Follow-ups and steering
 
-While a seat is working, `openrig.steering_mode` controls short follow-ups in
-the same Matrix thread: `queue` keeps every request FIFO, `steer` attempts
-best-effort delivery into the active seat, and the default `auto` steers only
-eligible same-thread follow-ups. Top-level and other-thread prompts stay
-separate and FIFO. A rapid same-thread batch keeps every source event ID and
-qitem and gets one answer under the original thread root.
+While a seat is working, `openrig.steering_mode` controls short messages:
+`queue` keeps every request FIFO, the default `auto` steers only eligible
+follow-ups in the active thread (top-level and other-thread prompts stay FIFO),
+and `steer` delivers every short text message in the room into the active turn,
+whatever its thread. A steered batch keeps every source event ID and qitem and
+gets one answer under the active request's thread root.
 
 The bridge persists the transcript boundary and batch before pane input and
 adopts the batch only on matching transcript evidence. While the seat is busy it

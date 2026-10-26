@@ -91,6 +91,7 @@ CHECKS = (
     "activity_card_crash_recovery",
     "fifo",
     "steering_modes",
+    "steering_cross_thread",
     "steering_fallback_and_restart",
     "reaction",
     "acceptance_reaction",
@@ -2465,6 +2466,130 @@ class IntegrationRun:
                 "follow-up while top-level and other-thread requests advance FIFO. "
                 "All source qitems closed, and an unrelated human transcript turn "
                 "did not steal the Matrix answer."
+            ),
+        )
+
+    async def check_steering_cross_thread(self, room_id: str) -> None:
+        """Issue #87: steer mode steers short messages from any thread."""
+        assert self.owner is not None
+        owner = self.owner
+        fake_path = self.fake_state / "fake-openrig.json"
+
+        self.stop_bridge()
+        self.set_steering_mode("steer")
+        self.start_bridge(hold_seconds=STEERING_PROBE_HOLD_SECONDS)
+        await self.wait_for_steering_mode_ready(room_id)
+        before = json.loads(fake_path.read_text(encoding="utf-8"))
+        steers_before = len(before["steers"])
+        prompts_before = len(before["prompts"])
+        root = await owner.send_text(room_id, "hold first cross-thread root")
+        self.wait_for_active_prompt(root, "hold first cross-thread root")
+        top = await owner.send_text(room_id, "cross-thread top-level task")
+        other = await owner.send_text(
+            room_id,
+            "cross-thread reply in another thread",
+            relates_to={
+                "rel_type": "m.thread",
+                "event_id": top,
+                "m.in_reply_to": {"event_id": top},
+            },
+        )
+        wait_for_json_state(
+            fake_path,
+            lambda value: len(value.get("steers", [])) > steers_before,
+            self.args.timeout,
+            description="cross-thread steering attempt",
+        )
+        await owner.sync_until(
+            lambda: any(
+                message["sender"] == BRIDGE_USER
+                and "Fake integration answer: hold first cross-thread root"
+                in str(message["body"])
+                for message in owner.messages
+            ),
+            self.args.timeout,
+            description="one answer covering the cross-thread batch",
+        )
+        wait_for_json_state(
+            self.state_dir / "state.json",
+            lambda value: not value.get("pending", {}).get(AGENT_KEY),
+            self.args.timeout,
+            description="cross-thread pending queue to drain",
+        )
+        await asyncio.sleep(0.5)
+        await owner.sync_once()
+        fake = json.loads(fake_path.read_text(encoding="utf-8"))
+        batches = fake["steers"][steers_before:]
+        if len(batches) != 1:
+            raise CheckFailure(f"expected one cross-thread steering batch: {batches}")
+        batch = batches[0]["prompt"]
+        for marker in (
+            top,
+            other,
+            "new top-level message",
+            f"sent in thread {top}",
+        ):
+            if marker not in batch:
+                raise CheckFailure(f"cross-thread batch lacks {marker!r}: {batch}")
+        if batch.index("cross-thread top-level task") > batch.index(
+            "cross-thread reply in another thread"
+        ):
+            raise CheckFailure(f"cross-thread batch lost source order: {batch}")
+        later_prompts = [item["prompt"] for item in fake["prompts"][prompts_before:]]
+        if later_prompts != ["hold first cross-thread root"]:
+            raise CheckFailure(
+                f"cross-thread messages also started their own turns: {later_prompts}"
+            )
+        answers = [
+            message
+            for message in owner.messages
+            if message["sender"] == BRIDGE_USER
+            and str(message["body"]).startswith("Fake integration answer: ")
+            and (
+                "cross-thread" in str(message["body"])
+                or (message["source"].get("content", {}).get("m.relates_to") or {})
+                .get("event_id")
+                in {top, other}
+            )
+        ]
+        if len(answers) != 1:
+            raise CheckFailure(
+                f"expected exactly one answer for the cross-thread batch: "
+                f"{[message['body'] for message in answers]}"
+            )
+        content = answers[0]["source"].get("content", {})
+        relation = content.get("m.relates_to") or {}
+        if relation.get("rel_type") != "m.thread" or relation.get("event_id") != root:
+            raise CheckFailure(f"cross-thread answer left the active thread: {relation}")
+        source_ids = content.get("dev.openrig.source_event_ids")
+        if source_ids != [root, top, other]:
+            raise CheckFailure(f"cross-thread answer source IDs are wrong: {source_ids}")
+        qitems = [
+            item
+            for item in fake["queue"].values()
+            if any(
+                marker in str(item.get("body") or "")
+                for marker in (
+                    "hold first cross-thread root",
+                    "cross-thread top-level task",
+                    "cross-thread reply in another thread",
+                )
+            )
+        ]
+        if len(qitems) != 3:
+            raise CheckFailure(f"cross-thread batch did not keep three qitems: {qitems}")
+        for item in qitems:
+            validate_qitem_history(item)
+        self.record(
+            "steering-cross-thread",
+            "pass",
+            (
+                "In steer mode, a new top-level message and a reply in another "
+                "thread sent during a slow active turn were injected as one "
+                "ordered steering batch that marks where each came from (issue "
+                "#87). Neither started its own turn; exactly one answer was "
+                "posted in the active request's thread naming all three source "
+                "event IDs, and all three qitems closed once."
             ),
         )
 
