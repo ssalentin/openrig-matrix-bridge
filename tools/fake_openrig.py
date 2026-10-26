@@ -385,8 +385,24 @@ def handle_queue(root: Path, args: list[str]) -> None:
             "history": [{"state": "pending", "at": time.time()}],
         }
 
+        marker = os.environ.get("OPENRIG_FAKE_SELF_COMPLETE_MARKER")
+        if marker and marker in str(item["body"] or ""):
+            # The seat polls, claims and completes this row itself before the
+            # bridge gets to claim it (#91).
+            now = time.time()
+            item["state"] = "done"
+            item["claimed_by"] = item["destinationSession"]
+            item["closure_reason"] = "no-follow-on"
+            item["resolution"] = "handled by the seat"
+            item["history"] += [
+                {"state": "in-progress", "at": now},
+                {"state": "done", "at": now},
+            ]
+
         def create(state: dict[str, Any]) -> None:
             state["queue"][qitem_id] = item
+            if item["state"] == "done":
+                state.setdefault("self_completed", []).append(qitem_id)
 
         update_state(root, create)
         print_json({"qitemId": qitem_id})
@@ -412,7 +428,8 @@ def handle_queue(root: Path, args: list[str]) -> None:
         def mutate(state: dict[str, Any]) -> None:
             item = state["queue"][qitem_id]
             if command == "claim":
-                if item["state"] == "in-progress":
+                # Like `rig queue claim`: only a pending row can be claimed.
+                if item["state"] != "pending":
                     raise SystemExit("qitem_not_claimable")
                 item["state"] = "in-progress"
                 item["claimed_by"] = os.environ.get("OPENRIG_SESSION_NAME")

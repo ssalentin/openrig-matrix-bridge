@@ -53,6 +53,15 @@ than header, cookie or URI credential syntax:
 
 The replaced text never reaches the room. Commentary is cut to 600 characters.
 
+`openrig.commentary_redaction_enabled` (default `true`) controls this
+redaction per bridge instance. With `false`, activity-card commentary and
+queue-card previews show paths, cookies, credentials, connection URIs, fenced
+output and long secrets as the agent wrote them; whitespace is still normalized,
+the length limits still apply and Matrix HTML is still escaped. The bridge logs
+one warning at startup while the opt-out is active. Turn it off only when the
+room's members may see everything the agent writes; see
+[Security](SECURITY.md#security-and-e2ee).
+
 ## Verify the product manually
 
 Use the same owner account listed in `matrix.allowed_users`.
@@ -329,7 +338,9 @@ With `openrig.queue_inbound_messages: true`:
   default), the `matrix,inbound` tags, and `--no-nudge` because the bridge
   already delivers the prompt.
 - The bridge claims the item when work starts and closes it after the Matrix
-  answer is delivered.
+  answer is delivered. If the seat has already taken and completed the item
+  itself, the bridge treats the request as handled there: it does not send the
+  prompt, posts nothing, and starts the next request.
 - Additional Matrix requests remain FIFO behind the active request.
 - While a request waits, a single pinned queue card shows the active request
   and ordered, sanitized previews of the waiting ones (see
@@ -345,9 +356,14 @@ restart before retrying. Attachment outbox requests use the same stable
 transaction rule and are not republished after a recorded delivery.
 
 Qitem lifecycle failures are fail-closed. If qitem creation fails, the bridge
-posts an error and does not send the prompt. If claim fails, the request remains
-pending with `qitem_phase: claiming` and retries without falsely appearing
-active. If finish or fail-close fails, the request remains locally pending and
+posts an error and does not send the prompt. A rejected claim is checked with
+`rig queue show` first: an item the seat completed is handled as above, and an
+item that was canceled, denied or failed ends the request with one short notice
+that it was not handed to the agent (queue item IDs and states stay in the
+logs). If the seat completed only some items of a combined request, the request
+is not split: the remaining items are failed and the same notice is posted. If the claim fails for another reason or the item cannot be read, the
+request remains pending with `qitem_phase: claiming` and retries without falsely
+appearing active. If finish or fail-close fails, the request remains locally pending and
 startup reconciles the qitem with `rig queue show` before retrying or removing
 the request.
 

@@ -25,6 +25,14 @@ repository currently proves.
   unreadable even if the room still exists.
 - Matrix homeserver administrators can still see room membership and message
   metadata, even when message content is encrypted.
+- Activity-card commentary and queue previews are redacted by default (paths,
+  cookies, credentials, connection URIs, fenced output, long secrets).
+  `openrig.commentary_redaction_enabled: false` turns that off for one bridge
+  instance: whatever the agent writes in its progress commentary, including
+  secrets it happens to print, is then posted to every room member's devices and
+  stays in the room history. Leave the default unless the owner explicitly wants
+  the raw text; the bridge logs one startup warning while it is off. The switch
+  does not affect encryption, the access token or other secret handling.
 
 Do not commit tokens, device private keys, recovery material, raw encryption
 state, unredacted private MXIDs, room IDs, homeserver addresses, or media.

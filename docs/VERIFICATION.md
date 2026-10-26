@@ -184,6 +184,7 @@ transport:
 |---|---|
 | `steering-modes-and-batch` | `queue`, `steer`, and `auto` behavior; one ordered same-thread batch keeps every source event ID and the canonical thread root. |
 | `steering-cross-thread` | `steer` mode (#87): a top-level message and an other-thread reply join the active turn as one marked batch with one answer in the active thread. |
+| `self-completed-qitems` | #91: qitems a seat completes before the bridge claims them are adopted silently: no prompt, no steering, no lifecycle notice, no duplicate answer. |
 | `steering-fallback-restart` | Refused injection and crash-after-injection recovery: rescan before fallback, one durable fallback attempt only when the seat is idle without admission. |
 | `steering-late-admission` | Input that materializes as the next turn is adopted without resending; the answer keeps the follow-up source ID and the completed root's thread, and typing and `arbeitet` status continue until the queue drains. |
 | `acceptance-reaction` | With the optional receipt enabled, exactly one bridge `m.annotation` 👍 on each accepted owner event, including batch members; a crash after the send leaves the acknowledgement pending and restart reuses the persisted transaction; an untrusted room member gets no reaction, no acceptance record, and no OpenRig prompt. |

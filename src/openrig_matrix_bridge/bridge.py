@@ -240,16 +240,18 @@ def _redaction_slot(category: str, match: re.Match[str]) -> str:
     return slot
 
 
-def sanitize_activity_summary(text: str) -> str:
+def sanitize_activity_summary(text: str, *, redact: bool = True) -> str:
     """Replace each sensitive span with a category marker; keep the rest.
 
     Fenced output, credentials, tokens, cookies and local paths are redacted
     span by span, so safe progress text stays readable and no matched byte
-    survives. Whitespace is normalized and the result is bounded.
+    survives. Whitespace is normalized and the result is bounded. With
+    `redact=False` (openrig.commentary_redaction_enabled: false, #93) only the
+    normalization and the bound apply.
     """
     # NUL is reserved for the placeholders below.
     summary = text.replace("\x00", " ")
-    for pattern, category in REDACTION_PATTERNS:
+    for pattern, category in REDACTION_PATTERNS if redact else ():
         summary = pattern.sub(
             lambda match, category=category: _redaction_slot(category, match),
             summary,
@@ -307,20 +309,24 @@ QUEUE_GALLERY_ITEM_LINE = re.compile(r"^\d+\. \".*\"", re.MULTILINE)
 QUEUE_RELATED_PART_LINE = re.compile(r"^Teil \d+ · ([^·\n]+?) · ", re.MULTILINE)
 
 
-def queue_preview(text: object, limit: int = 96) -> str:
-    return bounded_summary(sanitize_activity_summary(str(text or "")), limit)
+def queue_preview(text: object, limit: int = 96, *, redact: bool = True) -> str:
+    return bounded_summary(
+        sanitize_activity_summary(str(text or ""), redact=redact), limit
+    )
 
 
-def queue_related_preview(text: str) -> str | None:
+def queue_related_preview(text: str, *, redact: bool = True) -> str | None:
     """Summarize a related-context prompt by its parts, never its paths or IDs."""
     kinds = QUEUE_RELATED_PART_LINE.findall(text)
     if not kinds:
         return None
     count = f"{len(kinds)} {'Teil' if len(kinds) == 1 else 'Teile'}"
-    return queue_preview(f"{count} · " + ", ".join(kind.strip() for kind in kinds))
+    return queue_preview(
+        f"{count} · " + ", ".join(kind.strip() for kind in kinds), redact=redact
+    )
 
 
-def queue_request_preview(request: dict[str, Any]) -> str:
+def queue_request_preview(request: dict[str, Any], *, redact: bool = True) -> str:
     """Return a safe one-line description of what a queued request contains.
 
     File, image and gallery prompts embed local inbox paths for the agent, so their
@@ -334,21 +340,21 @@ def queue_request_preview(request: dict[str, Any]) -> str:
         match = QUEUE_FILENAME_LINE.search(text)
         if match:
             try:
-                return queue_preview(json.loads(match.group(1)))
+                return queue_preview(json.loads(match.group(1)), redact=redact)
             except ValueError:
                 pass
         return ""
     if label == "image":
-        return queue_preview(caption)
+        return queue_preview(caption, redact=redact)
     if label == "related":
-        return queue_related_preview(text) or ""
+        return queue_related_preview(text, redact=redact) or ""
     if label == "gallery":
         count = len(QUEUE_GALLERY_ITEM_LINE.findall(text))
         parts = [f"{count} {'Datei' if count == 1 else 'Dateien'}"] if count else []
         if caption:
             parts.append(caption)
-        return queue_preview(" · ".join(parts))
-    return queue_preview(text)
+        return queue_preview(" · ".join(parts), redact=redact)
+    return queue_preview(text, redact=redact)
 
 
 def queue_request_context(request: dict[str, Any]) -> str:
@@ -361,7 +367,7 @@ def queue_request_context(request: dict[str, Any]) -> str:
     return source
 
 
-def queue_request_entry(request: dict[str, Any]) -> str:
+def queue_request_entry(request: dict[str, Any], *, redact: bool = True) -> str:
     steering_entries = request.get("steering_entries")
     if isinstance(steering_entries, list) and steering_entries:
         texts = [
@@ -370,10 +376,13 @@ def queue_request_entry(request: dict[str, Any]) -> str:
             if isinstance(entry, dict)
         ]
         preview = queue_preview(
-            "; ".join(queue_related_preview(text) or text for text in texts)
+            "; ".join(
+                queue_related_preview(text, redact=redact) or text for text in texts
+            ),
+            redact=redact,
         )
     else:
-        preview = queue_request_preview(request)
+        preview = queue_request_preview(request, redact=redact)
     context = queue_request_context(request)
     return f'{context} · "{preview}"' if preview else context
 
@@ -382,6 +391,7 @@ def queue_notice_text(
     pending: list[dict[str, Any]],
     *,
     priority_label: str = "hoch",
+    redact: bool = True,
 ) -> str | None:
     visible = [
         request
@@ -443,12 +453,16 @@ def queue_notice_text(
         "",
     ]
     if active is not None:
-        lines.append(f"**{active_label}:** {queue_request_entry(active)}")
+        lines.append(
+            f"**{active_label}:** {queue_request_entry(active, redact=redact)}"
+        )
     else:
-        lines.append(f"**Nächste Anfrage:** {queue_request_entry(first)}")
+        lines.append(
+            f"**Nächste Anfrage:** {queue_request_entry(first, redact=redact)}"
+        )
         waiting = waiting[1:]
     lines.extend(
-        f"{position}. {queue_request_entry(request)}"
+        f"{position}. {queue_request_entry(request, redact=redact)}"
         for position, request in enumerate(waiting, start=1)
     )
     return "\n".join(lines)
@@ -835,7 +849,26 @@ class MatrixBridge:
             self._on_verification, (KeyVerificationEvent,)
         )
 
+    def _commentary_redaction_enabled(self) -> bool:
+        return bool(
+            getattr(
+                getattr(self, "config", None),
+                "commentary_redaction_enabled",
+                True,
+            )
+        )
+
+    def _warn_if_commentary_redaction_disabled(self) -> None:
+        if not self._commentary_redaction_enabled():
+            LOGGER.warning(
+                "openrig.commentary_redaction_enabled is false: activity-card "
+                "commentary and queue previews are posted to Matrix without "
+                "redacting paths, cookies, credentials, connection URIs, fenced "
+                "output or long secrets"
+            )
+
     async def run(self) -> None:
+        self._warn_if_commentary_redaction_disabled()
         await self._initial_sync()
         await self._recover_verifications()
         self._load_room_index()
@@ -1471,6 +1504,7 @@ class MatrixBridge:
         text = queue_notice_text(
             pending,
             priority_label=priority_label,
+            redact=self._commentary_redaction_enabled(),
         )
         if text is None:
             if event_id and notice.get("pinned", True):
@@ -3112,6 +3146,13 @@ class MatrixBridge:
             try:
                 await self.gateway.queue_claim(qitem_id, agent.session)
             except (GatewayError, OSError):
+                # The seat may have claimed and closed the row itself (#91); a
+                # concurrent terminal transition is not a claim failure.
+                state = await self._inspect_qitem_state(qitem_id)
+                if state in TERMINAL_QITEM_PHASES:
+                    self._set_request_qitem_phase(request, qitem_id, state)
+                    self.state.save()
+                    return False
                 LOGGER.warning(
                     "could not claim Matrix qitem %s",
                     qitem_id,
@@ -3595,30 +3636,35 @@ class MatrixBridge:
             if self._request_qitem_phase(request, qitem_id)
             in TERMINAL_QITEM_PHASES
         }
-        request["terminal_error"] = (
-            "OpenRig batch ended before Matrix delivery: "
-            + ", ".join(
-                f"{qitem_id}={phase}"
-                for qitem_id, phase in terminal_phases.items()
+        if self._request_qitems_done(request):
+            # The seat took and closed every qitem itself (#91): that is the
+            # outcome, not a failure, so nothing is failed or posted.
+            request["terminal_error"] = "OpenRig qitems already completed by the seat"
+            request["externally_completed"] = True
+        else:
+            request["terminal_error"] = (
+                "OpenRig batch ended before Matrix delivery: "
+                + ", ".join(
+                    f"{qitem_id}={phase}"
+                    for qitem_id, phase in terminal_phases.items()
+                )
             )
-        )
-        if not await self._fail_inbound_qitem(
-            agent,
-            request,
-            request["terminal_error"],
+            if not await self._fail_inbound_qitem(
+                agent,
+                request,
+                request["terminal_error"],
+            ):
+                self.state.save()
+                return
+        if not request.get("externally_completed") and not request.get(
+            "failure_notice_event_id"
         ):
-            self.state.save()
-            return
-        qitem_ids = ", ".join(self._request_qitem_ids(request))
-        phase_summary = ", ".join(
-            f"{qitem_id}={self._request_qitem_phase(request, qitem_id)}"
-            for qitem_id in self._request_qitem_ids(request)
-        )
-        if not request.get("failure_notice_event_id"):
+            # Qitem IDs and states are internal; the owner only learns that
+            # the request was not handed to the agent.
             response = await self._send(
                 room_id,
-                f"OpenRig Queue-Item(s) {qitem_ids} sind terminal "
-                f"({phase_summary}). Die Anfrage wird nicht gesendet.",
+                "Diese Anfrage wurde in OpenRig beendet, bevor der Agent sie "
+                "erhalten hat, und wird nicht gesendet.",
                 self._reply_target(request),
                 tx_id=f"failure-{request.get('id') or request['event_id']}",
                 **self._delivery_kwargs(request),
@@ -3658,6 +3704,14 @@ class MatrixBridge:
             )
             if was_head and pending and start_next:
                 await self._start_request(agent, pending[0], room_id)
+
+    def _request_qitems_done(self, request: dict[str, Any]) -> bool:
+        """Whether every qitem of the request is done (closed by the seat)."""
+        qitem_ids = self._request_qitem_ids(request)
+        return bool(qitem_ids) and all(
+            self._request_qitem_phase(request, qitem_id) == "done"
+            for qitem_id in qitem_ids
+        )
 
     async def _abandon_if_terminal(
         self,
@@ -5340,10 +5394,19 @@ class MatrixBridge:
                             request.get("injection_attempted_at") or time.time()
                         )
                         request["prompt_turn_id"] = request["injection_turn_id"]
-                        if not await self._claim_inbound_qitem(agent, request):
+                        if not await self._claim_inbound_qitem(
+                            agent, request
+                        ) and not self._request_qitems_done(request):
+                            if self._request_terminal_qitem_phase(request):
+                                await self._abandon_terminal_qitem(
+                                    agent, request, room_id
+                                )
+                                return
                             raise QitemLifecycleError(
                                 "could not claim admitted steering qitems"
                             )
+                        # Qitems the seat already closed (#91) need no claim:
+                        # the batch is in the turn and its answer still posts.
                         request["prompt_phase"] = "sent"
                         request["externally_admitted"] = True
                         self.state.save()
@@ -5466,8 +5529,8 @@ class MatrixBridge:
             if not request.get("qitem_error_notified"):
                 response = await self._send(
                     room_id,
-                    "Das OpenRig Queue-Item konnte nicht beansprucht werden. "
-                    "Die Anfrage bleibt vorgemerkt und wird erneut versucht.",
+                    "Die Anfrage konnte noch nicht an den Agenten übergeben "
+                    "werden. Sie bleibt vorgemerkt und wird erneut versucht.",
                     self._reply_target(request),
                     tx_id=f"qitem-error-{request.get('id') or request['event_id']}",
                     **self._delivery_kwargs(request),
@@ -5727,7 +5790,8 @@ class MatrixBridge:
                     ]
                     if pending_commentary:
                         request["commentary_summary"] = sanitize_activity_summary(
-                            pending_commentary[-1][1]
+                            pending_commentary[-1][1],
+                            redact=self._commentary_redaction_enabled(),
                         )
                     response = await self._deliver_activity_card(room_id, request)
                     if response is not True and not isinstance(
