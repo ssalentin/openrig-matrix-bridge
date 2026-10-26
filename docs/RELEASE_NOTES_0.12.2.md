@@ -64,8 +64,10 @@ configuration parsing and one startup warning) and the
 activity card unredacted with the key off and the log has exactly one warning,
 while the default instance redacts it). The legacy `legacy-pending-reconcile`
 check now asserts that its notice names no queue item ID or state. The retained
-report for the final candidate is `final-0.12.2-integration-report.json`
-(PLACEHOLDER: committed once from the final locked runs).
+report for the final candidate is `final-0.12.2-integration-report.json`: the
+third of three sequential locked exact-source runs at `37aad68`, 40 of 40
+checks passed, `evidence_valid: true`, `worktree_clean: true`. The digests of the
+release wheel and sdist are those of the published `SHA256SUMS`.
 
 ### NOT PROVEN
 
