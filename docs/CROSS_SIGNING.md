@@ -17,9 +17,10 @@ facts checked on 2026-10-25 and the decision. It changes no dependency.
   matrix-nio records each verified device in its own trust file, and
   `openrig-matrix-bridge doctor` lists them.
 - Element shows the bridge account as "not verified by its owner", because the
-  bridge user has no cross-signing identity. A successful SAS removes the
-  warning for that device pair only. That removal is not proven by this
-  repository; it needs the real-device check in issue #1.
+  bridge user has no cross-signing identity. A SAS on a real device has not been
+  recorded, so it is not known whether, or for which devices, Element stops
+  showing that warning afterwards; the real-device check in issue #1 is the
+  human-only gate that would show it.
 
 ## Upgrade options
 

@@ -12,8 +12,14 @@ each item in the acceptance record at the end of this runbook.
 - [ ] QA and review approve one immutable candidate SHA, and
   `docs/artifacts/final-0.12.0-integration-report.json` names that SHA with
   `worktree_clean: true` and `evidence_valid: true`.
-- [ ] Merge pull request #34 into `main` (milestone 0.12.0, tracker #46; it
-  closes #4 and #36).
+- [ ] Confirm every pull request of milestone 0.12.0 (tracker #46) is merged into
+  `main`: #34 (steering, #4 and #36), #49 (👍 receipt, #46), #51 (typing and
+  status, #47), #53 (harness timing, #52), #57 and #61 (galleries and related
+  messages, #54), #35 (queue card, #24), #40 (setup, #37), #66 (activity card,
+  #39), #59 (file delivery, #55), #58 (finish reconciliation, #56), #67 (0.10
+  pending requests, #41), #68 (#48), #63 (#50), #78 (harness hotfix), #69 (device
+  verification, #1), #81 (decision polls, #80), #83 (harness hardening, #65),
+  #82 (activity commentary redaction, #70) and #43 (README landing page, #42).
 - [ ] CI on the merge commit in `main` is green.
 - [ ] Create the annotated tag `0.12.0` on that commit.
 - [ ] Publish the GitHub Release with the wheel, the sdist, the release notes,
@@ -54,14 +60,15 @@ a loopback Synapse, not a live seat. Admission includes up to one bridge poll
 interval. Maxima include the crash, restart and delayed-probe scenarios. These
 latencies depend on host load: they are higher than in the earlier `0f533e7`
 report (prompt injection and admission medians 124.4 and 315.4 ms), which ran on
-a less busy host. They are not a performance benchmark.
+a less busy host, and the maxima vary between runs. They are not a performance
+benchmark.
 
 | Boundary (harness) | Median | Max |
 |---|---|---|
-| Prompt: intake to injection | 266.5 ms | 5842.6 ms |
-| Prompt: intake to admission | 643.6 ms | 6060.7 ms |
-| Prompt: intake to 👍 | 433.8 ms | 1605.8 ms |
-| Steer: intake to admission | 1351.9 ms | 1873.6 ms |
+| Prompt: intake to injection | 270.1 ms | 9216.6 ms |
+| Prompt: intake to admission | 679.8 ms | 9451.8 ms |
+| Prompt: intake to 👍 | 395.2 ms | 1175.8 ms |
+| Steer: intake to admission | 818.0 ms | 1282.6 ms |
 
 ## 1. Record the approved candidate
 
