@@ -227,11 +227,9 @@ def test_queue_card_uses_real_steering_batch_without_waiting_container(
 
     card = queue_notice_text(harness.bridge.state.data["pending"]["advisor"])
 
-    assert card is not None
-    assert "0 Nachrichten warten" in card
-    assert "Aktiv (3 Eingaben)" in card
-    assert "first follow-up" not in card
-    assert "second follow-up" not in card
+    # The steered follow-ups belong to the active turn, so nothing waits and
+    # there is no queue card (#86).
+    assert card is None
 
 
 def test_queue_card_reveals_fallback_steering_batch_as_waiting(
@@ -275,10 +273,7 @@ def test_refused_steering_refreshes_queue_card_and_keeps_batch_active(tmp_path: 
     assert group["injection_phase"] == "injecting"
     assert group["last_injection_error"] == "pane refused"
     assert len(harness.queue_updates) == 1
-    card = queue_notice_text(harness.bridge.state.data["pending"]["advisor"])
-    assert card is not None
-    assert "0 Nachrichten warten" in card
-    assert "**Aktiv (3 Eingaben):**" in card
+    assert queue_notice_text(harness.bridge.state.data["pending"]["advisor"]) is None
 
 
 def test_queue_card_marks_busy_unstarted_request_as_next(tmp_path: Path):

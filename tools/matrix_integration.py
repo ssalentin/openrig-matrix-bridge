@@ -2041,10 +2041,43 @@ class IntegrationRun:
             ),
         )
 
+    async def queue_card_pinned(self, room_id: str) -> bool:
+        """Whether the bridge's queue card is pinned, in its state or the room."""
+        assert self.owner is not None
+        notice = self.bridge_state().get("queue_notices", {}).get(AGENT_KEY, {})
+        event_id = notice.get("event_id")
+        if not event_id:
+            return False
+        if notice.get("pinned"):
+            return True
+        pinned = await self.owner.client.room_get_state_event(
+            room_id,
+            "m.room.pinned_events",
+        )
+        if not isinstance(pinned, RoomGetStateEventResponse):
+            return False
+        return event_id in pinned.content.get("pinned", [])
+
     async def check_fifo(self, room_id: str) -> None:
         assert self.owner is not None
         owner = self.owner
         await owner.send_text(room_id, "hold first request")
+        await owner.sync_until(
+            lambda: any(
+                item.get("prompt") == "hold first request"
+                for item in json.loads(
+                    (self.fake_state / "fake-openrig.json").read_text()
+                )["prompts"]
+            ),
+            self.args.timeout,
+            description="first FIFO request to start",
+        )
+        # Issue #86: one active request and nothing waiting is no queue card.
+        await asyncio.sleep(1.0)
+        if await self.queue_card_pinned(room_id):
+            raise CheckFailure(
+                "queue card was pinned while one request was active and none waited"
+            )
         await owner.send_text(room_id, "second queued request")
         try:
             await owner.sync_until(
@@ -2068,6 +2101,8 @@ class IntegrationRun:
                 if "Warteschlange" in str(message["body"])
             ]
             raise CheckFailure(f"{exc}; every queue card seen: {cards}") from exc
+        if not await self.queue_card_pinned(room_id):
+            raise CheckFailure("queue card was not pinned while a request waited")
         await owner.sync_until(
             lambda: any(
                 "Fake integration answer: second queued request" in str(message["body"])
@@ -2083,6 +2118,8 @@ class IntegrationRun:
         )
         await asyncio.sleep(0.2)
         await owner.sync_once()
+        if await self.queue_card_pinned(room_id):
+            raise CheckFailure("queue card stayed pinned after the queue drained")
         first_answer = bridge_message_index(
             owner.timeline, "Fake integration answer: hold first request"
         )
@@ -2109,9 +2146,11 @@ class IntegrationRun:
             "fifo-queue-notice",
             "pass",
             (
-                "A second owner message arrived during a deliberately slow "
-                "first turn; Matrix showed one pinned queue card with the active "
-                "prompt followed by the ordered waiting preview, and the "
+                "While the first request was the only one, no queue card was "
+                "pinned (issue #86). A second owner message arrived during the "
+                "deliberately slow first turn; Matrix showed one pinned queue "
+                "card with the active prompt followed by the ordered waiting "
+                "preview, the card was unpinned once the queue drained, and the "
                 "fake OpenRig transport received the second prompt only after "
                 "recording completion of the first "
                 f"({first['completed_at']} < {second['sent_at']}). Between the "

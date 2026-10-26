@@ -13,9 +13,9 @@ reads the seat's own Codex transcript. It does not start another agent.
 
 The room topic and activity card tell you whether the agent is ready or
 working. Normal answers arrive in Matrix in a thread rooted at your prompt.
-Multiple prompts remain FIFO behind the active request, and one pinned queue
-card shows the active request and the waiting ones in order (see
-[The queue card](#the-queue-card)).
+Multiple prompts remain FIFO behind the active request. While at least one
+waits, one pinned queue card shows the active request and the waiting ones in
+order (see [The queue card](#the-queue-card)).
 
 The default user-facing status text is German:
 
@@ -61,8 +61,9 @@ Use the same owner account listed in `matrix.allowed_users`.
    Codex seat is idle.
 2. Send an ordinary message. The bot should show a typing indicator, the topic
    should move to `arbeitet`, and the final answer should appear in the thread.
-3. Send a second message while the first is active. It should remain queued and
-   the pinned queue card should count it.
+3. Send a second message while the first is active. No queue card is pinned
+   while only the first runs; the second should remain queued and a pinned
+   queue card should appear and count it.
 4. Attach a PNG, JPEG, GIF, or WebP image. The agent receives a local file path
    under the configured media inbox.
 5. Attach a PDF, archive, office document, audio file, or other generic file.
@@ -193,8 +194,10 @@ answer is delivered or an explicit failure is recorded.
 
 ## The queue card
 
-While an agent has work, one pinned card in its room shows what is running and
-what is waiting:
+While at least one request waits behind the active one, one pinned card in the
+agent's room shows what is running and what is waiting. A single active request
+with nothing waiting has no queue card: the activity card, room status and
+typing indicator already show it.
 
 ```text
 ⏳ Warteschlange: 2 Nachrichten warten · Priorität hoch.
@@ -204,16 +207,18 @@ Aktiv: Text · "Draft the release notes"
 2. Text · Thread · "Also check the changelog"
 ```
 
-- `Aktiv` is the request the agent is working on. With no one waiting the card
-  says so (`Keine weiteren Nachrichten warten.`) instead of listing anything.
-  A request the seat has not started yet, for example because the seat is busy
+- `Aktiv` is the request the agent is working on. A request the seat has not
+  started yet, for example because the seat is busy
   with other work, is shown as `Nächste Anfrage`, not as active.
 - Waiting requests are numbered in the order they will run. Each entry names its
   source (`Text`, `Datei`, `Bild`, `Audio`, `Galerie`, `Entscheidung`) and
   `Thread` when it belongs to a thread.
 - The card is edited in place, never re-posted, as requests arrive, start,
-  finish, fail or time out, and it is unpinned when the queue drains. After a
-  restart it is rebuilt from the saved queue, without a second card.
+  finish, fail or time out. It is unpinned as soon as nothing waits any more,
+  and pinned again in place when another request starts waiting. After a
+  restart it is rebuilt from the saved queue, without a second card, and a card
+  left pinned with nothing waiting is unpinned. Silent feedback such as a
+  reaction never counts as waiting.
 - A same-thread follow-up that is being steered into the active turn is counted
   in the `Aktiv (N Eingaben)` line instead of appearing as its own future turn.
   If steering falls back to a normal queued turn, it appears as a waiting entry.
@@ -314,8 +319,9 @@ With `openrig.queue_inbound_messages: true`:
 - The bridge claims the item when work starts and closes it after the Matrix
   answer is delivered.
 - Additional Matrix requests remain FIFO behind the active request.
-- A single pinned queue card shows the active request and ordered, sanitized
-  previews of the waiting ones (see [The queue card](#the-queue-card)).
+- While a request waits, a single pinned queue card shows the active request
+  and ordered, sanitized previews of the waiting ones (see
+  [The queue card](#the-queue-card)).
 
 Prompt and final-answer delivery persist an operation phase before remote
 effects. If a bridge exits after starting a prompt but before recording an
