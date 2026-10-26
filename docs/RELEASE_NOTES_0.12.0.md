@@ -106,8 +106,11 @@ merge.
 - Human decisions are serialized and deduplicated by qitem ID, preventing the
   automatic human-queue mirror and a manual `decision` command from posting the
   same brief and poll twice.
-- PLACEHOLDER (sensitive-span redaction in activity commentary, #70 / PR #82):
-  fill from the pull request when it merges.
+- Activity commentary keeps its progress text: each local path, token,
+  authorization header, cookie, URI credential or fenced output is replaced by a
+  marker such as `[lokaler Pfad]` or `[Token entfernt]`, instead of the whole
+  message becoming `[redacted unsafe commentary]` (#70). Queue-card previews use
+  the same redaction.
 
 ### Setup
 
@@ -244,6 +247,16 @@ startup, as described above.
   downloading or being transcribed; there is no separate timeout beyond the
   download and transcription failure paths.
 - Matrix device SAS and complete cross-signing remain tracked by Issue #1.
+- Commentary redaction (#70) does not recognise three ambiguous prose shapes:
+  an unquoted value of several words after a credential label
+  (`password: two words secret` replaces only `two`); a letter used as a
+  quotation mark (for example U+A71D), which is read as ordinary words; and a
+  quoted value more than one word after a bare "cookie"
+  (`cookie word more "…"`), since a header value starts right after the name,
+  a colon or an equals sign. Any real Cookie, Set-Cookie or Authorization
+  header, bearer or Git token, URI userinfo and fenced output is redacted.
+  These and the other boundaries in the [user guide](USER_GUIDE.md) are
+  tracked in Issue #84.
 - Commentary redaction does not recognise JSON-quoted secret values (for example
   `"password": "..."`) or PEM private-key bodies, so they appear unchanged in the
   activity card and in queue-card previews. This predates 0.12.0 and is tracked in

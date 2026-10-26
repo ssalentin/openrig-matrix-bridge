@@ -124,8 +124,11 @@ Items marked PLACEHOLDER are open pull requests and are filled in when they merg
 - Serialize decision publication and deduplicate by qitem ID, so the automatic
   human-queue mirror and a manual decision command cannot publish the same
   brief and poll twice (#80).
-- PLACEHOLDER (sensitive-span redaction in activity commentary, #70 / PR #82):
-  fill from the pull request when it merges.
+- Redact sensitive parts of activity commentary span by span instead of
+  replacing the whole message: local paths, tokens, authorization headers,
+  cookies, URI credentials and fenced output get category markers such as
+  `[lokaler Pfad]` and `[Token entfernt]`, and the progress text stays visible.
+  Queue-card previews use the same redaction (#70).
 
 ### Setup (#37)
 
