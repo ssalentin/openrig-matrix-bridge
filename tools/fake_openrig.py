@@ -485,7 +485,11 @@ def main() -> None:
         root, lambda state: state["calls"].append({"argv": args, "at": time.time()})
     )
     if command == "ps":
-        print_json([node_payload(root)])
+        # A large production fleet makes this read take seconds (#96); the
+        # inventory describes the moment the read started.
+        payload = [node_payload(root)]
+        time.sleep(float(os.environ.get("OPENRIG_FAKE_PS_DELAY", "0") or "0"))
+        print_json(payload)
     elif command == "send":
         handle_send(root, args[1:])
     elif command == "queue":

@@ -8,6 +8,7 @@ import asyncio
 import hashlib
 import io
 import json
+import math
 import os
 import re
 import shutil
@@ -92,6 +93,7 @@ CHECKS = (
     "fifo",
     "steering_modes",
     "steering_cross_thread",
+    "inventory_latency",
     "self_completed_qitems",
     "steering_fallback_and_restart",
     "reaction",
@@ -193,6 +195,25 @@ LATENCY_BOUNDARY = (
     "so maxima bound those paths rather than an idle seat; late_steer includes "
     "the fake transport's intentional materialization delay."
 )
+
+
+# Development aid: OPENRIG_LATENCY_RUNS lowers the run count for a quick look;
+# evidence runs use the issue's 20.
+INVENTORY_LATENCY_RUNS = int(os.environ.get("OPENRIG_LATENCY_RUNS", "20"))
+INVENTORY_LATENCY_DELAY_SECONDS = 3.4
+INVENTORY_LATENCY_HOLD_SECONDS = 4.0
+
+
+def latency_stats(values: list[float]) -> dict[str, float]:
+    """Median and nearest-rank p95 of a latency series, in milliseconds."""
+    ordered = sorted(values)
+    rank = max(1, math.ceil(0.95 * len(ordered)))
+    return {
+        "runs": len(ordered),
+        "median": round(statistics.median(ordered), 1),
+        "p95": round(ordered[rank - 1], 1),
+        "max": round(ordered[-1], 1),
+    }
 
 
 def summarize_latency(samples: object) -> dict[str, Any]:
@@ -1117,6 +1138,7 @@ class IntegrationRun:
         transcribe_seconds: float | None = None,
         commentary: str | None = None,
         self_complete_marker: str | None = None,
+        inventory_delay: float | None = None,
     ) -> None:
         if self.bridge is not None and self.bridge.poll() is None:
             raise CheckFailure("bridge is already running")
@@ -1142,6 +1164,10 @@ class IntegrationRun:
             environment["OPENRIG_FAKE_SELF_COMPLETE_MARKER"] = self_complete_marker
         else:
             environment.pop("OPENRIG_FAKE_SELF_COMPLETE_MARKER", None)
+        if inventory_delay is not None:
+            environment["OPENRIG_FAKE_PS_DELAY"] = str(inventory_delay)
+        else:
+            environment.pop("OPENRIG_FAKE_PS_DELAY", None)
         if hold_seconds is not None:
             environment["OPENRIG_FAKE_HOLD_SECONDS"] = str(hold_seconds)
         else:
@@ -2661,6 +2687,135 @@ class IntegrationRun:
                 "#87). Neither started its own turn; exactly one answer was "
                 "posted in the active request's thread naming all three source "
                 "event IDs, and all three qitems closed once."
+            ),
+        )
+
+    async def check_inventory_latency(self, room_id: str) -> None:
+        """Issue #96: intake-to-injection latency with a slow node inventory."""
+        assert self.owner is not None
+        owner = self.owner
+        fake_path = self.fake_state / "fake-openrig.json"
+        runs = INVENTORY_LATENCY_RUNS
+
+        def fake() -> dict[str, Any]:
+            return json.loads(fake_path.read_text(encoding="utf-8"))
+
+        def injection_ms(event_id: str, kind: str) -> float:
+            for sample in self.bridge_state().get("latency_samples", []):
+                if sample.get("event_id") == event_id and sample.get("kind") == kind:
+                    return (
+                        float(sample["injected_at"]) - float(sample["intake_at"])
+                    ) * 1000
+            raise CheckFailure(f"no {kind} latency sample for {event_id}")
+
+        def drained() -> None:
+            wait_for_json_state(
+                self.state_dir / "state.json",
+                lambda value: not value.get("pending", {}).get(AGENT_KEY),
+                self.args.timeout,
+                description="queue to drain between latency runs",
+            )
+
+        self.stop_bridge()
+        self.set_steering_mode("steer")
+        self.start_bridge(
+            hold_seconds=INVENTORY_LATENCY_HOLD_SECONDS,
+            inventory_delay=INVENTORY_LATENCY_DELAY_SECONDS,
+        )
+        await self.wait_for_steering_mode_ready(room_id)
+
+        idle: list[float] = []
+        for index in range(runs):
+            prompt = f"latency idle probe {index}"
+            event_id = await owner.send_text(room_id, prompt)
+            await owner.sync_until(
+                lambda expected=f"Fake integration answer: {prompt}": any(
+                    expected == str(message["body"])
+                    for message in owner.messages
+                ),
+                self.args.timeout,
+                description=f"answer for {prompt}",
+            )
+            drained()
+            idle.append(injection_ms(event_id, "prompt"))
+
+        steer: list[float] = []
+        after_turn: list[float] = []
+        follow_ids: list[str] = []
+        for index in range(runs):
+            root_prompt = f"hold first latency steer root {index}"
+            root = await owner.send_text(room_id, root_prompt)
+            self.wait_for_active_prompt(root, root_prompt)
+            follow = await owner.send_text(
+                room_id,
+                f"latency steer follow-up {index}",
+                relates_to={
+                    "rel_type": "m.thread",
+                    "event_id": root,
+                    "m.in_reply_to": {"event_id": root},
+                },
+            )
+            await owner.sync_until(
+                lambda expected=f"Fake integration answer: {root_prompt}": any(
+                    expected == str(message["body"])
+                    for message in owner.messages
+                ),
+                self.args.timeout,
+                description=f"answer for {root_prompt}",
+            )
+            drained()
+            follow_ids.append(follow)
+            steer.append(injection_ms(follow, "steer"))
+            if index:
+                # The previous run's turn has just finished: an idle seat again.
+                after_turn.append(injection_ms(root, "prompt"))
+
+        state = fake()
+        prompts = [str(item.get("prompt")) for item in state["prompts"]]
+        for index in range(runs):
+            if prompts.count(f"latency idle probe {index}") != 1:
+                raise CheckFailure(f"idle probe {index} was not prompted exactly once")
+            follow_id = follow_ids[index]
+            batches = [
+                item for item in state["steers"] if f"[{follow_id}]" in str(item["prompt"])
+            ]
+            if len(batches) != 1 or any(follow_id in prompt for prompt in prompts):
+                raise CheckFailure(f"steer follow-up {index} was not steered once")
+        summary = {
+            "idle": latency_stats(idle),
+            "after_turn": latency_stats(after_turn),
+            "steer": latency_stats(steer),
+        }
+        targets = {
+            "idle": (1500.0, 3000.0),
+            "after_turn": (1500.0, 3000.0),
+            "steer": (2000.0, 4000.0),
+        }
+        for kind, (median_limit, p95_limit) in targets.items():
+            stats = summary[kind]
+            if stats["median"] > median_limit or stats["p95"] > p95_limit:
+                raise CheckFailure(
+                    f"{kind} intake-to-injection latency over target with a "
+                    f"{INVENTORY_LATENCY_DELAY_SECONDS} s inventory: {summary}"
+                )
+        self.stop_bridge()
+        self.start_bridge()
+        await self.wait_for_steering_mode_ready(room_id)
+        self.record(
+            "inventory-latency",
+            "pass",
+            (
+                f"With a {INVENTORY_LATENCY_DELAY_SECONDS} s node inventory, as on "
+                f"the production fleet (issue #96), {runs} idle prompts had "
+                f"intake-to-injection median {summary['idle']['median']} ms and "
+                f"p95 {summary['idle']['p95']} ms (target 1500/3000), "
+                f"{runs - 1} prompts right after a finished turn median "
+                f"{summary['after_turn']['median']} ms and p95 "
+                f"{summary['after_turn']['p95']} ms (same target), and {runs} "
+                f"steered follow-ups median {summary['steer']['median']} ms and p95 "
+                f"{summary['steer']['p95']} ms (target 2000/4000); every source was "
+                "prompted or steered exactly once. Deterministic fake transport and "
+                "loopback Synapse, not a live seat."
             ),
         )
 

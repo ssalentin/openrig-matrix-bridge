@@ -38,6 +38,12 @@ openrig:
   # only on an instance whose owner wants that and accepts the risk.
   commentary_redaction_enabled: true
   poll_interval_seconds: 0.2
+  # `rig ps --nodes` can take seconds on a large fleet. One node inventory is
+  # shared for this long; a stale one up to inventory_max_age_seconds is used
+  # at once while it is refreshed in the background. With 0 and 0 a caller
+  # that finds no read in progress starts one; concurrent callers share it.
+  inventory_cache_seconds: 2.0
+  inventory_max_age_seconds: 10.0
   human_queue_poll_seconds: 2.0
   max_message_age_minutes: 60
   # Also bounds how long a steering batch may wait for transcript admission
