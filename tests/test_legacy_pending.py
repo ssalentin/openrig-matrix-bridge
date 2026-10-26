@@ -192,7 +192,10 @@ def test_other_terminal_qitem_removes_the_request_with_one_notice(
     assert pending(bridge) == []
     assert set(rig.kinds()) == {"show"}
     assert len(bridge.sent) == 1
-    assert state in bridge.sent[0]
+    # The owner learns the request was not handled, never the raw state (#91).
+    assert "in OpenRig beendet" in bridge.sent[0]
+    assert state not in bridge.sent[0]
+    assert "qitem-one" not in bridge.sent[0]
 
     reconcile(bridge)
 
@@ -230,7 +233,8 @@ def test_every_pending_request_is_reconciled_not_only_the_head(tmp_path):
     assert ("claim", "qitem-c") not in rig.calls
     assert rig.kinds().count("prompt") == 1
     assert len(bridge.sent) == 1
-    assert "canceled" in bridge.sent[0]
+    assert "in OpenRig beendet" in bridge.sent[0]
+    assert "canceled" not in bridge.sent[0]
 
 
 def test_reconciled_phase_is_saved_before_the_request_is_removed(tmp_path):

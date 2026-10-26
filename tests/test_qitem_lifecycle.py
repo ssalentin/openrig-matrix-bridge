@@ -93,6 +93,9 @@ def test_claim_failure_keeps_request_retryable():
         async def queue_claim(self, qitem_id, session):
             raise GatewayError("claim unavailable")
 
+        async def queue_show(self, qitem_id):
+            raise GatewayError("show unavailable")
+
     bridge.resolver = Resolver()
     bridge.gateway = Gateway()
 
@@ -138,6 +141,9 @@ def test_claim_command_error_retries_after_restart():
     class FailedGateway:
         async def queue_claim(self, qitem_id, session):
             raise GatewayError("claim command failed")
+
+        async def queue_show(self, qitem_id):
+            raise GatewayError("show unavailable")
 
     bridge.resolver = Resolver()
     bridge.gateway = FailedGateway()

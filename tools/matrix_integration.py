@@ -92,6 +92,7 @@ CHECKS = (
     "fifo",
     "steering_modes",
     "steering_cross_thread",
+    "self_completed_qitems",
     "steering_fallback_and_restart",
     "reaction",
     "acceptance_reaction",
@@ -1114,6 +1115,7 @@ class IntegrationRun:
         hold_seconds: float | None = None,
         transcribe_seconds: float | None = None,
         commentary: str | None = None,
+        self_complete_marker: str | None = None,
     ) -> None:
         if self.bridge is not None and self.bridge.poll() is None:
             raise CheckFailure("bridge is already running")
@@ -1135,6 +1137,10 @@ class IntegrationRun:
             environment["OPENRIG_FAKE_COMMENTARY"] = commentary
         else:
             environment.pop("OPENRIG_FAKE_COMMENTARY", None)
+        if self_complete_marker is not None:
+            environment["OPENRIG_FAKE_SELF_COMPLETE_MARKER"] = self_complete_marker
+        else:
+            environment.pop("OPENRIG_FAKE_SELF_COMPLETE_MARKER", None)
         if hold_seconds is not None:
             environment["OPENRIG_FAKE_HOLD_SECONDS"] = str(hold_seconds)
         else:
@@ -2590,6 +2596,130 @@ class IntegrationRun:
                 "#87). Neither started its own turn; exactly one answer was "
                 "posted in the active request's thread naming all three source "
                 "event IDs, and all three qitems closed once."
+            ),
+        )
+
+    async def check_self_completed_qitems(self, room_id: str) -> None:
+        """Issue #91: a qitem the seat closed itself is adopted silently."""
+        assert self.owner is not None
+        owner = self.owner
+        fake_path = self.fake_state / "fake-openrig.json"
+        marker = "seat-completed"
+        noise = (
+            "Queue-Item",
+            "qitem-",
+            "sind terminal",
+            "beansprucht",
+            "in OpenRig beendet",
+            "noch nicht an den Agenten",
+        )
+
+        self.stop_bridge()
+        self.set_steering_mode("steer")
+        self.start_bridge(
+            hold_seconds=STEERING_PROBE_HOLD_SECONDS,
+            self_complete_marker=marker,
+        )
+        await self.wait_for_steering_mode_ready(room_id)
+        await owner.sync_once()
+        first_message = len(owner.messages)
+        before = json.loads(fake_path.read_text(encoding="utf-8"))
+        prompts_before = len(before["prompts"])
+        steers_before = len(before["steers"])
+        completed_before = len(before.get("self_completed", []))
+
+        # Normal delivery: the seat closes the qitem before the bridge claims it.
+        await owner.send_text(room_id, f"{marker} top-level probe")
+        wait_for_json_state(
+            fake_path,
+            lambda value: len(value.get("self_completed", [])) > completed_before,
+            self.args.timeout,
+            description="seat to complete the first qitem itself",
+        )
+        await owner.send_text(room_id, "after the seat-closed probe")
+        await owner.sync_until(
+            lambda: any(
+                "Fake integration answer: after the seat-closed probe"
+                in str(message["body"])
+                for message in owner.messages
+            ),
+            self.args.timeout,
+            description="the next request to run after a seat-closed qitem",
+        )
+
+        # Steered delivery: a same-thread follow-up the seat closes itself.
+        root = await owner.send_text(room_id, "hold first seat-closed steer root")
+        self.wait_for_active_prompt(root, "hold first seat-closed steer root")
+        await owner.send_text(
+            room_id,
+            f"{marker} steer follow-up",
+            relates_to={
+                "rel_type": "m.thread",
+                "event_id": root,
+                "m.in_reply_to": {"event_id": root},
+            },
+        )
+        await owner.sync_until(
+            lambda: any(
+                "Fake integration answer: hold first seat-closed steer root"
+                in str(message["body"])
+                for message in owner.messages
+            ),
+            self.args.timeout,
+            description="the active turn's answer",
+        )
+        wait_for_json_state(
+            self.state_dir / "state.json",
+            lambda value: not value.get("pending", {}).get(AGENT_KEY),
+            self.args.timeout,
+            description="queue to drain after the seat-closed qitems",
+        )
+        await asyncio.sleep(1.0)
+        await owner.sync_once()
+
+        fake = json.loads(fake_path.read_text(encoding="utf-8"))
+        if len(fake.get("self_completed", [])) - completed_before != 2:
+            raise CheckFailure(
+                f"expected two seat-closed qitems: {fake.get('self_completed')}"
+            )
+        prompts = [item["prompt"] for item in fake["prompts"][prompts_before:]]
+        if prompts != [
+            "after the seat-closed probe",
+            "hold first seat-closed steer root",
+        ]:
+            raise CheckFailure(f"a seat-closed request was prompted: {prompts}")
+        if any(marker in item["prompt"] for item in fake["steers"][steers_before:]):
+            raise CheckFailure("a seat-closed follow-up was steered")
+        bridge_messages = [
+            str(message["body"])
+            for message in owner.messages[first_message:]
+            if message["sender"] == BRIDGE_USER
+        ]
+        leaked = [
+            body for body in bridge_messages if any(word in body for word in noise)
+        ]
+        if leaked:
+            raise CheckFailure(f"lifecycle noise reached Matrix: {leaked}")
+        answers = [
+            body
+            for body in bridge_messages
+            if body.startswith("Fake integration answer: ")
+        ]
+        if answers != [
+            "Fake integration answer: after the seat-closed probe",
+            "Fake integration answer: hold first seat-closed steer root",
+        ]:
+            raise CheckFailure(f"unexpected or duplicate answers: {answers}")
+        self.record(
+            "self-completed-qitems",
+            "pass",
+            (
+                "A fake seat closed two bridge-created qitems itself before the "
+                "bridge claimed them (issue #91): a top-level message and, in "
+                "steer mode, a same-thread follow-up during a slow turn. Neither "
+                "was prompted or steered, no bridge message carried qitem IDs, "
+                "states or lifecycle notices, the next request ran normally, and "
+                "each prompted request got exactly one answer."
             ),
         )
 

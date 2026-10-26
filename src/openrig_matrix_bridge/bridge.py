@@ -3112,6 +3112,13 @@ class MatrixBridge:
             try:
                 await self.gateway.queue_claim(qitem_id, agent.session)
             except (GatewayError, OSError):
+                # The seat may have claimed and closed the row itself (#91); a
+                # concurrent terminal transition is not a claim failure.
+                state = await self._inspect_qitem_state(qitem_id)
+                if state in TERMINAL_QITEM_PHASES:
+                    self._set_request_qitem_phase(request, qitem_id, state)
+                    self.state.save()
+                    return False
                 LOGGER.warning(
                     "could not claim Matrix qitem %s",
                     qitem_id,
@@ -3595,30 +3602,35 @@ class MatrixBridge:
             if self._request_qitem_phase(request, qitem_id)
             in TERMINAL_QITEM_PHASES
         }
-        request["terminal_error"] = (
-            "OpenRig batch ended before Matrix delivery: "
-            + ", ".join(
-                f"{qitem_id}={phase}"
-                for qitem_id, phase in terminal_phases.items()
+        if self._request_qitems_done(request):
+            # The seat took and closed every qitem itself (#91): that is the
+            # outcome, not a failure, so nothing is failed or posted.
+            request["terminal_error"] = "OpenRig qitems already completed by the seat"
+            request["externally_completed"] = True
+        else:
+            request["terminal_error"] = (
+                "OpenRig batch ended before Matrix delivery: "
+                + ", ".join(
+                    f"{qitem_id}={phase}"
+                    for qitem_id, phase in terminal_phases.items()
+                )
             )
-        )
-        if not await self._fail_inbound_qitem(
-            agent,
-            request,
-            request["terminal_error"],
+            if not await self._fail_inbound_qitem(
+                agent,
+                request,
+                request["terminal_error"],
+            ):
+                self.state.save()
+                return
+        if not request.get("externally_completed") and not request.get(
+            "failure_notice_event_id"
         ):
-            self.state.save()
-            return
-        qitem_ids = ", ".join(self._request_qitem_ids(request))
-        phase_summary = ", ".join(
-            f"{qitem_id}={self._request_qitem_phase(request, qitem_id)}"
-            for qitem_id in self._request_qitem_ids(request)
-        )
-        if not request.get("failure_notice_event_id"):
+            # Qitem IDs and states are internal; the owner only learns that
+            # the request was not handed to the agent.
             response = await self._send(
                 room_id,
-                f"OpenRig Queue-Item(s) {qitem_ids} sind terminal "
-                f"({phase_summary}). Die Anfrage wird nicht gesendet.",
+                "Diese Anfrage wurde in OpenRig beendet, bevor der Agent sie "
+                "erhalten hat, und wird nicht gesendet.",
                 self._reply_target(request),
                 tx_id=f"failure-{request.get('id') or request['event_id']}",
                 **self._delivery_kwargs(request),
@@ -3658,6 +3670,14 @@ class MatrixBridge:
             )
             if was_head and pending and start_next:
                 await self._start_request(agent, pending[0], room_id)
+
+    def _request_qitems_done(self, request: dict[str, Any]) -> bool:
+        """Whether every qitem of the request is done (closed by the seat)."""
+        qitem_ids = self._request_qitem_ids(request)
+        return bool(qitem_ids) and all(
+            self._request_qitem_phase(request, qitem_id) == "done"
+            for qitem_id in qitem_ids
+        )
 
     async def _abandon_if_terminal(
         self,
@@ -5340,10 +5360,19 @@ class MatrixBridge:
                             request.get("injection_attempted_at") or time.time()
                         )
                         request["prompt_turn_id"] = request["injection_turn_id"]
-                        if not await self._claim_inbound_qitem(agent, request):
+                        if not await self._claim_inbound_qitem(
+                            agent, request
+                        ) and not self._request_qitems_done(request):
+                            if self._request_terminal_qitem_phase(request):
+                                await self._abandon_terminal_qitem(
+                                    agent, request, room_id
+                                )
+                                return
                             raise QitemLifecycleError(
                                 "could not claim admitted steering qitems"
                             )
+                        # Qitems the seat already closed (#91) need no claim:
+                        # the batch is in the turn and its answer still posts.
                         request["prompt_phase"] = "sent"
                         request["externally_admitted"] = True
                         self.state.save()
@@ -5466,8 +5495,8 @@ class MatrixBridge:
             if not request.get("qitem_error_notified"):
                 response = await self._send(
                     room_id,
-                    "Das OpenRig Queue-Item konnte nicht beansprucht werden. "
-                    "Die Anfrage bleibt vorgemerkt und wird erneut versucht.",
+                    "Die Anfrage konnte noch nicht an den Agenten übergeben "
+                    "werden. Sie bleibt vorgemerkt und wird erneut versucht.",
                     self._reply_target(request),
                     tx_id=f"qitem-error-{request.get('id') or request['event_id']}",
                     **self._delivery_kwargs(request),

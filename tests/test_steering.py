@@ -916,9 +916,8 @@ def test_terminal_abandon_removes_only_current_legacy_request(
         "following legacy request"
     ]
     assert harness.qitem_states["$qitem-following"] == "in-progress"
-    assert sum(
-        "sind terminal" in text for text, _reply_to in harness.sent_answers
-    ) == 1
+    # A qitem the seat closed itself is adopted without any notice (#91).
+    assert harness.sent_answers == []
 
 
 def test_timeout_recovers_two_legacy_requests_without_ids(
@@ -1058,7 +1057,7 @@ def test_reconcile_fails_remaining_qitems_in_mixed_terminal_batch(
     }
     assert harness.bridge.state.data["pending"]["advisor"] == []
     assert sum(
-        "sind terminal" in text for text, _reply_to in harness.sent_answers
+        "in OpenRig beendet" in text for text, _reply_to in harness.sent_answers
     ) == 1
 
 
@@ -1095,7 +1094,7 @@ def test_live_fallback_claim_preserves_terminal_qitem_and_fails_sibling(
     }
     assert harness.bridge.state.data["pending"]["advisor"] == []
     assert sum(
-        "sind terminal" in text for text, _reply_to in harness.sent_answers
+        "in OpenRig beendet" in text for text, _reply_to in harness.sent_answers
     ) == 1
 
 
@@ -1147,7 +1146,7 @@ def test_finishing_reconciles_remote_failed_then_closes_sibling(
     assert harness.qitem_states["$qitem-three"] == "failed"
     assert harness.bridge.state.data["pending"]["advisor"] == []
     assert sum(
-        "sind terminal" in text for text, _reply_to in harness.sent_answers
+        "in OpenRig beendet" in text for text, _reply_to in harness.sent_answers
     ) == 1
 
 
@@ -1183,7 +1182,7 @@ def test_failing_reconciles_remote_canceled_then_closes_sibling(
     assert harness.qitem_states["$qitem-three"] == "failed"
     assert harness.bridge.state.data["pending"]["advisor"] == []
     assert sum(
-        "sind terminal" in text for text, _reply_to in harness.sent_answers
+        "in OpenRig beendet" in text for text, _reply_to in harness.sent_answers
     ) == 1
 
 
