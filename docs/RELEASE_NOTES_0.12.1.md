@@ -6,14 +6,18 @@ defect found in production on 0.12.0: the bridge pinned the queue card while
 one request was active and none waited. Everything else is as in
 [0.12.0](RELEASE_NOTES_0.12.0.md).
 
-PLACEHOLDER (#86 fix PR): the paragraph under "What changed" is filled from the
-pull request when it merges.
-
 ## What changed
 
-- PLACEHOLDER (#86 fix PR): no pinned queue card while one request is active and
-  none waits; the card is pinned when a request waits and unpinned when the last
-  waiting request starts or drains, and a restart removes a stale pinned card.
+- The queue card is pinned only while at least one request waits behind the
+  active one. With one active request and nothing waiting there is no card; the
+  activity card, room status and typing indicator show the active turn. When a
+  second request starts waiting, the card is edited or created and pinned in
+  place; while several wait it keeps the active request and the ordered waiting
+  previews; when the last waiting request starts or drains, it is unpinned. A
+  restart unpins a stale card that 0.12.0 left behind. Silent feedback (a
+  reaction) never counts as waiting and never creates a card. A request that
+  waits for a busy seat keeps its "Nächste Anfrage" card, and a steered
+  follow-up of the active turn does not count as waiting (#86).
 
 No configuration key, state file field or command changes. A 0.12.0 state
 directory is read as it is.
@@ -25,8 +29,12 @@ directory is read as it is.
 The proof of 0.12.0 stands unchanged
 ([release notes](RELEASE_NOTES_0.12.0.md#proven-and-not-proven)). The
 0.12.1 change is shown by unit tests and by the same Matrix integration
-harness: PLACEHOLDER (#86 fix PR): name the added tests and harness check when
-the fix merges. The retained report for the final candidate is
+harness: `tests/test_queue_card_zero_waiting.py` (one active and nothing waiting,
+unpin, the 0 to 1 to 0 to 1 waiting transitions edited in place, a restart with
+a stale pinned card, silent feedback, a steered follow-up, and the busy-seat
+control), and the `fifo-queue-notice` check, which now asserts no pinned card
+while the first request runs alone, a pinned card while the second waits, and
+no pinned card after the queue drains. The retained report for the final candidate is
 `final-0.12.1-integration-report.json`
 (PLACEHOLDER: committed once from the final locked runs).
 
