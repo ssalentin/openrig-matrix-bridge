@@ -708,6 +708,15 @@ def steering_batch_text(thread_root: str, entries: list[dict[str, Any]]) -> str:
     return "\n".join(lines)
 
 
+def _elapsed_ms(started: float) -> float:
+    return round((time.monotonic() - started) * 1000, 1)
+
+
+def _record_span(request: dict[str, Any], name: str, started: float) -> None:
+    """Keep the latest duration of one latency span on the request (#96)."""
+    request.setdefault("latency_spans", {})[name] = _elapsed_ms(started)
+
+
 def verification_decision(text: str) -> bool | None:
     normalized = text.strip().lower().rstrip(".!")
     if normalized in {"ja", "ja bitte", "bestätigen", "bestaetigen", "stimmt"}:
@@ -774,7 +783,12 @@ class MatrixBridge:
             parents=True, exist_ok=True, mode=0o700
         )
         self.state = StateStore(config.state_dir / "state.json")
-        self.resolver = OpenRigSessionResolver(config.rig_command, config.codex_home)
+        self.resolver = OpenRigSessionResolver(
+            config.rig_command,
+            config.codex_home,
+            cache_seconds=config.inventory_cache_seconds,
+            stale_seconds=config.inventory_max_age_seconds,
+        )
         self.gateway = OpenRigGateway(config.rig_command, config.sender_session)
         self.transcriber = Transcriber(config.transcription)
         self.locks = {key: asyncio.Lock() for key in config.agents}
@@ -2616,6 +2630,7 @@ class MatrixBridge:
             self.processed_events.add(event_id)
         self.state.data["processed_events"] = list(self.processed_events)[-2000:]
         qitem_ids: list[str] = []
+        create_started = time.monotonic()
         if queue_tracked:
             try:
                 for event_id, part_text in parts:
@@ -2675,6 +2690,9 @@ class MatrixBridge:
             "offset": None,
             "answer_text": None,
             "turn_attribution_required": True,
+            "latency_spans": {
+                "qitem_create_ms": _elapsed_ms(create_started),
+            },
         }
         if burst is not None:
             request["burst_id"] = burst["id"]
@@ -3053,6 +3071,7 @@ class MatrixBridge:
                     "intake_at": entry.get("intake_at"),
                     "injected_at": request.get("injected_at"),
                     "admitted_at": request.get("admitted_at"),
+                    "spans": dict(request.get("latency_spans") or {}),
                     "acknowledged_at": (
                         ack.get("acknowledged_at") if isinstance(ack, dict) else None
                     ),
@@ -3144,7 +3163,9 @@ class MatrixBridge:
             self._set_request_qitem_phase(request, qitem_id, "claiming")
             self.state.save()
             try:
+                claim_started = time.monotonic()
                 await self.gateway.queue_claim(qitem_id, agent.session)
+                _record_span(request, "qitem_claim_ms", claim_started)
             except (GatewayError, OSError):
                 # The seat may have claimed and closed the row itself (#91); a
                 # concurrent terminal transition is not a claim failure.
@@ -5243,13 +5264,19 @@ class MatrixBridge:
         if time.time() < float(group.get("injection_ready_at") or 0):
             return
         try:
-            ref = await asyncio.to_thread(self.resolver.resolve, agent.session)
+            ref = await self._resolve_agent(agent, group)
         except AgentSessionNotFound as exc:
             group["injection_phase"] = "fallback"
             group["last_injection_error"] = str(exc)
             self.state.save()
             return
-        if not ref.busy:
+        # An inventory read before the active prompt went in says nothing about
+        # that turn (#96): its "idle" is not a reason to fall back, and the
+        # transcript turn identity below decides. A read time that is unknown
+        # (0) keeps the plain rule.
+        observed_at = float(getattr(ref, "observed_at", 0.0) or 0.0)
+        predates_turn = 0 < observed_at < float(active.get("injected_at") or 0.0)
+        if not ref.busy and not predates_turn:
             group["injection_phase"] = "fallback"
             group["last_injection_error"] = "no active OpenRig turn"
             self.state.save()
@@ -5297,7 +5324,9 @@ class MatrixBridge:
         group["injection_attempted_at"] = time.time()
         self.state.save()
         try:
+            send_started = time.monotonic()
             await self.gateway.steer_prompt(ref, str(group["text"]))
+            _record_span(group, "pane_send_ms", send_started)
         except (AgentSessionNotFound, GatewayError, OSError) as exc:
             group["last_injection_error"] = str(exc)
             self.state.save()
@@ -5384,10 +5413,7 @@ class MatrixBridge:
         ref: AgentSessionRef | None = None,
     ) -> None:
         try:
-            ref = ref or await asyncio.to_thread(
-                self.resolver.resolve,
-                agent.session,
-            )
+            ref = ref or await self._resolve_agent(agent, request)
             if request.get("deferred_steering"):
                 injection_phase = str(request.get("injection_phase") or "")
                 if (
@@ -5499,7 +5525,7 @@ class MatrixBridge:
                             "fallback grace deadline"
                         )
                         self.state.save()
-            if ref.busy:
+            if self._seat_busy(agent, ref):
                 if request.get("prompt_phase") == "pending":
                     request["started_at"] = None
                     self.state.save()
@@ -5529,7 +5555,9 @@ class MatrixBridge:
                 )
             request["prompt_phase"] = "sending"
             self.state.save()
+            send_started = time.monotonic()
             await self.gateway.send_prompt(ref, request["text"])
+            _record_span(request, "pane_send_ms", send_started)
             self._crash_after_effect("prompt_send")
             request["prompt_phase"] = "sent"
             request["injected_at"] = time.time()
@@ -5605,12 +5633,62 @@ class MatrixBridge:
 
     async def _poll_answers_once(self) -> None:
         await self._recover_acceptance_reactions()
+        # One node inventory for every agent in this cycle (#96).
+        try:
+            refs: dict[str, AgentSessionRef] = await asyncio.to_thread(
+                self.resolver.resolve_many,
+                {agent.session for agent in self.config.agents.values()},
+            )
+        except AgentSessionNotFound:
+            refs = {}
         for agent in self.config.agents.values():
-            await self._poll_agent(agent)
+            await self._poll_agent(agent, refs)
             async with self.locks[agent.key]:
                 await self._sync_typing(agent)
 
-    async def _poll_agent(self, agent: AgentConfig) -> None:
+    def _note_turn_finished(self, agent: AgentConfig) -> None:
+        finished = self.__dict__.setdefault("_turn_finished_at", {})
+        finished[agent.key] = time.time()
+
+    def _seat_busy(self, agent: AgentConfig, ref: AgentSessionRef) -> bool:
+        """Whether the seat counts as busy for starting a request.
+
+        An inventory read before the bridge saw the agent's last turn finish
+        describes that turn (#96), so its "busy" no longer holds a new prompt.
+        A read time that is unknown (0) keeps the plain rule.
+        """
+        if not ref.busy:
+            return False
+        observed_at = float(getattr(ref, "observed_at", 0.0) or 0.0)
+        finished_at = self.__dict__.get("_turn_finished_at", {}).get(agent.key, 0.0)
+        return not 0 < observed_at < finished_at
+
+    async def _resolve_agent(
+        self,
+        agent: AgentConfig,
+        request: dict[str, Any] | None = None,
+        refs: dict[str, AgentSessionRef] | None = None,
+    ) -> AgentSessionRef:
+        """Resolve the agent's session off the event loop, or from `refs`."""
+        if refs is not None:
+            ref = refs.get(agent.session)
+            if ref is None:
+                raise AgentSessionNotFound(
+                    f"no live Codex session found for {agent.session}"
+                )
+            return ref
+        started = time.monotonic()
+        try:
+            return await asyncio.to_thread(self.resolver.resolve, agent.session)
+        finally:
+            if request is not None:
+                _record_span(request, "inventory_ms", started)
+
+    async def _poll_agent(
+        self,
+        agent: AgentConfig,
+        refs: dict[str, AgentSessionRef] | None = None,
+    ) -> None:
         async with self.locks[agent.key]:
             pending = self.state.data["pending"].get(agent.key, [])
             if not pending:
@@ -5622,10 +5700,7 @@ class MatrixBridge:
                         0,
                     )
                 try:
-                    ref = await asyncio.to_thread(
-                        self.resolver.resolve,
-                        agent.session,
-                    )
+                    ref = await self._resolve_agent(agent, refs=refs)
                 except AgentSessionNotFound:
                     return
                 self.state.data["transcripts"][agent.key] = {
@@ -5707,13 +5782,13 @@ class MatrixBridge:
                             )
             if request.get("started_at") is None:
                 try:
-                    ref = self.resolver.resolve(agent.session)
+                    ref = await self._resolve_agent(agent, request, refs)
                 except AgentSessionNotFound:
                     return
                 deferred_injection = request.get("deferred_steering") and request.get(
                     "injection_phase"
                 ) in {"injecting", "injected_unconfirmed", "admitted"}
-                if ref.busy and not deferred_injection:
+                if self._seat_busy(agent, ref) and not deferred_injection:
                     return
                 await self._start_request(
                     agent,
@@ -5848,6 +5923,7 @@ class MatrixBridge:
                 ]
                 if answers:
                     request["answer_text"] = answers[-1]
+                    self._note_turn_finished(agent)
                 self.state.save()
 
             if request.get("answer_text") is None:

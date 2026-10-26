@@ -107,6 +107,8 @@ class BridgeConfig:
     reaction_feedback_enabled: bool
     mirror_commentary: bool
     commentary_redaction_enabled: bool
+    inventory_cache_seconds: float
+    inventory_max_age_seconds: float
     poll_interval_seconds: float
     human_queue_poll_seconds: float
     max_message_age_minutes: int
@@ -250,6 +252,17 @@ def load_config(path: str | Path) -> BridgeConfig:
     )
     reaction_feedback_enabled = bool(transport.get("reaction_feedback_enabled", True))
     mirror_commentary = bool(transport.get("mirror_commentary", True))
+    inventory_cache_seconds = float(transport.get("inventory_cache_seconds", 2.0))
+    if not 0 <= inventory_cache_seconds <= 10:
+        raise ConfigError(
+            "openrig.inventory_cache_seconds must be between 0 and 10 seconds"
+        )
+    inventory_max_age_seconds = float(transport.get("inventory_max_age_seconds", 10.0))
+    if not inventory_cache_seconds <= inventory_max_age_seconds <= 60:
+        raise ConfigError(
+            "openrig.inventory_max_age_seconds must be at least "
+            "openrig.inventory_cache_seconds and at most 60 seconds"
+        )
     commentary_redaction_enabled = transport.get("commentary_redaction_enabled", True)
     if not isinstance(commentary_redaction_enabled, bool):
         raise ConfigError("openrig.commentary_redaction_enabled must be true or false")
@@ -303,6 +316,8 @@ def load_config(path: str | Path) -> BridgeConfig:
         reaction_feedback_enabled=reaction_feedback_enabled,
         mirror_commentary=mirror_commentary,
         commentary_redaction_enabled=commentary_redaction_enabled,
+        inventory_cache_seconds=inventory_cache_seconds,
+        inventory_max_age_seconds=inventory_max_age_seconds,
         poll_interval_seconds=poll_interval,
         human_queue_poll_seconds=human_queue_poll,
         max_message_age_minutes=max_age,

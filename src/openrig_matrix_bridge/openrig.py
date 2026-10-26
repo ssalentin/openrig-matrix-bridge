@@ -4,6 +4,9 @@ import asyncio
 import json
 import os
 import subprocess
+import threading
+import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -17,6 +20,8 @@ class AgentSessionRef:
     busy: bool
     activity_state: str = "unknown"
     needs_input_count: int = 0
+    # Wall-clock start of the inventory read this state comes from (#96).
+    observed_at: float = 0.0
 
 
 class AgentSessionNotFound(RuntimeError):
@@ -27,15 +32,96 @@ class GatewayError(RuntimeError):
     pass
 
 
+class _InventoryRead:
+    """One `rig ps` read that concurrent callers wait for together."""
+
+    def __init__(self) -> None:
+        self.done = threading.Event()
+        self.observed_at = 0.0
+        self.entries: list[dict[str, Any]] | None = None
+        self.error: AgentSessionNotFound | None = None
+
+
 class OpenRigSessionResolver:
-    def __init__(self, command: str, codex_home: Path, timeout: int = 30):
+    """Resolve live Codex sessions from the OpenRig node inventory.
+
+    `rig ps --nodes -A --json --full` takes seconds on a large fleet (#96), so
+    one parsed inventory is reused for `cache_seconds` and concurrent readers
+    share a single in-flight read. An older inventory, up to `stale_seconds`,
+    is still returned at once while one background read refreshes it; past
+    that bound readers wait for the read. A failed read is never cached. With
+    both bounds at 0 every read asks OpenRig, as before.
+    """
+
+    def __init__(
+        self,
+        command: str,
+        codex_home: Path,
+        timeout: int = 30,
+        *,
+        cache_seconds: float = 0.0,
+        stale_seconds: float = 0.0,
+        clock: Callable[[], float] = time.monotonic,
+    ):
         self.command = command
         self.codex_home = codex_home
         self.timeout = timeout
+        self.cache_seconds = cache_seconds
+        self.stale_seconds = max(stale_seconds, cache_seconds)
+        self._clock = clock
+        self._lock = threading.Lock()
+        self._entries: list[dict[str, Any]] | None = None
+        self._read_at = 0.0
+        self._observed_at = 0.0
+        self._in_flight: _InventoryRead | None = None
 
-    def resolve_many(
-        self, sessions: set[str] | None = None
-    ) -> dict[str, AgentSessionRef]:
+    def _inventory(self) -> list[dict[str, Any]]:
+        with self._lock:
+            age = (
+                self._clock() - self._read_at
+                if self._entries is not None
+                else float("inf")
+            )
+            if age < self.cache_seconds:
+                return self._entries  # type: ignore[return-value]
+            read = self._in_flight
+            owner = read is None
+            if owner:
+                read = self._in_flight = _InventoryRead()
+            if age < self.stale_seconds:
+                if owner:
+                    threading.Thread(
+                        target=self._complete_read,
+                        args=(read,),
+                        name="openrig-inventory",
+                        daemon=True,
+                    ).start()
+                return self._entries  # type: ignore[return-value]
+        assert read is not None
+        if owner:
+            self._complete_read(read)
+        elif not read.done.wait(self.timeout + 5):
+            raise AgentSessionNotFound("OpenRig node inventory read timed out")
+        if read.error is not None:
+            raise read.error
+        assert read.entries is not None
+        return read.entries
+
+    def _complete_read(self, read: _InventoryRead) -> None:
+        read.observed_at = time.time()
+        try:
+            read.entries = self._read_inventory()
+        except AgentSessionNotFound as exc:
+            read.error = exc
+        with self._lock:
+            self._in_flight = None
+            if read.entries is not None:
+                self._entries = read.entries
+                self._read_at = self._clock()
+                self._observed_at = read.observed_at
+        read.done.set()
+
+    def _read_inventory(self) -> list[dict[str, Any]]:
         command = [self.command, "ps", "--nodes", "-A", "--json", "--full"]
         try:
             result = subprocess.run(
@@ -60,11 +146,15 @@ class OpenRigSessionResolver:
         entries = payload.get("entries", []) if isinstance(payload, dict) else payload
         if not isinstance(entries, list):
             raise AgentSessionNotFound("OpenRig node inventory has an invalid shape")
+        return [entry for entry in entries if isinstance(entry, dict)]
 
+    def resolve_many(
+        self, sessions: set[str] | None = None
+    ) -> dict[str, AgentSessionRef]:
         resolved: dict[str, AgentSessionRef] = {}
+        entries = self._inventory()
+        observed_at = self._observed_at
         for entry in entries:
-            if not isinstance(entry, dict):
-                continue
             session_name = entry.get("canonicalSessionName")
             if not isinstance(session_name, str):
                 continue
@@ -88,6 +178,7 @@ class OpenRigSessionResolver:
                 busy=activity_state == "working",
                 activity_state=activity_state,
                 needs_input_count=needs_input_count,
+                observed_at=observed_at,
             )
         return resolved
 
