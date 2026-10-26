@@ -103,7 +103,7 @@ pane admission after the fallback deadline is a documented residual risk.
 You need OpenRig with at least one running Codex seat, Python 3.11+, and a
 dedicated Matrix bot account. A Matrix homeserver must be reachable over HTTPS.
 
-1. Install the published 0.12.1 wheel, or install this checkout:
+1. Install the published 0.12.2 wheel, or install this checkout:
 
    ```bash
    python3 -m venv .venv
@@ -176,8 +176,8 @@ automatic trust on every Matrix device.
 | [Brand identity](docs/branding/README.md) | Relay assets, usage, previews, and licensing |
 
 For release history and operations, see the
-[0.12.1 release notes](docs/RELEASE_NOTES_0.12.1.md) and
-[0.12.1 install and rollback runbook](docs/RUNBOOK_0.12.1.md).
+[0.12.2 release notes](docs/RELEASE_NOTES_0.12.2.md) and
+[0.12.2 install and rollback runbook](docs/RUNBOOK_0.12.2.md).
 
 ## Security at a glance
 
@@ -195,7 +195,7 @@ Read the full [security model](docs/SECURITY.md) before exposing a bridge.
 
 ## Project status
 
-The current package version is **0.12.1**. The committed integration harness
+The current package version is **0.12.2**. The committed integration harness
 starts a disposable, digest-pinned Synapse and exercises real Matrix protocol
 paths through a deterministic OpenRig transport. It does not prove a live Codex
 model turn, real voice recognition quality, or human device verification.

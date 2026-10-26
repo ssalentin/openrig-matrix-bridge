@@ -1,5 +1,31 @@
 # Changelog
 
+## 0.12.2
+
+Patch release for two findings from production on 0.12.1: internal queue item
+lifecycle text posted into a room
+([Issue #91](https://github.com/ssalentin/openrig-matrix-bridge/issues/91)) and
+no way to show commentary unredacted on one installation
+([Issue #93](https://github.com/ssalentin/openrig-matrix-bridge/issues/93)).
+
+- A qitem the agent seat completed itself before the bridge claimed it is
+  treated as handled: the bridge re-reads the item after a rejected claim, sends
+  no prompt, fails nothing and posts nothing, and the next request starts. A
+  canceled, denied or failed item ends the request with one short notice that
+  names no queue item ID or state; a claim that fails for another reason, or an
+  item that cannot be read, keeps the request pending and retries with a notice
+  without internal jargon. A request that combines several items of which the
+  seat completed only some is not split: the remaining items are failed with the
+  same short notice. An admitted steering batch whose items the seat closed keeps
+  its answer (#91).
+- Add `openrig.commentary_redaction_enabled` (default `true`). With `false`, one
+  bridge instance shows activity-card commentary and queue-card previews without
+  redacting paths, cookies, credentials, connection URIs, fenced output or long
+  secrets; whitespace normalization, the length bounds and Matrix HTML escaping
+  still apply, and the bridge logs one warning at startup. Encryption, the
+  access token and other secret handling are unchanged. A value that is not a
+  boolean is a configuration error (#93).
+
 ## 0.12.1
 
 Patch release for two production findings on 0.12.0: the pinned queue card
