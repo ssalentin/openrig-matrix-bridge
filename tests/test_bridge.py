@@ -1695,9 +1695,14 @@ def test_queue_notice_is_one_updated_and_pinned_message():
         display_name="Advisor",
         session="advisor-lead@kernel",
     )
+    pending = [
+        queued_request("$one", "Active prompt"),
+        queued_request("$two", "First waiting", started_at=None),
+        queued_request("$three", "Second waiting", started_at=None),
+    ]
     bridge.state = SimpleNamespace(
         save=lambda: None,
-        data={"queue_notices": {}},
+        data={"pending": {"advisor": pending}, "queue_notices": {}},
     )
     sent = []
     edited = []
@@ -1724,7 +1729,9 @@ def test_queue_notice_is_one_updated_and_pinned_message():
     bridge._remove_pinned = remove_pinned
 
     asyncio.run(bridge._update_queue_notice(agent, "!advisor", 2))
+    pending.append(queued_request("$four", "Third waiting", started_at=None))
     asyncio.run(bridge._update_queue_notice(agent, "!advisor", 3))
+    del pending[1:]
     asyncio.run(bridge._update_queue_notice(agent, "!advisor", 0))
 
     assert len(sent) == 1
@@ -1846,9 +1853,10 @@ def test_queue_notice_edits_in_place_reconstructs_and_unpins_on_drain():
     asyncio.run(bridge._update_queue_notice(agent, "!advisor", 0))
 
     assert sent == []
-    assert [event_id for event_id, _text in edited] == ["$queue", "$queue"]
-    assert "Waiting prompt" not in edited[1][1]
-    assert "Keine weiteren Nachrichten warten" in edited[1][1]
+    # Once only the active request is left the card is unpinned, not edited
+    # into a zero-waiting card (#86).
+    assert [event_id for event_id, _text in edited] == ["$queue"]
+    assert "Waiting prompt" in edited[0][1]
     assert unpinned == [["$queue"]]
 
 
@@ -1894,7 +1902,8 @@ def test_queue_notice_traces_steered_batch_without_waiting_duplicate():
     group["id"] = "steering-group"
     group["deferred_steering"] = True
     active["steering_group_id"] = group["id"]
-    pending = [active, group]
+    waiting = queued_request("$other", "Unrelated waiting", started_at=None)
+    pending = [active, group, waiting]
     bridge, sent, _edited, _pinned, _unpinned = queue_notice_bridge(pending)
     agent = AgentConfig(
         key="advisor",
@@ -1905,11 +1914,11 @@ def test_queue_notice_traces_steered_batch_without_waiting_duplicate():
     asyncio.run(bridge._update_queue_notice(agent, "!advisor", 0))
 
     card = sent[0]
-    assert "0 Nachrichten warten" in card
+    assert "1 Nachricht wartet" in card
     assert "Aktiv (3 Eingaben)" in card
-    assert "1. " not in card
+    assert '1. Text · "Unrelated waiting"' in card
+    assert "2. " not in card
     assert "Steering batch fallback container" not in card
-    assert "Keine weiteren Nachrichten warten" in card
 
 
 def test_queue_notice_hides_queued_silent_reaction():
@@ -1932,9 +1941,8 @@ def test_queue_notice_hides_queued_silent_reaction():
 
     asyncio.run(bridge._update_queue_notice(agent, "!advisor", 1))
 
-    card = sent[0]
-    assert "0 Nachrichten warten" in card
-    assert "Matrix-Reaktion" not in card
+    # Silent feedback is not waiting work, so no card appears (#86).
+    assert sent == []
 
 
 def test_queue_notice_restart_does_not_resurface_silent_reaction():
@@ -2063,8 +2071,10 @@ def test_queue_advance_refreshes_card_after_next_request_starts():
         )
     )
 
+    # The refresh runs once; with only the started request left there is no
+    # card to show (#86).
     assert len(cards) == 1
-    assert '**Aktiv:** Text · "Waiting request"' in cards[-1]
+    assert cards[-1] is None
 
 
 def test_failed_answer_recovery_updates_card_and_starts_next():
@@ -2124,7 +2134,7 @@ def test_failed_answer_recovery_updates_card_and_starts_next():
 
     assert started == [waiting["id"]]
     assert len(cards) == 1
-    assert '**Aktiv:** Text · "Waiting after failure"' in cards[-1]
+    assert cards[-1] is None
     assert sent == [
         (
             (

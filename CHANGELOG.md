@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.12.1
+
+- The queue card is pinned only while at least one request waits behind the
+  active one. A single active request no longer leaves a pinned
+  "0 Nachrichten warten" card; the card is unpinned as soon as nothing waits,
+  pinned again in place when a request starts waiting, and a stale card is
+  unpinned at startup. Silent feedback never creates a card
+  ([#86](https://github.com/ssalentin/openrig-matrix-bridge/issues/86)).
+
 ## 0.12.0
 
 Release tracker: [Issue #46](https://github.com/ssalentin/openrig-matrix-bridge/issues/46).

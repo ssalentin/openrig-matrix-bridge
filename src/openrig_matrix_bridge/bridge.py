@@ -415,6 +415,10 @@ def queue_notice_text(
         if active is not None
         else visible
     )
+    if active is not None and not waiting:
+        # The card shows work waiting behind the active turn (#86); the active
+        # turn alone already has the activity card, room status and typing.
+        return None
     noun = "Nachricht wartet" if len(waiting) == 1 else "Nachrichten warten"
     source_ids = []
     if active is not None:
@@ -443,13 +447,10 @@ def queue_notice_text(
     else:
         lines.append(f"**Nächste Anfrage:** {queue_request_entry(first)}")
         waiting = waiting[1:]
-    if waiting:
-        lines.extend(
-            f"{position}. {queue_request_entry(request)}"
-            for position, request in enumerate(waiting, start=1)
-        )
-    elif active is not None:
-        lines.append("Keine weiteren Nachrichten warten.")
+    lines.extend(
+        f"{position}. {queue_request_entry(request)}"
+        for position, request in enumerate(waiting, start=1)
+    )
     return "\n".join(lines)
 
 
@@ -1428,16 +1429,12 @@ class MatrixBridge:
         room_id: str,
         waiting: int,
     ) -> None:
+        # The card is derived from the visible pending requests; ``waiting`` is
+        # the callers' raw count, which includes silent feedback (#86).
         notices = self.state.data.setdefault("queue_notices", {})
         notice = notices.setdefault(agent.key, {})
         event_id = notice.get("event_id")
         pending = self.state.data.get("pending", {}).get(agent.key, [])
-        if not pending and waiting <= 0:
-            if event_id and notice.get("pinned", True):
-                await self._remove_pinned(room_id, [str(event_id)])
-                notice["pinned"] = False
-                self.state.save()
-            return
         priority = str(
             getattr(
                 getattr(self, "config", None),
@@ -1454,14 +1451,6 @@ class MatrixBridge:
             pending,
             priority_label=priority_label,
         )
-        if text is None and waiting > 0:
-            noun = "Nachricht wartet" if waiting == 1 else "Nachrichten warten"
-            text = (
-                f"⏳ **Warteschlange:** {waiting} {noun} · "
-                f"Priorität {priority_label}.\n\n"
-                "Diese Hinweiskarte wird aktualisiert und nach dem "
-                "Abarbeiten entpinnt."
-            )
         if text is None:
             if event_id and notice.get("pinned", True):
                 await self._remove_pinned(room_id, [str(event_id)])
