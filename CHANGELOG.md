@@ -3,7 +3,8 @@
 ## 0.12.0
 
 Release tracker: [Issue #46](https://github.com/ssalentin/openrig-matrix-bridge/issues/46).
-Items marked PLACEHOLDER are open pull requests and are filled in when they merge.
+All pull requests of the milestone are merged. The one item marked PLACEHOLDER, the
+retained final integration report, is filled in by a follow-up commit.
 
 ### Steering and follow-ups (#4, #36)
 

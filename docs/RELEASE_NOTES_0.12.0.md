@@ -7,8 +7,8 @@ photo after it) to the agent as one context, shows the queue in a pinned card,
 makes agent file delivery explicit and verifiable, and makes setup and the
 upgrade from 0.10 safer.
 
-Items marked PLACEHOLDER are open pull requests and are filled in when they
-merge.
+All pull requests of the milestone are merged. The one item marked PLACEHOLDER,
+the retained final integration report, is filled in by a follow-up commit.
 
 ## What changed
 
