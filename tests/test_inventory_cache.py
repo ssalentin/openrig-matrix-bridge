@@ -472,3 +472,86 @@ def test_a_busy_inventory_read_after_the_finished_turn_still_holds_a_prompt(
     harness = finished_turn_harness(tmp_path / "fresh", 1.0)
 
     assert [prompt[1] for prompt in harness.prompts] == ["first request"]
+
+
+def test_an_unexpected_read_error_does_not_wedge_later_reads(
+    tmp_path, monkeypatch, transcript
+):
+    inventory = Inventory(transcript)
+    calls = {"count": 0}
+
+    def flaky(*args, **kwargs):
+        calls["count"] += 1
+        if calls["count"] == 1:
+            raise UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid start byte")
+        return inventory(*args, **kwargs)
+
+    rig = resolver(tmp_path, monkeypatch, flaky)
+
+    with pytest.raises(AgentSessionNotFound):
+        rig.resolve("advisor-lead@kernel")
+    assert rig._in_flight is None
+    assert rig.resolve("advisor-lead@kernel").session_id
+
+
+def test_one_poll_cycle_shares_its_snapshot_even_without_a_cache(
+    tmp_path, monkeypatch, transcript
+):
+    inventory = Inventory(
+        transcript, sessions=tuple(agent.session for agent in AGENTS.values())
+    )
+    bridge = polling_bridge(tmp_path, monkeypatch, inventory)
+    bridge.resolver.cache_seconds = 0.0
+    bridge.resolver.stale_seconds = 0.0
+
+    asyncio.run(bridge._poll_answers_once())
+
+    assert inventory.calls == 1
+
+
+def test_freshness_counts_from_the_start_of_the_read(tmp_path, monkeypatch, transcript):
+    clock = Clock()
+    inventory = Inventory(transcript)
+
+    def slow(*args, **kwargs):
+        clock.now += 1.5  # the read itself takes 1.5 s
+        return inventory(*args, **kwargs)
+
+    rig = resolver(tmp_path, monkeypatch, slow, clock=clock)
+    rig.resolve("advisor-lead@kernel")
+    clock.now += 0.6  # 2.1 s after the read started, 0.6 s after it ended
+
+    rig.resolve("advisor-lead@kernel")
+
+    assert inventory.calls == 2
+
+
+def test_an_unexpected_error_in_a_background_read_does_not_wedge_later_reads(
+    tmp_path, monkeypatch, transcript
+):
+    inventory = Inventory(transcript)
+    clock = Clock()
+    calls = {"count": 0}
+
+    def flaky(*args, **kwargs):
+        calls["count"] += 1
+        if calls["count"] == 2:
+            raise UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid start byte")
+        return inventory(*args, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", flaky)
+    rig = OpenRigSessionResolver(
+        "/opt/rig", tmp_path, cache_seconds=2.0, stale_seconds=10.0, clock=clock
+    )
+    rig.resolve("advisor-lead@kernel")
+    clock.now += 5.0
+
+    assert rig.resolve("advisor-lead@kernel").session_id  # stale, refresh fails
+    deadline = time.monotonic() + 5
+    while rig._in_flight is not None and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert rig._in_flight is None
+    clock.now += 6.0
+
+    assert rig.resolve("advisor-lead@kernel").session_id
+    assert calls["count"] == 3

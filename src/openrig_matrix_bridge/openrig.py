@@ -75,15 +75,17 @@ class OpenRigSessionResolver:
         self._observed_at = 0.0
         self._in_flight: _InventoryRead | None = None
 
-    def _inventory(self) -> list[dict[str, Any]]:
+    def _inventory(self) -> tuple[list[dict[str, Any]], float]:
+        """The inventory entries and the wall-clock start of their read."""
         with self._lock:
+            # Freshness counts from the start of the read the entries describe.
             age = (
                 self._clock() - self._read_at
                 if self._entries is not None
                 else float("inf")
             )
             if age < self.cache_seconds:
-                return self._entries  # type: ignore[return-value]
+                return self._entries, self._observed_at  # type: ignore[return-value]
             read = self._in_flight
             owner = read is None
             if owner:
@@ -96,7 +98,7 @@ class OpenRigSessionResolver:
                         name="openrig-inventory",
                         daemon=True,
                     ).start()
-                return self._entries  # type: ignore[return-value]
+                return self._entries, self._observed_at  # type: ignore[return-value]
         assert read is not None
         if owner:
             self._complete_read(read)
@@ -105,21 +107,26 @@ class OpenRigSessionResolver:
         if read.error is not None:
             raise read.error
         assert read.entries is not None
-        return read.entries
+        return read.entries, read.observed_at
 
     def _complete_read(self, read: _InventoryRead) -> None:
+        """Run one read; whatever happens, release its waiters."""
+        started = self._clock()
         read.observed_at = time.time()
         try:
             read.entries = self._read_inventory()
         except AgentSessionNotFound as exc:
             read.error = exc
-        with self._lock:
-            self._in_flight = None
-            if read.entries is not None:
-                self._entries = read.entries
-                self._read_at = self._clock()
-                self._observed_at = read.observed_at
-        read.done.set()
+        except Exception as exc:  # noqa: BLE001 - a read must never wedge readers
+            read.error = AgentSessionNotFound(f"OpenRig node inventory failed: {exc}")
+        finally:
+            with self._lock:
+                self._in_flight = None
+                if read.entries is not None:
+                    self._entries = read.entries
+                    self._read_at = started
+                    self._observed_at = read.observed_at
+            read.done.set()
 
     def _read_inventory(self) -> list[dict[str, Any]]:
         command = [self.command, "ps", "--nodes", "-A", "--json", "--full"]
@@ -152,8 +159,7 @@ class OpenRigSessionResolver:
         self, sessions: set[str] | None = None
     ) -> dict[str, AgentSessionRef]:
         resolved: dict[str, AgentSessionRef] = {}
-        entries = self._inventory()
-        observed_at = self._observed_at
+        entries, observed_at = self._inventory()
         for entry in entries:
             session_name = entry.get("canonicalSessionName")
             if not isinstance(session_name, str):

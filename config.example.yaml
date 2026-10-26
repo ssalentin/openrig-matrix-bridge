@@ -40,7 +40,8 @@ openrig:
   poll_interval_seconds: 0.2
   # `rig ps --nodes` can take seconds on a large fleet. One node inventory is
   # shared for this long; a stale one up to inventory_max_age_seconds is used
-  # at once while it is refreshed in the background. 0 and 0 read every time.
+  # at once while it is refreshed in the background. With 0 and 0 a caller
+  # that finds no read in progress starts one; concurrent callers share it.
   inventory_cache_seconds: 2.0
   inventory_max_age_seconds: 10.0
   human_queue_poll_seconds: 2.0

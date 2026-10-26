@@ -212,13 +212,15 @@ concurrent readers share one read. An older inventory, up to
 `openrig.inventory_max_age_seconds` (10.0 by default), is still used at once
 while one background read refreshes it, so a new message does not wait for the
 inventory; past that bound the bridge waits for a fresh read. A failed read is
-never reused. The busy/idle state the bridge acts on can therefore be up to
-`inventory_max_age_seconds` old; input that reaches a seat that has just become
+never reused. Freshness counts from the start of the read. The busy/idle state
+the bridge acts on can therefore be up to `inventory_max_age_seconds` old, plus
+the duration of the poll cycle that shares one inventory across all agents; input that reaches a seat that has just become
 busy is queued by Codex and adopted as described above. An inventory read before
 the active prompt went in does not count as proof that the seat is idle: a
 follow-up is then steered once the transcript shows the active turn, instead of
 falling back to its own turn. Set both values to 0 to
-read the inventory every time. Each request also records how long the inventory,
+start a new read for every caller that finds no read in progress; callers that
+arrive during a read still share it. Each request also records how long the inventory,
 qitem create, qitem claim and pane send took (`spans` in the `latency_samples`
 of `state.json`).
 
