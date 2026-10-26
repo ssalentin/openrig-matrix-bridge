@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.12.1
+
+Patch release for two production findings on 0.12.0: the pinned queue card
+([Issue #86](https://github.com/ssalentin/openrig-matrix-bridge/issues/86)) and
+the reach of `steer` mode
+([Issue #87](https://github.com/ssalentin/openrig-matrix-bridge/issues/87)).
+
+- The queue card is pinned only while at least one request waits behind the
+  active one. A single active request no longer leaves a pinned
+  "0 Nachrichten warten" card; the card is unpinned as soon as nothing waits,
+  pinned again in place when a request starts waiting, and a stale card is
+  unpinned at startup. Silent feedback never creates a card (#86).
+- In `steer` mode every short owner text message in an agent room is steered
+  into the active turn, whether it is a top-level message, a reply in the
+  active thread or a reply in another thread; the batch marks where each
+  message came from and gets one answer in the active request's thread with
+  all source event IDs. `queue` and `auto` are unchanged (#87).
+
 ## 0.12.0
 
 Release tracker: [Issue #46](https://github.com/ssalentin/openrig-matrix-bridge/issues/46).
