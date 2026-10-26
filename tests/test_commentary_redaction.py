@@ -233,9 +233,49 @@ def test_folded_or_next_line_header_values_are_replaced(text):
 
 
 def test_cookie_words_that_are_not_headers_are_kept():
-    text = "Cookie-Banner geprüft, cookies bleiben aus."
+    text = "Cookie-Banner geprüft, cookies bleiben aus. Lösche das Cookie."
 
     assert sanitize_activity_summary(text) == text
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        (
+            "The cookie banner now remembers the choice. Tests pass.",
+            f"The {COOKIE} now remembers the choice. Tests pass.",
+        ),
+        (
+            "Das Cookie wird nach dem Login gesetzt, danach läuft der Test weiter.",
+            f"Das {COOKIE} nach dem Login gesetzt, danach läuft der Test weiter.",
+        ),
+        (
+            "Ich lösche den cookie und starte den Browser neu.",
+            f"Ich lösche den {COOKIE} starte den Browser neu.",
+        ),
+    ],
+)
+def test_bare_cookie_word_in_prose_replaces_only_the_next_token(text, expected):
+    assert sanitize_activity_summary(text) == expected
+
+
+@pytest.mark.parametrize(
+    ("text", "secret", "expected"),
+    [
+        ("Cookie abcdef1234567890 gesetzt", "abcdef1234567890", f"{COOKIE} gesetzt"),
+        ("cookie s%3AabcSECRET.sig gesetzt", "abcSECRET", f"{COOKIE} gesetzt"),
+        ("Cookie abcdefghij gesetzt", "abcdefghij", f"{COOKIE} gesetzt"),
+        ("Cookie BARE; sid=SECRETSID1 gesetzt", "SECRETSID1", COOKIE),
+        ("Cookie BARE sid=SECRETSID1 gesetzt", "SECRETSID1", COOKIE),
+        ("Cookie BARE;\n  sid=SECRETSID1 gesetzt", "SECRETSID1", COOKIE),
+        ('Cookie "abc SECRETSID1" gesetzt', "SECRETSID1", COOKIE),
+    ],
+)
+def test_bare_cookie_value_after_a_space_is_still_replaced(text, secret, expected):
+    summary = sanitize_activity_summary(text)
+
+    assert secret not in summary
+    assert summary == expected
 
 
 def test_password_containing_at_sign_is_fully_replaced():

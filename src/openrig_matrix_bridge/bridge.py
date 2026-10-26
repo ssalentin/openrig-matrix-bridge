@@ -151,8 +151,14 @@ AUTHORIZATION_SCHEME = re.compile(
     r"(?i)\b(?:proxy-)?authorization\b[^\r\n]{0,40}"
     r"\b(?:basic|bearer|digest|token)\s+" + _TO_LINE_END
 )
+# "Cookie:" / "Cookie=", or "Cookie " followed by a quote or by any "=" later
+# on the line or its folded continuation, is a header and is redacted to the
+# end of the line. A bare "Cookie <word>" may be prose ("the cookie banner"),
+# so only the next token is replaced: a lone cookie value never survives, and
+# the sentence stays.
 COOKIE_VALUE = re.compile(
-    r"(?i)\b(?:set-)?cookie\b(?:\s*[:=]\s*|\s+)" + _TO_LINE_END
+    r"(?i)\b(?:set-)?cookie\b(?:"
+    r"(?:\s*[:=]\s*|\s+(?=(?:[^\r\n]|\r?\n[ \t])*=|[\"']))" + _TO_LINE_END + r"|\s+\S+)"
 )
 BARE_TOKEN = re.compile(
     r"(?i)\b(?:"
