@@ -4534,17 +4534,24 @@ class MatrixBridge:
             "image",
             encrypted=isinstance(event, RoomEncryptedImage),
         )
-        await self._send_to_event(
-            room.room_id,
-            "Bild empfangen, lade und entschlüssele …",
-            event,
-        )
+        if self._transfer_notices_enabled():
+            await self._send_to_event(
+                room.room_id,
+                "Bild empfangen, lade und entschlüssele …",
+                event,
+            )
         await self._store_image(
             agent,
             room.room_id,
             event,
             encrypted=isinstance(event, RoomEncryptedImage),
         )
+
+    def _transfer_notices_enabled(self) -> bool:
+        """Whether successful media transfers are announced (#95); failures
+        are always reported."""
+        media = getattr(getattr(self, "config", None), "media", None)
+        return bool(getattr(media, "transfer_notices_enabled", True))
 
     def _intake_media(
         self,
@@ -4659,11 +4666,12 @@ class MatrixBridge:
 
         caption = str(event.body or "").strip()
         caption_line = f"\nBildunterschrift: {caption}" if caption else ""
-        await self._send_to_event(
-            room_id,
-            f"Bild gespeichert als `{stored.name}`.",
-            event,
-        )
+        if self._transfer_notices_enabled():
+            await self._send_to_event(
+                room_id,
+                f"Bild gespeichert als `{stored.name}`.",
+                event,
+            )
         await self._enqueue_prompt(
             agent,
             SimpleNamespace(room_id=room_id),
@@ -4713,11 +4721,12 @@ class MatrixBridge:
 
         encrypted = isinstance(event, (RoomEncryptedAudio, RoomEncryptedFile))
         self._intake_media(agent, room.room_id, event, "file", encrypted=encrypted)
-        await self._send_to_event(
-            room.room_id,
-            "Datei empfangen, lade und entschlüssele …",
-            event,
-        )
+        if self._transfer_notices_enabled():
+            await self._send_to_event(
+                room.room_id,
+                "Datei empfangen, lade und entschlüssele …",
+                event,
+            )
         await self._store_file(agent, room.room_id, event, encrypted=encrypted)
 
     async def _store_file(
@@ -4799,11 +4808,12 @@ class MatrixBridge:
             )
             return
 
-        await self._send_to_event(
-            room_id,
-            f"Datei gespeichert als `{stored.name}`.",
-            event,
-        )
+        if self._transfer_notices_enabled():
+            await self._send_to_event(
+                room_id,
+                f"Datei gespeichert als `{stored.name}`.",
+                event,
+            )
         await self._enqueue_prompt(
             agent,
             SimpleNamespace(room_id=room_id),
@@ -4950,13 +4960,14 @@ class MatrixBridge:
             "phase": "downloading",
         }
         self.state.save()
-        await self._send_to_event(
-            room.room_id,
-            f"Galerie mit {elements_dative(len(items))} empfangen, "
-            "lade und entschlüssele …",
-            event,
-            tx_id=f"gallery-received-{event.event_id}",
-        )
+        if self._transfer_notices_enabled():
+            await self._send_to_event(
+                room.room_id,
+                f"Galerie mit {elements_dative(len(items))} empfangen, "
+                "lade und entschlüssele …",
+                event,
+                tx_id=f"gallery-received-{event.event_id}",
+            )
         await self._process_gallery(event.event_id)
 
     async def _resume_galleries(self) -> None:
@@ -5028,20 +5039,23 @@ class MatrixBridge:
                 "Galerie: kein Element ließ sich speichern",
             )
             return
-        await self._send_to_event(
-            room_id,
-            "\n".join(
-                [
-                    (
-                        f"Galerie gespeichert: {len(stored)} von "
-                        f"{elements_dative(len(items))}."
-                    ),
-                    *failures,
-                ]
-            ),
-            event,
-            tx_id=f"gallery-stored-{event_id}",
-        )
+        # Without transfer notices a fully stored gallery posts nothing; the
+        # names of items that failed are still worth a message.
+        if failures or self._transfer_notices_enabled():
+            await self._send_to_event(
+                room_id,
+                "\n".join(
+                    [
+                        (
+                            f"Galerie gespeichert: {len(stored)} von "
+                            f"{elements_dative(len(items))}."
+                        ),
+                        *failures,
+                    ]
+                ),
+                event,
+                tx_id=f"gallery-stored-{event_id}",
+            )
         # Saved together with the enqueued request by _enqueue_prompt.
         record["phase"] = "enqueued"
         await self._enqueue_prompt(

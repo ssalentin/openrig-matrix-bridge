@@ -441,6 +441,15 @@ bridge retries it after restart.
 - `media.max_image_bytes` and `media.max_file_bytes` independently cap inbound
   and outbound image and generic-file content. Both default to 26,214,400 bytes
   (25 MiB), and rejection messages include the effective limit.
+- `media.transfer_notices_enabled` (default `true`) controls the status
+  messages for a successful transfer: `Bild empfangen, lade und entschlüssele …`
+  / `Bild gespeichert als …`, the same for files, and `Galerie mit … empfangen …`
+  / `Galerie gespeichert: …` for galleries. With `false` the bridge posts none
+  of them, also after a restart resumes a transfer. The media is still stored
+  and sent to the agent exactly as before, with its path, size and SHA-256.
+  Failures are always reported: unsupported or oversized media, a failed
+  download or decryption, media that is too old, an empty gallery, and a gallery
+  in which some items could not be stored (its message names them).
 - Inbound bytes are written atomically under
   `<media.inbox_dir>/<agent-key>/<generated-id>.<safe-suffix>`. The original
   filename is preserved as prompt metadata but is never used as a filesystem
