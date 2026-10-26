@@ -53,6 +53,15 @@ than header, cookie or URI credential syntax:
 
 The replaced text never reaches the room. Commentary is cut to 600 characters.
 
+`openrig.commentary_redaction_enabled` (default `true`) controls this
+redaction per bridge instance. With `false`, activity-card commentary and
+queue-card previews show paths, cookies, credentials, connection URIs, fenced
+output and long secrets as the agent wrote them; whitespace is still normalized,
+the length limits still apply and Matrix HTML is still escaped. The bridge logs
+one warning at startup while the opt-out is active. Turn it off only when the
+room's members may see everything the agent writes; see
+[Security](SECURITY.md#security-and-e2ee).
+
 ## Verify the product manually
 
 Use the same owner account listed in `matrix.allowed_users`.

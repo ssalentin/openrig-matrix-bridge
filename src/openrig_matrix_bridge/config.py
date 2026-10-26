@@ -105,6 +105,7 @@ class BridgeConfig:
     acceptance_reaction_enabled: bool
     reaction_feedback_enabled: bool
     mirror_commentary: bool
+    commentary_redaction_enabled: bool
     poll_interval_seconds: float
     human_queue_poll_seconds: float
     max_message_age_minutes: int
@@ -248,6 +249,9 @@ def load_config(path: str | Path) -> BridgeConfig:
     )
     reaction_feedback_enabled = bool(transport.get("reaction_feedback_enabled", True))
     mirror_commentary = bool(transport.get("mirror_commentary", True))
+    commentary_redaction_enabled = transport.get("commentary_redaction_enabled", True)
+    if not isinstance(commentary_redaction_enabled, bool):
+        raise ConfigError("openrig.commentary_redaction_enabled must be true or false")
     poll_interval = float(transport.get("poll_interval_seconds", 0.2))
     human_queue_poll = float(transport.get("human_queue_poll_seconds", 2.0))
     max_age = int(transport.get("max_message_age_minutes", 60))
@@ -294,6 +298,7 @@ def load_config(path: str | Path) -> BridgeConfig:
         acceptance_reaction_enabled=acceptance_reaction_enabled,
         reaction_feedback_enabled=reaction_feedback_enabled,
         mirror_commentary=mirror_commentary,
+        commentary_redaction_enabled=commentary_redaction_enabled,
         poll_interval_seconds=poll_interval,
         human_queue_poll_seconds=human_queue_poll,
         max_message_age_minutes=max_age,

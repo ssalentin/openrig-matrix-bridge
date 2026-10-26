@@ -32,6 +32,11 @@ openrig:
   acceptance_reaction_enabled: false
   reaction_feedback_enabled: true
   mirror_commentary: true
+  # Safe default true: activity-card commentary and queue previews hide paths,
+  # cookies, credentials, connection URIs, fenced output and long secrets.
+  # false posts them unredacted to the room (one warning at startup); set it
+  # only on an instance whose owner wants that and accepts the risk.
+  commentary_redaction_enabled: true
   poll_interval_seconds: 0.2
   human_queue_poll_seconds: 2.0
   max_message_age_minutes: 60

@@ -240,16 +240,18 @@ def _redaction_slot(category: str, match: re.Match[str]) -> str:
     return slot
 
 
-def sanitize_activity_summary(text: str) -> str:
+def sanitize_activity_summary(text: str, *, redact: bool = True) -> str:
     """Replace each sensitive span with a category marker; keep the rest.
 
     Fenced output, credentials, tokens, cookies and local paths are redacted
     span by span, so safe progress text stays readable and no matched byte
-    survives. Whitespace is normalized and the result is bounded.
+    survives. Whitespace is normalized and the result is bounded. With
+    `redact=False` (openrig.commentary_redaction_enabled: false, #93) only the
+    normalization and the bound apply.
     """
     # NUL is reserved for the placeholders below.
     summary = text.replace("\x00", " ")
-    for pattern, category in REDACTION_PATTERNS:
+    for pattern, category in REDACTION_PATTERNS if redact else ():
         summary = pattern.sub(
             lambda match, category=category: _redaction_slot(category, match),
             summary,
@@ -307,20 +309,24 @@ QUEUE_GALLERY_ITEM_LINE = re.compile(r"^\d+\. \".*\"", re.MULTILINE)
 QUEUE_RELATED_PART_LINE = re.compile(r"^Teil \d+ · ([^·\n]+?) · ", re.MULTILINE)
 
 
-def queue_preview(text: object, limit: int = 96) -> str:
-    return bounded_summary(sanitize_activity_summary(str(text or "")), limit)
+def queue_preview(text: object, limit: int = 96, *, redact: bool = True) -> str:
+    return bounded_summary(
+        sanitize_activity_summary(str(text or ""), redact=redact), limit
+    )
 
 
-def queue_related_preview(text: str) -> str | None:
+def queue_related_preview(text: str, *, redact: bool = True) -> str | None:
     """Summarize a related-context prompt by its parts, never its paths or IDs."""
     kinds = QUEUE_RELATED_PART_LINE.findall(text)
     if not kinds:
         return None
     count = f"{len(kinds)} {'Teil' if len(kinds) == 1 else 'Teile'}"
-    return queue_preview(f"{count} · " + ", ".join(kind.strip() for kind in kinds))
+    return queue_preview(
+        f"{count} · " + ", ".join(kind.strip() for kind in kinds), redact=redact
+    )
 
 
-def queue_request_preview(request: dict[str, Any]) -> str:
+def queue_request_preview(request: dict[str, Any], *, redact: bool = True) -> str:
     """Return a safe one-line description of what a queued request contains.
 
     File, image and gallery prompts embed local inbox paths for the agent, so their
@@ -334,21 +340,21 @@ def queue_request_preview(request: dict[str, Any]) -> str:
         match = QUEUE_FILENAME_LINE.search(text)
         if match:
             try:
-                return queue_preview(json.loads(match.group(1)))
+                return queue_preview(json.loads(match.group(1)), redact=redact)
             except ValueError:
                 pass
         return ""
     if label == "image":
-        return queue_preview(caption)
+        return queue_preview(caption, redact=redact)
     if label == "related":
-        return queue_related_preview(text) or ""
+        return queue_related_preview(text, redact=redact) or ""
     if label == "gallery":
         count = len(QUEUE_GALLERY_ITEM_LINE.findall(text))
         parts = [f"{count} {'Datei' if count == 1 else 'Dateien'}"] if count else []
         if caption:
             parts.append(caption)
-        return queue_preview(" · ".join(parts))
-    return queue_preview(text)
+        return queue_preview(" · ".join(parts), redact=redact)
+    return queue_preview(text, redact=redact)
 
 
 def queue_request_context(request: dict[str, Any]) -> str:
@@ -361,7 +367,7 @@ def queue_request_context(request: dict[str, Any]) -> str:
     return source
 
 
-def queue_request_entry(request: dict[str, Any]) -> str:
+def queue_request_entry(request: dict[str, Any], *, redact: bool = True) -> str:
     steering_entries = request.get("steering_entries")
     if isinstance(steering_entries, list) and steering_entries:
         texts = [
@@ -370,10 +376,13 @@ def queue_request_entry(request: dict[str, Any]) -> str:
             if isinstance(entry, dict)
         ]
         preview = queue_preview(
-            "; ".join(queue_related_preview(text) or text for text in texts)
+            "; ".join(
+                queue_related_preview(text, redact=redact) or text for text in texts
+            ),
+            redact=redact,
         )
     else:
-        preview = queue_request_preview(request)
+        preview = queue_request_preview(request, redact=redact)
     context = queue_request_context(request)
     return f'{context} · "{preview}"' if preview else context
 
@@ -382,6 +391,7 @@ def queue_notice_text(
     pending: list[dict[str, Any]],
     *,
     priority_label: str = "hoch",
+    redact: bool = True,
 ) -> str | None:
     visible = [
         request
@@ -443,12 +453,16 @@ def queue_notice_text(
         "",
     ]
     if active is not None:
-        lines.append(f"**{active_label}:** {queue_request_entry(active)}")
+        lines.append(
+            f"**{active_label}:** {queue_request_entry(active, redact=redact)}"
+        )
     else:
-        lines.append(f"**Nächste Anfrage:** {queue_request_entry(first)}")
+        lines.append(
+            f"**Nächste Anfrage:** {queue_request_entry(first, redact=redact)}"
+        )
         waiting = waiting[1:]
     lines.extend(
-        f"{position}. {queue_request_entry(request)}"
+        f"{position}. {queue_request_entry(request, redact=redact)}"
         for position, request in enumerate(waiting, start=1)
     )
     return "\n".join(lines)
@@ -835,7 +849,26 @@ class MatrixBridge:
             self._on_verification, (KeyVerificationEvent,)
         )
 
+    def _commentary_redaction_enabled(self) -> bool:
+        return bool(
+            getattr(
+                getattr(self, "config", None),
+                "commentary_redaction_enabled",
+                True,
+            )
+        )
+
+    def _warn_if_commentary_redaction_disabled(self) -> None:
+        if not self._commentary_redaction_enabled():
+            LOGGER.warning(
+                "openrig.commentary_redaction_enabled is false: activity-card "
+                "commentary and queue previews are posted to Matrix without "
+                "redacting paths, cookies, credentials, connection URIs, fenced "
+                "output or long secrets"
+            )
+
     async def run(self) -> None:
+        self._warn_if_commentary_redaction_disabled()
         await self._initial_sync()
         await self._recover_verifications()
         self._load_room_index()
@@ -1471,6 +1504,7 @@ class MatrixBridge:
         text = queue_notice_text(
             pending,
             priority_label=priority_label,
+            redact=self._commentary_redaction_enabled(),
         )
         if text is None:
             if event_id and notice.get("pinned", True):
@@ -5756,7 +5790,8 @@ class MatrixBridge:
                     ]
                     if pending_commentary:
                         request["commentary_summary"] = sanitize_activity_summary(
-                            pending_commentary[-1][1]
+                            pending_commentary[-1][1],
+                            redact=self._commentary_redaction_enabled(),
                         )
                     response = await self._deliver_activity_card(room_id, request)
                     if response is not True and not isinstance(

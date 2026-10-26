@@ -1478,9 +1478,6 @@ class IntegrationRun:
         )
         if not any(expected in card for card in cards):
             raise CheckFailure(f"activity card lost the safe commentary: {cards}")
-        self.stop_bridge()
-        self.start_bridge()
-        await self.wait_for_steering_mode_ready(room_id)
         self.record(
             "commentary-redaction",
             "pass",
@@ -1489,6 +1486,55 @@ class IntegrationRun:
                 "reached the room's activity card as the full progress text with "
                 "each path replaced by [lokaler Pfad]; no bridge message carried "
                 "the path bytes (issue #70)."
+            ),
+        )
+
+        # Issue #93: the same commentary with the per-instance opt-out.
+        warning = "openrig.commentary_redaction_enabled is false"
+        self.stop_bridge()
+        self.set_openrig_options(commentary_redaction_enabled=False)
+        log_before = self.log_path.read_text(encoding="utf-8", errors="replace")
+        self.start_bridge(commentary=ADVISOR_COMMENTARY)
+        await self.wait_for_steering_mode_ready(room_id)
+        before = len(owner.messages)
+        prompt = "commentary opt-out probe"
+        await owner.send_text(room_id, prompt)
+        await owner.sync_until(
+            lambda: any(
+                message["sender"] == BRIDGE_USER
+                and f"Fake integration answer: {prompt}" in str(message["body"])
+                for message in owner.messages[before:]
+            ),
+            self.args.timeout,
+            description="answer for the commentary opt-out probe",
+        )
+        await asyncio.sleep(0.5)
+        await owner.sync_once()
+        cards = [
+            str(message["body"])
+            for message in owner.messages[before:]
+            if message["sender"] == BRIDGE_USER
+            and "**Aktivität:**" in str(message["body"])
+        ]
+        if not any(ADVISOR_COMMENTARY in card for card in cards):
+            raise CheckFailure(f"opt-out card did not show the raw commentary: {cards}")
+        log_after = self.log_path.read_text(encoding="utf-8", errors="replace")
+        warnings = log_after[len(log_before) :].count(warning)
+        if warnings != 1:
+            raise CheckFailure(f"expected one opt-out startup warning, saw {warnings}")
+        self.stop_bridge()
+        self.set_openrig_options(commentary_redaction_enabled=None)
+        self.start_bridge()
+        await self.wait_for_steering_mode_ready(room_id)
+        self.record(
+            "commentary-redaction-opt-out",
+            "pass",
+            (
+                "With openrig.commentary_redaction_enabled: false the same "
+                "advisor-style commentary reached the activity card unredacted, "
+                "with both /root/.openrig paths, and the bridge logged exactly one "
+                "startup warning; the default instance above redacted it "
+                "(issue #93)."
             ),
         )
 
