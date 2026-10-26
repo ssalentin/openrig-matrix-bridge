@@ -351,7 +351,8 @@ posts an error and does not send the prompt. A rejected claim is checked with
 `rig queue show` first: an item the seat completed is handled as above, and an
 item that was canceled, denied or failed ends the request with one short notice
 that it was not handed to the agent (queue item IDs and states stay in the
-logs). If the claim fails for another reason or the item cannot be read, the
+logs). If the seat completed only some items of a combined request, the request
+is not split: the remaining items are failed and the same notice is posted. If the claim fails for another reason or the item cannot be read, the
 request remains pending with `qitem_phase: claiming` and retries without falsely
 appearing active. If finish or fail-close fails, the request remains locally pending and
 startup reconciles the qitem with `rig queue show` before retrying or removing

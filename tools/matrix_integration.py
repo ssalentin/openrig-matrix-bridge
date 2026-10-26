@@ -4969,11 +4969,27 @@ class IntegrationRun:
         ]
         state_path.write_text(json.dumps(state), encoding="utf-8")
 
-        def notices() -> list[str]:
+        await owner.sync_once()
+        first_message = len(owner.messages)
+
+        def bridge_bodies() -> list[str]:
             return [
                 str(message["body"])
-                for message in owner.messages
-                if "qitem-legacy" in str(message["body"])
+                for message in owner.messages[first_message:]
+                if message["sender"] == BRIDGE_USER
+            ]
+
+        def notices() -> list[str]:
+            # Since #91 the notice names neither qitem IDs nor raw states.
+            return [
+                body for body in bridge_bodies() if "in OpenRig beendet" in body
+            ]
+
+        def leaked() -> list[str]:
+            return [
+                body
+                for body in bridge_bodies()
+                if "qitem-legacy" in body or "canceled" in body
             ]
 
         def untouched() -> bool:
@@ -4993,7 +5009,7 @@ class IntegrationRun:
             description="0.10 pending requests reconciled",
         )
         await owner.sync_until(
-            lambda: any("canceled" in body for body in notices()),
+            lambda: bool(notices()),
             self.args.timeout,
             description="one notice for the canceled legacy qitem",
         )
@@ -5008,8 +5024,10 @@ class IntegrationRun:
             await owner.sync_once()
             await asyncio.sleep(0.2)
         seen = notices()
-        if len(seen) != 1 or "canceled" not in seen[0]:
+        if len(seen) != 1:
             raise CheckFailure(f"expected exactly one canceled-qitem notice: {seen}")
+        if leaked():
+            raise CheckFailure(f"qitem IDs or states reached Matrix: {leaked()}")
         if not untouched() or self.bridge_state()["pending"].get(AGENT_KEY):
             raise CheckFailure("a second restart changed the reconciled state")
         self.record(
@@ -5022,7 +5040,8 @@ class IntegrationRun:
                 "one of them referencing an event Synapse rejects) were reconciled "
                 "against OpenRig at startup: the queue drained without a claim, a "
                 "prompt or any qitem update, the done requests left no message, the "
-                "deliverable canceled one produced exactly one factual notice, the "
+                "deliverable canceled one produced exactly one notice without qitem "
+                "IDs or states (issue #91), the "
                 "undeliverable one was dropped without a retry loop, and a second "
                 "restart changed nothing."
             ),

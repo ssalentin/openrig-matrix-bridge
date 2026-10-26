@@ -224,3 +224,22 @@ def test_admitted_steering_batch_closed_by_the_seat_keeps_its_answer(
     assert not any(word in text for text in texts for word in LIFECYCLE_WORDS)
     assert [prompt[1] for prompt in harness.prompts] == ["root request"]
     assert harness.bridge.state.data["pending"]["advisor"] == []
+
+
+def test_partly_seat_completed_group_fails_the_rest_with_one_short_notice():
+    # Decision on purpose (#91 review F2): the request is not split; the part
+    # the seat did not handle is failed and the owner gets one ID-free notice.
+    group = queued("group", "two follow-ups", "qitem-a")
+    group["qitem_ids"] = ["qitem-a", "qitem-b"]
+    group["qitem_phases"] = {"qitem-a": "pending", "qitem-b": "pending"}
+    gateway = SeatGateway({"qitem-a": "done"})
+    bridge, agent = started_bridge([group], gateway)
+
+    asyncio.run(MatrixBridge._start_request(bridge, agent, group, ROOM))
+
+    assert gateway.prompts == []
+    assert gateway.failed == ["qitem-b"]
+    assert bridge.state.data["pending"]["advisor"] == []
+    texts = visible_texts(bridge)
+    assert len(texts) == 1
+    assert "qitem-" not in texts[0] and "done" not in texts[0]
