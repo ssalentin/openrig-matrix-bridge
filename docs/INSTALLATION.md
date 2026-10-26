@@ -20,7 +20,7 @@ The bot access token belongs in an environment variable or secret manager.
 Never put it in this repository, a public issue, or a chat message.
 
 If you already have OpenRig and a Matrix account, you do not need to edit the
-configuration by hand. Install the 0.12.0 wheel, expose the bot token as
+configuration by hand. Install the 0.12.1 wheel, expose the bot token as
 `MATRIX_ACCESS_TOKEN`, and run `setup`. Setup discovers the live Codex seats,
 writes the private configuration, installs the Relay profile, and registers
 the owner binding.
@@ -58,7 +58,7 @@ to an issue. If the variable is absent, stop and tell me how to expose it to the
 process safely.
 
 Then:
-1. Create or reuse a virtual environment and install the 0.12.0 wheel from the
+1. Create or reuse a virtual environment and install the 0.12.1 wheel from the
    GitHub Release, or install the package from the checkout when evaluating
    the repository.
 2. Verify the Matrix token with the homeserver `whoami` endpoint without
@@ -148,9 +148,9 @@ token from your shell when the evaluation is finished:
 unset MATRIX_ACCESS_TOKEN MATRIX_HOMESERVER
 ```
 
-## Install 0.12.0 or this checkout
+## Install 0.12.1 or this checkout
 
-Download the wheel and source distribution attached to the GitHub 0.12.0
+Download the wheel and source distribution attached to the GitHub 0.12.1
 release, verify their published SHA-256 digests, and install the wheel in a
 virtual environment:
 
@@ -158,7 +158,7 @@ virtual environment:
 python3 -m venv .venv
 . .venv/bin/activate
 python -m pip install --upgrade pip
-python -m pip install /path/to/openrig_matrix_bridge-0.12.0-py3-none-any.whl
+python -m pip install /path/to/openrig_matrix_bridge-0.12.1-py3-none-any.whl
 openrig-matrix-bridge --version
 ```
 
@@ -178,7 +178,7 @@ openrig-matrix-bridge --version
 The console entry point, selected Relay identity, and bundled agent avatars are
 part of the installed package. Automated build and clean-install checks are
 documented in [Verification and evidence](VERIFICATION.md). For an upgrade on
-an existing host, follow the [0.12.0 runbook](RUNBOOK_0.12.0.md).
+an existing host, follow the [0.12.1 runbook](RUNBOOK_0.12.1.md).
 
 ## OpenRig setup
 
@@ -311,7 +311,7 @@ room, is treated as a rejection: the bridge leaves that room and does not
 recreate it automatically. Remove the `rejected_rooms` entry from `state.json`
 before restarting if you want to opt the agent back in.
 
-For production upgrades, use [the 0.12.0 runbook](RUNBOOK_0.12.0.md) to verify
+For production upgrades, use [the 0.12.1 runbook](RUNBOOK_0.12.1.md) to verify
 the exact artifact, stop the old process, back up state, run live
 plain/multi-line/attachment/thread smoke tests, and roll back safely.
 

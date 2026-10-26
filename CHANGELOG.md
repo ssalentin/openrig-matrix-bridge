@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.12.1
+
+Patch release for [Issue #86](https://github.com/ssalentin/openrig-matrix-bridge/issues/86),
+found in production on 0.12.0. Nothing else changes.
+
+- PLACEHOLDER (#86 fix PR): fill from the pull request when it merges: no
+  pinned queue card while one request is active and none waits.
+
 ## 0.12.0
 
 Release tracker: [Issue #46](https://github.com/ssalentin/openrig-matrix-bridge/issues/46).
