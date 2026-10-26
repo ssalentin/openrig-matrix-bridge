@@ -155,10 +155,12 @@ AUTHORIZATION_SCHEME = re.compile(
 # on the line or its folded continuation, is a header and is redacted to the
 # end of the line. A bare "Cookie <word>" may be prose ("the cookie banner"),
 # so only the next token is replaced: a lone cookie value never survives, and
-# the sentence stays.
+# the sentence stays. A quoted value right after that token is redacted to the
+# end of the line, like a header, so no quote or escape inside it is parsed.
 COOKIE_VALUE = re.compile(
     r"(?i)\b(?:set-)?cookie\b(?:"
-    r"(?:\s*[:=]\s*|\s+(?=(?:[^\r\n]|\r?\n[ \t])*=|[\"']))" + _TO_LINE_END + r"|\s+\S+)"
+    r"(?:\s*[:=]\s*|\s+(?=(?:[^\r\n]|\r?\n[ \t])*=|[\"'„“]))" + _TO_LINE_END
+    + r"|\s+\S+(?:[ \t]+[\"'„“]" + _TO_LINE_END + r")?)"
 )
 BARE_TOKEN = re.compile(
     r"(?i)\b(?:"

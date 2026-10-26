@@ -269,6 +269,7 @@ def test_bare_cookie_word_in_prose_replaces_only_the_next_token(text, expected):
         ("Cookie BARE sid=SECRETSID1 gesetzt", "SECRETSID1", COOKIE),
         ("Cookie BARE;\n  sid=SECRETSID1 gesetzt", "SECRETSID1", COOKIE),
         ('Cookie "abc SECRETSID1" gesetzt', "SECRETSID1", COOKIE),
+        ("Cookie „abc SECRETSID1“ gesetzt", "SECRETSID1", COOKIE),
     ],
 )
 def test_bare_cookie_value_after_a_space_is_still_replaced(text, secret, expected):
@@ -276,6 +277,33 @@ def test_bare_cookie_value_after_a_space_is_still_replaced(text, secret, expecte
 
     assert secret not in summary
     assert summary == expected
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ('cookie word "a b SECRETQ1" ok', COOKIE),
+        ("cookie word 'a b SECRETQ1' ok", COOKIE),
+        ('cookie word "a\\" b SECRETQ1" ok', COOKIE),
+        ('cookie word "a \\" b SECRETQ1" x', COOKIE),
+        ('cookie word "a b SECRETQ1 ok\nweiter', f"{COOKIE} weiter"),
+        ("Cookie wort „a b SECRETQ1“ ok", COOKIE),
+        ("cookie word “a b SECRETQ1” ok", COOKIE),
+    ],
+)
+def test_quoted_value_after_a_bare_cookie_token_is_replaced(text, expected):
+    summary = sanitize_activity_summary(text)
+
+    assert "SECRETQ1" not in summary
+    assert summary == expected
+
+
+def test_apostrophes_and_later_quotes_after_a_bare_cookie_word_are_kept():
+    summary = sanitize_activity_summary(
+        "The cookie doesn't matter, it's 'fine' later."
+    )
+
+    assert summary == f"The {COOKIE} matter, it's 'fine' later."
 
 
 def test_password_containing_at_sign_is_fully_replaced():

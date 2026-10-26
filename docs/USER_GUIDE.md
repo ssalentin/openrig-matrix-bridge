@@ -31,8 +31,10 @@ parts are replaced span by span, so the rest stays readable: local paths become
 credentials in a URI `[Zugangsdaten entfernt]`, cookies `[Cookie entfernt]`, and
 fenced command output `[Ausgabe entfernt]`. A cookie or authorization header,
 and a quoted secret value, is replaced up to the end of its line, so a malformed
-or truncated value cannot leave part of it behind. The replaced text never
-reaches the room. Commentary is cut to 600 characters.
+or truncated value cannot leave part of it behind. A bare "cookie" in prose
+replaces only the next word, or the rest of the line when a quote follows that
+word; a value further back in such a sentence ("cookie word more "…"") is not
+recognised. The replaced text never reaches the room. Commentary is cut to 600 characters.
 
 ## Verify the product manually
 
