@@ -60,8 +60,10 @@ images and the other media kinds are not pulled in) and by the
 `steering-cross-thread` harness check (one steering batch with both IDs and the
 origin markers, no extra turn, one answer under the active root naming every
 source ID, three valid qitem histories). The retained report for the final
-candidate is `final-0.12.1-integration-report.json`
-(PLACEHOLDER: committed once from the final locked runs).
+candidate is `final-0.12.1-integration-report.json`: the third of three
+sequential locked exact-source runs at `bb58ef6`, 38 of 38 checks passed,
+`evidence_valid: true`, `worktree_clean: true`. The digests of the release
+wheel and sdist are those of the published `SHA256SUMS`.
 
 ### NOT PROVEN
 
