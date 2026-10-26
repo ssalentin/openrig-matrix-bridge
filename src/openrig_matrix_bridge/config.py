@@ -73,6 +73,7 @@ class MediaConfig:
     inbox_dir: Path
     max_image_bytes: int
     max_file_bytes: int
+    transfer_notices_enabled: bool = True
 
 
 @dataclass(frozen=True)
@@ -275,6 +276,9 @@ def load_config(path: str | Path) -> BridgeConfig:
     if max_file_bytes <= 0:
         raise ConfigError("media.max_file_bytes must be positive")
     media_inbox = Path(str(media.get("inbox_dir", state_dir / "media-inbox")))
+    transfer_notices_enabled = media.get("transfer_notices_enabled", True)
+    if not isinstance(transfer_notices_enabled, bool):
+        raise ConfigError("media.transfer_notices_enabled must be true or false")
 
     return BridgeConfig(
         homeserver=homeserver,
@@ -321,6 +325,7 @@ def load_config(path: str | Path) -> BridgeConfig:
             inbox_dir=media_inbox,
             max_image_bytes=max_image_bytes,
             max_file_bytes=max_file_bytes,
+            transfer_notices_enabled=transfer_notices_enabled,
         ),
         avatars=AvatarConfig(
             enabled=bool(avatars.get("enabled", True)),

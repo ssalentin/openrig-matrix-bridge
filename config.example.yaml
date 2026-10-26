@@ -56,6 +56,10 @@ media:
   inbox_dir: /var/lib/openrig-matrix-bridge/media-inbox
   max_image_bytes: 26214400
   max_file_bytes: 26214400
+  # true posts "… empfangen, lade und entschlüssele …" and "… gespeichert …"
+  # for each image, file and gallery. false keeps those quiet; the media is
+  # still stored and sent to the agent, and failures are still reported.
+  transfer_notices_enabled: true
 
 avatars:
   enabled: true

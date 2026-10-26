@@ -102,6 +102,7 @@ CHECKS = (
     "threaded_files",
     "gallery",
     "gallery_restart",
+    "media_transfer_notices_off",
     "audio_gap",
     "voice_status_edit",
     "decision_and_poll",
@@ -1182,6 +1183,24 @@ class IntegrationRun:
                 transport.pop(key, None)
             else:
                 transport[key] = value
+        self.config_path.write_text(
+            yaml.safe_dump(raw, sort_keys=False),
+            encoding="utf-8",
+        )
+
+    def set_media_options(self, **values: Any) -> None:
+        """Rewrite `media` keys in the bridge config; None removes a key."""
+        raw = yaml.safe_load(self.config_path.read_text(encoding="utf-8"))
+        if not isinstance(raw, dict):
+            raise CheckFailure("bridge configuration is not a mapping")
+        media = raw.setdefault("media", {})
+        if not isinstance(media, dict):
+            raise CheckFailure("bridge media configuration is not a mapping")
+        for key, value in values.items():
+            if value is None:
+                media.pop(key, None)
+            else:
+                media[key] = value
         self.config_path.write_text(
             yaml.safe_dump(raw, sort_keys=False),
             encoding="utf-8",
@@ -3957,6 +3976,98 @@ class IntegrationRun:
                 "downloading the first again: each original exists exactly once in "
                 "the agent inbox, the single prompt lists all four in order, and one "
                 "qitem completed."
+            ),
+        )
+
+    async def check_media_transfer_notices_off(self, room_id: str) -> None:
+        """Issue #95: no success notices for media, same agent delivery."""
+        assert self.owner is not None
+        owner = self.owner
+        prompts_path = self.fake_state / "fake-openrig.json"
+        inbox = self.state_dir / "media-inbox" / AGENT_KEY
+        notices = (
+            "empfangen, lade und entschlüssele",
+            "gespeichert als",
+            "Galerie gespeichert",
+        )
+
+        def prompts(marker: str) -> int:
+            return sum(
+                marker in item["prompt"]
+                for item in json.loads(prompts_path.read_text())["prompts"]
+            )
+
+        self.stop_bridge()
+        self.set_media_options(transfer_notices_enabled=False)
+        self.start_bridge()
+        await self.wait_for_steering_mode_ready(room_id)
+        await owner.sync_once()
+        first_message = len(owner.messages)
+
+        png = (
+            ROOT / "src/openrig_matrix_bridge/assets/avatars/openrig-03.png"
+        ).read_bytes()
+        images_before = prompts("Bild von @owner:localhost")
+        await owner.send_encrypted_file(
+            room_id,
+            png,
+            msgtype="m.image",
+            filename="quiet-image.png",
+            mimetype="image/png",
+            body="quiet owner image",
+        )
+        await owner.sync_until(
+            lambda: prompts("Bild von @owner:localhost") > images_before,
+            self.args.timeout,
+            description="image forwarded without transfer notices",
+        )
+        report = b"%PDF-1.7\nQuiet transfer report\n%%EOF\n"
+        await owner.send_encrypted_file(
+            room_id,
+            report,
+            msgtype="m.file",
+            filename="quiet report.pdf",
+            mimetype="application/pdf",
+            body="quiet report",
+        )
+        await owner.sync_until(
+            lambda: prompts('Originaldateiname: "quiet report.pdf"') == 1,
+            self.args.timeout,
+            description="file forwarded without transfer notices",
+        )
+        items, expected = await self.build_gallery("quiet")
+        event_id = await owner.send_gallery(room_id, items, body="Quiet photos")
+        await self.verify_gallery_delivery(event_id, expected)
+        await asyncio.sleep(0.5)
+        await owner.sync_once()
+
+        if not any(path.read_bytes() == png for path in inbox.glob("*.png")):
+            raise CheckFailure("quiet image was not stored intact")
+        if not any(path.read_bytes() == report for path in inbox.glob("*.pdf")):
+            raise CheckFailure("quiet file was not stored intact")
+        bridge_messages = [
+            str(message["body"])
+            for message in owner.messages[first_message:]
+            if message["sender"] == BRIDGE_USER
+        ]
+        noisy = [
+            body for body in bridge_messages if any(word in body for word in notices)
+        ]
+        if noisy:
+            raise CheckFailure(f"transfer notices reached Matrix: {noisy}")
+        self.stop_bridge()
+        self.set_media_options(transfer_notices_enabled=None)
+        self.start_bridge()
+        await self.wait_for_steering_mode_ready(room_id)
+        self.record(
+            "media-transfer-notices-off",
+            "pass",
+            (
+                "With media.transfer_notices_enabled: false an encrypted image, a "
+                "PDF and a four-item gallery were each stored byte-for-byte and "
+                "forwarded to the agent as before, the gallery as one prompt with "
+                "its answer, while no received, progress or stored notice reached "
+                "the room (issue #95)."
             ),
         )
 
