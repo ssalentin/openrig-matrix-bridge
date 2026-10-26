@@ -34,9 +34,23 @@ and a quoted secret value, is replaced up to the end of its line, so a malformed
 or truncated value cannot leave part of it behind. A value that starts with a
 quote or any other punctuation counts as quoted and also runs to the end of the
 line. A bare "cookie" in prose replaces only the next word, or the rest of the
-line when the following word starts with punctuation. Not recognised: a quoted
-value further back in such a sentence ("cookie word more "…""), and a quote
-inside a value that starts with a letter or digit (`API_KEY=abc"def ghi"`).
+line when the following word starts with punctuation.
+
+Redaction does not recognise these shapes, which are ambiguous prose rather
+than header, cookie or URI credential syntax:
+
+- an unquoted value of several words after a credential label: in
+  `password: two words secret` only `two` is replaced;
+- a letter used as a quotation mark (for example U+A71D `ꜝ`): such characters
+  are letters by definition, so the value they open is read as ordinary words
+  (the spacing modifier letters such as `ʼ` are the exception and count as
+  quotes);
+- a quoted value more than one word after a bare "cookie"
+  (`cookie word more "…"`): a header value starts right after the name, a
+  colon or an equals sign, so this shape is prose;
+- a quote inside a value that starts with a letter or digit
+  (`API_KEY=abc"def ghi"`).
+
 The replaced text never reaches the room. Commentary is cut to 600 characters.
 
 ## Verify the product manually

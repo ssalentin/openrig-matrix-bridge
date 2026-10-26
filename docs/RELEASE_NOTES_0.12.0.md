@@ -117,6 +117,16 @@ the configuration and complete state directory before replacing the service.
   downloading or being transcribed; there is no separate timeout beyond the
   download and transcription failure paths.
 - Matrix device SAS and complete cross-signing remain tracked by Issue #1.
+- Commentary redaction (#70) does not recognise three ambiguous prose shapes:
+  an unquoted value of several words after a credential label
+  (`password: two words secret` replaces only `two`); a letter used as a
+  quotation mark (for example U+A71D), which is read as ordinary words; and a
+  quoted value more than one word after a bare "cookie"
+  (`cookie word more "…"`), since a header value starts right after the name,
+  a colon or an equals sign. Any real Cookie, Set-Cookie or Authorization
+  header, bearer or Git token, URI userinfo and fenced output is redacted.
+  These and the other boundaries in the [user guide](USER_GUIDE.md) are
+  tracked in Issue #84.
 - The duplicate activity card seen on the 0.11 line (#39) came from an initial
   card send without a stable transaction ID. 0.12.0 sends it as
   `activity-card-<request>`, so Matrix returns the existing card when a send is
