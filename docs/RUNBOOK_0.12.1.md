@@ -50,6 +50,12 @@ pinned, listing the active request and one waiting request. When the second
 request starts, the pinned card disappears. After the last answer the status
 returns to `bereit`.
 
+If the host runs `openrig.steering_mode: steer`, also send a second short
+top-level message and a short reply in another thread while a request is active:
+the agent receives one steered batch marked "arrived while another request was
+active", and one answer is posted in the first request's thread naming all the
+source events. With `auto` or `queue` those messages wait as separate turns.
+
 A pinned card with "0 Nachrichten wartet" during a single active request is a
 rollout failure. Restart the bridge while a request is active and none waits:
 a card pinned by 0.12.0 must be gone after the start.
