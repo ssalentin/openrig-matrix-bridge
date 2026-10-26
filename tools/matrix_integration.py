@@ -72,6 +72,12 @@ SESSION = "integration-agent@local"
 AGENT_KEY = "integration-agent"
 # The bridge's default openrig.burst_inactivity_seconds.
 RELATED_BOUNDARY_SECONDS = 45
+# Issue #70: advisor-style progress commentary that names internal paths.
+ADVISOR_COMMENTARY = (
+    "Upgrade auf 0.12.0: Daemon gestoppt; Zustand liegt unter "
+    "/root/.openrig/state/daemon.json. Backup nach /root/.openrig/backup/2026-10-25 "
+    "geschrieben, Neustart folgt."
+)
 # Related checks send many events between owner syncs; a wide timeline keeps
 # every status change visible.
 RELATED_TIMELINE_LIMIT = 500
@@ -104,6 +110,7 @@ CHECKS = (
     "related_restart",
     "related_unrelated_isolation",
     "related_thread",
+    "commentary_redaction",
     "restart",
     "legacy_pending_state",
     "doctor_failure",
@@ -1105,6 +1112,7 @@ class IntegrationRun:
         unrelated_turn: bool = False,
         hold_seconds: float | None = None,
         transcribe_seconds: float | None = None,
+        commentary: str | None = None,
     ) -> None:
         if self.bridge is not None and self.bridge.poll() is None:
             raise CheckFailure("bridge is already running")
@@ -1122,6 +1130,10 @@ class IntegrationRun:
             environment["OPENRIG_FAKE_UNRELATED_TURN"] = "1"
         else:
             environment.pop("OPENRIG_FAKE_UNRELATED_TURN", None)
+        if commentary is not None:
+            environment["OPENRIG_FAKE_COMMENTARY"] = commentary
+        else:
+            environment.pop("OPENRIG_FAKE_COMMENTARY", None)
         if hold_seconds is not None:
             environment["OPENRIG_FAKE_HOLD_SECONDS"] = str(hold_seconds)
         else:
@@ -1416,6 +1428,60 @@ class IntegrationRun:
                 "downloadable Relay bridge-account profile avatar with identical "
                 "bytes, and publishes ready topic plus `dev.openrig.agent_status` "
                 "state."
+            ),
+        )
+
+    async def check_commentary_redaction(self, room_id: str) -> None:
+        """Issue #70: an advisor-style commentary with internal paths.
+
+        The activity card must keep the progress text, show `[lokaler Pfad]`
+        for each path, and never carry the path bytes.
+        """
+        assert self.owner is not None
+        owner = self.owner
+        self.stop_bridge()
+        self.start_bridge(commentary=ADVISOR_COMMENTARY)
+        await self.wait_for_steering_mode_ready(room_id)
+        before = len(owner.messages)
+        prompt = "commentary redaction probe"
+        await owner.send_text(room_id, prompt)
+        await owner.sync_until(
+            lambda: any(
+                message["sender"] == BRIDGE_USER
+                and f"Fake integration answer: {prompt}" in str(message["body"])
+                for message in owner.messages[before:]
+            ),
+            self.args.timeout,
+            description="answer for the commentary redaction probe",
+        )
+        await asyncio.sleep(0.5)
+        await owner.sync_once()
+        bodies = [
+            str(message["body"])
+            for message in owner.messages[before:]
+            if message["sender"] == BRIDGE_USER
+        ]
+        leaked = [body for body in bodies if "/root/" in body or ".openrig/" in body]
+        if leaked:
+            raise CheckFailure(f"a bridge message carried an internal path: {leaked}")
+        cards = [body for body in bodies if "**Aktivität:**" in body]
+        expected = (
+            "Upgrade auf 0.12.0: Daemon gestoppt; Zustand liegt unter "
+            "[lokaler Pfad]. Backup nach [lokaler Pfad] geschrieben, Neustart folgt."
+        )
+        if not any(expected in card for card in cards):
+            raise CheckFailure(f"activity card lost the safe commentary: {cards}")
+        self.stop_bridge()
+        self.start_bridge()
+        await self.wait_for_steering_mode_ready(room_id)
+        self.record(
+            "commentary-redaction",
+            "pass",
+            (
+                "An advisor-style commentary with two internal /root/.openrig paths "
+                "reached the room's activity card as the full progress text with "
+                "each path replaced by [lokaler Pfad]; no bridge message carried "
+                "the path bytes (issue #70)."
             ),
         )
 

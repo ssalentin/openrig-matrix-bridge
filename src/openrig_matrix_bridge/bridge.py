@@ -137,20 +137,37 @@ FENCED_OUTPUT = re.compile(
     r"(?ms)^[ \t]*(?:`{3,}|~{3,}).*?"
     r"(?:^[ \t]*(?:`{3,}|~{3,})[ \t]*$|\Z)"
 )
+# A header or quoted value is redacted to the end of its line (and any folded
+# continuation lines) instead of being parsed, so no quote, escape or separator
+# inside it can leave part of the secret behind.
+_TO_LINE_END = r"[^\r\n]*(?:\r?\n[ \t]+[^\r\n]*)*"
+# A value that starts with anything but a letter, digit or underscore is treated
+# as quoted, whatever glyph opens it ("…", „…“, «…», ´…´), and runs to the end
+# of the line; no list of quotation marks can miss one. Spacing modifier letters
+# (ʹ ʺ ʻ ʼ ˮ) count as word characters but look like quotes, so they count too.
+_QUOTED_START = r"(?:[^\w\s]|[\u02b0-\u02ff])"
 CREDENTIAL_VALUE = re.compile(
     r"(?i)\b(?:[a-z0-9_]*(?:token|key|secret|password)|authorization)\b"
-    r"\s*[:=]\s*(?:\"[^\"]*\"|'[^']*'|\S+)"
+    r"\s*[:=]\s*(?:" + _QUOTED_START + _TO_LINE_END + r"|\S+)"
 )
 URI_USERINFO = re.compile(
-    r"(?i)\b[a-z][a-z0-9+.-]*://(?:[^\s/@:]*):[^\s/@]+@"
+    r"(?i)\b[a-z][a-z0-9+.-]*://[^\s/:]*:[^\s/]+@"
 )
 AUTHORIZATION_SCHEME = re.compile(
     r"(?i)\b(?:proxy-)?authorization\b[^\r\n]{0,40}"
-    r"\b(?:basic|bearer|digest|token)\s+\S+"
+    r"\b(?:basic|bearer|digest|token)\s+" + _TO_LINE_END
 )
+# "Cookie:" / "Cookie=", or "Cookie " followed by a quote or by any "=" later
+# on the line or its folded continuation, is a header and is redacted to the
+# end of the line. A bare "Cookie <word>" may be prose ("the cookie banner"),
+# so only the next token is replaced: a lone cookie value never survives, and
+# the sentence stays. A quoted value right after that token is redacted to the
+# end of the line, like a header, so no quote or escape inside it is parsed.
 COOKIE_VALUE = re.compile(
-    r"(?i)\b(?:set-)?cookie\b(?:\s*[:=]\s*|\s+)"
-    r"(?:[a-z0-9_-]+\s*=\s*)?\S+"
+    r"(?i)\b(?:set-)?cookie\b(?:"
+    r"(?:\s*[:=]\s*|\s+(?=(?:[^\r\n]|\r?\n[ \t])*=|" + _QUOTED_START + r"))"
+    + _TO_LINE_END
+    + r"|\s+\S+(?:[ \t]+" + _QUOTED_START + _TO_LINE_END + r")?)"
 )
 BARE_TOKEN = re.compile(
     r"(?i)\b(?:"
@@ -186,26 +203,77 @@ def activity_card_label(activity_state: str, needs_input_count: int) -> str:
     return "Arbeitet"
 
 
+REDACTION_MARKERS = {
+    "output": "[Ausgabe entfernt]",
+    "credentials": "[Zugangsdaten entfernt]",
+    "token": "[Token entfernt]",
+    "cookie": "[Cookie entfernt]",
+    "path": "[lokaler Pfad]",
+}
+# Most specific first: a fenced block or a URI must not be read as a path.
+REDACTION_PATTERNS = (
+    (FENCED_OUTPUT, "output"),
+    (URI_USERINFO, "credentials"),
+    (AUTHORIZATION_SCHEME, "token"),
+    (COOKIE_VALUE, "cookie"),
+    (CREDENTIAL_VALUE, "token"),
+    (BARE_TOKEN, "token"),
+    (LABELED_SECRET, "token"),
+    (LONG_SECRET, "token"),
+    (PRIVATE_PATH, "path"),
+)
+_REDACTION_SLOT = re.compile("\x00(\\w+)\x00")
+_PATH_TRAILING_PUNCTUATION = ".,;:!?)"
+
+
+def _redaction_slot(category: str, match: re.Match[str]) -> str:
+    """A placeholder later patterns cannot match; markers are inserted last."""
+    slot = f"\x00{category}\x00"
+    if category == "credentials":
+        # Keep the scheme so the reader still sees what kind of connection it is.
+        scheme = match.group(0).split("://", 1)[0]
+        return f"{scheme}://{slot}@"
+    if category == "path":
+        span = match.group(0)
+        kept = len(span) - len(span.rstrip(_PATH_TRAILING_PUNCTUATION))
+        return slot + (span[len(span) - kept :] if kept else "")
+    return slot
+
+
 def sanitize_activity_summary(text: str) -> str:
-    unsafe = any(
-        pattern.search(text)
-        for pattern in (
-            FENCED_OUTPUT,
-            CREDENTIAL_VALUE,
-            URI_USERINFO,
-            AUTHORIZATION_SCHEME,
-            COOKIE_VALUE,
-            BARE_TOKEN,
-            LABELED_SECRET,
-            LONG_SECRET,
-            PRIVATE_PATH,
+    """Replace each sensitive span with a category marker; keep the rest.
+
+    Fenced output, credentials, tokens, cookies and local paths are redacted
+    span by span, so safe progress text stays readable and no matched byte
+    survives. Whitespace is normalized and the result is bounded.
+    """
+    # NUL is reserved for the placeholders below.
+    summary = text.replace("\x00", " ")
+    for pattern, category in REDACTION_PATTERNS:
+        summary = pattern.sub(
+            lambda match, category=category: _redaction_slot(category, match),
+            summary,
         )
-    )
-    summary = "[redacted unsafe commentary]" if unsafe else text
     summary = " ".join(summary.split())
-    if len(summary) > 600:
-        summary = summary[:597].rstrip() + "…"
-    return summary
+    summary = _REDACTION_SLOT.sub(
+        lambda match: REDACTION_MARKERS[match.group(1)],
+        summary,
+    )
+    return bounded_summary(summary, 600, keep=597)
+
+
+def bounded_summary(text: str, limit: int, *, keep: int | None = None) -> str:
+    """Cut `text` longer than `limit` to `keep` characters plus an ellipsis.
+
+    The cut never leaves half of a redaction marker behind.
+    """
+    if len(text) <= limit:
+        return text
+    cut = text[: limit - 1 if keep is None else keep]
+    opening = cut.rfind("[")
+    if opening > cut.rfind("]"):
+        cut = cut[:opening]
+    return cut.rstrip() + "…"
 
 
 def activity_card_text(request: dict[str, Any]) -> str:
@@ -240,12 +308,7 @@ QUEUE_RELATED_PART_LINE = re.compile(r"^Teil \d+ · ([^·\n]+?) · ", re.MULTILI
 
 
 def queue_preview(text: object, limit: int = 96) -> str:
-    summary = sanitize_activity_summary(str(text or ""))
-    if summary == "[redacted unsafe commentary]":
-        return summary
-    if len(summary) > limit:
-        return summary[: limit - 1].rstrip() + "…"
-    return summary
+    return bounded_summary(sanitize_activity_summary(str(text or "")), limit)
 
 
 def queue_related_preview(text: str) -> str | None:

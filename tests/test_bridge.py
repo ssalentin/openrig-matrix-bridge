@@ -1874,7 +1874,8 @@ def test_queue_notice_redacts_and_truncates_previews():
     assert "super-secret-value" not in card
     assert "/home/alice/private" not in card
     assert "abcdef1234567890" not in card
-    assert card.count("[redacted unsafe commentary]") == 2
+    assert '"[Token entfernt] [lokaler Pfad] long detail' in card
+    assert '"[Cookie entfernt]"' in card
     assert len(card) < 800
 
 
@@ -3599,4 +3600,4 @@ def test_queue_notice_redacts_a_secret_in_a_caption_or_filename():
     )
 
     assert "sk-live" not in card
-    assert '1. Datei · "[redacted unsafe commentary]"' in card
+    assert '1. Datei · "[Token entfernt]"' in card

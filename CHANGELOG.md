@@ -2,6 +2,11 @@
 
 ## 0.12.0
 
+- Redact sensitive parts of activity commentary span by span instead of
+  replacing the whole message: local paths, tokens, authorization headers,
+  cookies, URI credentials and fenced output get category markers such as
+  `[lokaler Pfad]` and `[Token entfernt]`, and the progress text stays visible.
+  Queue-card previews use the same redaction (#70).
 - Add best-effort same-thread steering with `queue`, `steer`, and default
   `auto` modes while preserving one active Codex turn per seat.
 - Persist each injected batch and transcript boundary before pane input, require

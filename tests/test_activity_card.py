@@ -186,25 +186,46 @@ def test_activity_card_sanitizes_tokens_paths_and_raw_output(tmp_path):
     assert "../customer" not in card
     assert "raw private command output" not in card
     assert "raw tilde command output" not in card
-    assert "[redacted" in card
+    for marker in (
+        "[lokaler Pfad]",
+        "[Token entfernt]",
+        "[Zugangsdaten entfernt]",
+        "[Ausgabe entfernt]",
+    ):
+        assert marker in card
+    assert card.startswith("**Aktivität:** Arbeitet\n\nPrüfe [lokaler Pfad] mit")
 
 
 @pytest.mark.parametrize(
-    "commentary",
+    ("commentary", "secret", "marker"),
     [
-        "REDIS_URL=redis://default:secretpassword@host",
-        "REDIS_URL=redis://:hunter2@host",
-        "Authorization header: Basic dXNlcjpwYXNzd29yZA==",
-        "Authorization: Basic dXNlcjpwYXNzd29yZA==",
-        "Authorization: Bearer very-secret-token",
-        "Cookie: session=abcdef1234567890",
-        "Cookie session=abcdef1234567890",
-        "Set-Cookie: sid=abcdef1234567890",
+        (
+            "REDIS_URL=redis://default:secretpassword@host",
+            "secretpassword",
+            "[Zugangsdaten entfernt]",
+        ),
+        ("REDIS_URL=redis://:hunter2@host", "hunter2", "[Zugangsdaten entfernt]"),
+        (
+            "Authorization header: Basic dXNlcjpwYXNzd29yZA==",
+            "dXNlcjpwYXNzd29yZA==",
+            "[Token entfernt]",
+        ),
+        (
+            "Authorization: Basic dXNlcjpwYXNzd29yZA==",
+            "dXNlcjpwYXNzd29yZA==",
+            "[Token entfernt]",
+        ),
+        ("Authorization: Bearer very-secret-token", "very-secret-token", "[Token entfernt]"),
+        ("Cookie: session=abcdef1234567890", "abcdef1234567890", "[Cookie entfernt]"),
+        ("Cookie session=abcdef1234567890", "abcdef1234567890", "[Cookie entfernt]"),
+        ("Set-Cookie: sid=abcdef1234567890", "abcdef1234567890", "[Cookie entfernt]"),
     ],
 )
 def test_activity_card_redacts_uri_auth_and_cookie_credentials(
     tmp_path,
     commentary,
+    secret,
+    marker,
 ):
     bridge, agent, _request, sent, _edited = activity_bridge(
         tmp_path,
@@ -213,9 +234,10 @@ def test_activity_card_redacts_uri_auth_and_cookie_credentials(
 
     asyncio.run(bridge._poll_agent(agent))
 
-    assert sent[0][0] == (
-        "**Aktivität:** Arbeitet\n\n[redacted unsafe commentary]"
-    )
+    card = sent[0][0]
+    assert card.startswith("**Aktivität:** Arbeitet\n\n")
+    assert secret not in card
+    assert marker in card
 
 
 def test_activity_card_truncates_long_safe_commentary(tmp_path):
