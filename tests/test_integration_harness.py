@@ -604,6 +604,13 @@ def test_fake_transport_hold_for_held_prompts_is_configurable(tmp_path: Path):
     assert state["busy_until"] - prompt["sent_at"] == pytest.approx(0.6, abs=0.05)
 
 
+def test_inventory_latency_steering_hold_covers_the_steering_probe_budget():
+    assert (
+        HARNESS_MODULE.INVENTORY_LATENCY_HOLD_SECONDS
+        >= HARNESS_MODULE.STEERING_PROBE_HOLD_SECONDS
+    )
+
+
 def test_replacing_the_fake_state_is_never_seen_partially(tmp_path: Path):
     spec = importlib.util.spec_from_file_location("fake_openrig_under_test", FAKE)
     assert spec is not None and spec.loader is not None

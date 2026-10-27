@@ -201,7 +201,7 @@ LATENCY_BOUNDARY = (
 # evidence runs use the issue's 20.
 INVENTORY_LATENCY_RUNS = int(os.environ.get("OPENRIG_LATENCY_RUNS", "20"))
 INVENTORY_LATENCY_DELAY_SECONDS = 3.4
-INVENTORY_LATENCY_HOLD_SECONDS = 4.0
+INVENTORY_LATENCY_HOLD_SECONDS = STEERING_PROBE_HOLD_SECONDS
 
 
 def latency_stats(values: list[float]) -> dict[str, float]:
