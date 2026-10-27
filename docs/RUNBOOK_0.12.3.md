@@ -16,7 +16,7 @@ configuration and acceptance steps apply as written, with `0.12.3` in place of
   `main`, followed by the release pull request (version 0.12.3, changelog,
   notes, this runbook).
 - [ ] CI on the merge commit in `main` is green.
-- [ ] Create the annotated tag `0.12.3` on that commit.
+- [ ] Create the annotated tag `v0.12.3` on that commit.
 - [ ] Publish the GitHub Release with the wheel, the sdist, the release notes,
   and `SHA256SUMS`.
 - [ ] Record the observed value of each item in the acceptance record below.
