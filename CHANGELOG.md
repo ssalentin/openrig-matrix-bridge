@@ -1,5 +1,33 @@
 # Changelog
 
+## 0.12.3
+
+Patch release for two findings from production on 0.12.2: per-transfer status
+messages for media
+([Issue #95](https://github.com/ssalentin/openrig-matrix-bridge/issues/95)) and
+slow Matrix-to-pane delivery caused by repeated node inventory reads
+([Issue #96](https://github.com/ssalentin/openrig-matrix-bridge/issues/96)).
+
+- Add `media.transfer_notices_enabled` (default `true`). With `false` the
+  bridge posts no received, progress or stored notice for images, files and
+  galleries, also after a restart resumes a transfer. The media is still stored
+  and sent to the agent exactly as before, and failures are still reported:
+  unsupported or oversized media, media that is too old, a failed download or
+  decryption, an empty gallery, and a gallery with items that could not be
+  stored (#95).
+- Read the OpenRig node inventory once and share it. Concurrent readers wait for
+  one `rig ps` read, one snapshot serves every agent of a poll cycle and every
+  request that starts within `openrig.inventory_cache_seconds` (default 2.0),
+  and an older snapshot, up to `openrig.inventory_max_age_seconds` (default
+  10.0), is used at once while one background read refreshes it, so a slow
+  inventory no longer delays Matrix intake or steering. A failed read is never
+  reused and never blocks later reads. An inventory read before the active
+  prompt went in no longer cancels a steering attempt, and one read before the
+  agent's last turn finished no longer holds the next prompt. Each request
+  records how long the inventory, qitem create, qitem claim and pane send took
+  (`spans` in the `latency_samples` of `state.json`). Setting both values to 0
+  turns the cache off (#96).
+
 ## 0.12.2
 
 Patch release for two findings from production on 0.12.1: internal queue item
