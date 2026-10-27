@@ -69,8 +69,10 @@ spans, configuration bounds) and the `inventory-latency` harness check (with a
 fake `rig ps` delayed by 3.4 s: 20 idle prompts, 19 prompts right after a
 finished turn and 20 steered follow-ups, each delivered exactly once, within the
 latency targets of the issue). The retained report for the final candidate is
-`final-0.12.3-integration-report.json`
-(PLACEHOLDER: committed once from the final locked runs).
+`final-0.12.3-integration-report.json`: the third of three sequential locked
+exact-source runs at `48c3540`, 42 of 42 checks passed, `evidence_valid: true`,
+`worktree_clean: true`. The digests of the release wheel and sdist are those of
+the published `SHA256SUMS`.
 
 ### NOT PROVEN
 
