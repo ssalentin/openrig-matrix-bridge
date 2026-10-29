@@ -3,6 +3,7 @@ import hashlib
 import json
 import time
 from types import SimpleNamespace
+from typing import ClassVar
 
 import pytest
 from nio import (
@@ -1687,6 +1688,49 @@ def test_explicit_message_is_published_and_recorded():
     assert bridge.state.data["messages"]["message-1"]["event_id"] == "$message"
 
 
+def test_explicit_message_returns_recorded_event_without_republishing():
+    bridge = object.__new__(MatrixBridge)
+    agent = AgentConfig(
+        key="advisor",
+        display_name="Advisor",
+        session="advisor-lead@kernel",
+    )
+    bridge.config = SimpleNamespace(agents={"advisor": agent})
+    bridge.state = SimpleNamespace(
+        save=lambda: None,
+        data={
+            "rooms": {
+                "advisor": {
+                    "room_id": "!advisor:matrix.example.org",
+                    "name": "Advisor",
+                }
+            },
+            "messages": {
+                "message-1": {
+                    "event_id": "$existing",
+                }
+            },
+        },
+    )
+
+    async def send(room_id, text):
+        raise AssertionError(f"duplicate Matrix message attempted: {room_id}: {text}")
+
+    bridge._send = send
+
+    event_id = asyncio.run(
+        bridge._publish_message(
+            {
+                "id": "message-1",
+                "agent": "advisor",
+                "text": "**Hallo** aus Matrix",
+            }
+        )
+    )
+
+    assert event_id == "$existing"
+
+
 def test_queue_notice_is_one_updated_and_pinned_message():
     bridge = object.__new__(MatrixBridge)
     bridge.config = SimpleNamespace(inbound_message_priority="urgent")
@@ -2223,6 +2267,8 @@ def test_human_queue_items_are_mirrored_to_the_source_agent_room():
     )
 
     class QueueGateway:
+        receipts: ClassVar[list[tuple[str, str, bool]]] = []
+
         async def queue_list(self):
             return [
                 {
@@ -2261,15 +2307,20 @@ def test_human_queue_items_are_mirrored_to_the_source_agent_room():
                 "humanQuestions": None,
             }
 
+        async def record_human_delivery(self, qitem_id, message_ts, *, close_update):
+            self.receipts.append((qitem_id, message_ts, close_update))
+
     bridge.gateway = QueueGateway()
     decisions = []
     messages = []
 
     async def publish_decision(request):
         decisions.append(request)
+        return ["$decision"]
 
     async def publish_message(request):
         messages.append(request)
+        return "$update"
 
     bridge._publish_decision = publish_decision
     bridge._publish_message = publish_message
@@ -2279,10 +2330,80 @@ def test_human_queue_items_are_mirrored_to_the_source_agent_room():
     assert decisions[0]["qitem_id"] == "qitem-decision"
     assert decisions[0]["agent"] == "advisor"
     assert messages[0]["text"] == "**Arbeit abgeschlossen**\n\nAlles erledigt."
+    assert bridge.gateway.receipts == [
+        ("qitem-decision", "$decision", False),
+        ("qitem-update", "$update", True),
+    ]
     assert set(bridge.state.data["queue_mirror"]["seen"]) == {
         "qitem-decision",
         "qitem-update",
     }
+
+
+def test_human_queue_repairs_receipt_for_an_already_published_decision():
+    bridge = object.__new__(MatrixBridge)
+    agent = AgentConfig(
+        key="advisor",
+        display_name="Advisor",
+        session="advisor-lead@kernel",
+    )
+    bridge.config = SimpleNamespace(
+        agents={"advisor": agent},
+        human_destinations=("owner@external",),
+    )
+    bridge.state = SimpleNamespace(
+        save=lambda: None,
+        data={
+            "decisions": {
+                "queue-qitem-decision": {
+                    "qitem_id": "qitem-decision",
+                    "event_ids": ["$brief", "$poll"],
+                }
+            },
+            "messages": {},
+            "queue_mirror": {"initialized": True, "seen": {}},
+        },
+    )
+
+    class QueueGateway:
+        receipts: ClassVar[list[tuple[str, str, bool]]] = []
+
+        async def queue_list(self):
+            return [
+                {
+                    "qitemId": "qitem-decision",
+                    "destinationSession": "owner@external",
+                    "sourceSession": "advisor-lead@kernel",
+                }
+            ]
+
+        async def queue_show(self, qitem_id):
+            return {
+                "summary": "Welche Variante?",
+                "body": "Bitte entscheiden.",
+                "humanIntent": "decision",
+                "humanQuestions": [],
+            }
+
+        async def record_human_delivery(self, qitem_id, message_ts, *, close_update):
+            self.receipts.append((qitem_id, message_ts, close_update))
+
+    bridge.gateway = QueueGateway()
+    decisions = []
+
+    async def publish_decision(request):
+        decisions.append(request)
+        return ["$duplicate"]
+
+    bridge._publish_decision = publish_decision
+
+    asyncio.run(bridge._mirror_human_queue())
+
+    assert decisions == []
+    assert bridge.gateway.receipts == [
+        ("qitem-decision", "$brief", False),
+    ]
+    assert "qitem-decision" in bridge.state.data["queue_mirror"]["seen"]
 
 
 def test_duplicate_decision_qitem_publish_is_serialized_and_idempotent():

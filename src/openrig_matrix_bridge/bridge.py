@@ -1045,11 +1045,11 @@ class MatrixBridge:
                 continue
             os.replace(path, self.decision_sent / path.name)
 
-    async def _publish_decision(self, request: dict[str, Any]) -> None:
+    async def _publish_decision(self, request: dict[str, Any]) -> list[str]:
         async with self.decision_publish_lock:
-            await self._publish_decision_locked(request)
+            return await self._publish_decision_locked(request)
 
-    async def _publish_decision_locked(self, request: dict[str, Any]) -> None:
+    async def _publish_decision_locked(self, request: dict[str, Any]) -> list[str]:
         request_id = str(request.get("id") or "").strip()
         agent_key = str(request.get("agent") or "").strip()
         title = str(request.get("title") or "").strip()
@@ -1064,7 +1064,11 @@ class MatrixBridge:
         decisions = self.state.data.setdefault("decisions", {})
         if request_id in decisions:
             LOGGER.info("decision %s already published; skipping duplicate", request_id)
-            return
+            return [
+                str(event_id)
+                for event_id in decisions[request_id].get("event_ids", [])
+                if str(event_id)
+            ]
         if qitem_id:
             for existing_id, decision in decisions.items():
                 if str(decision.get("qitem_id") or "") == qitem_id:
@@ -1075,7 +1079,11 @@ class MatrixBridge:
                         existing_id,
                         request_id,
                     )
-                    return
+                    return [
+                        str(event_id)
+                        for event_id in decision.get("event_ids", [])
+                        if str(event_id)
+                    ]
 
         room = self.state.data["rooms"].get(agent.key)
         if not room:
@@ -1120,6 +1128,7 @@ class MatrixBridge:
         }
         self.state.save()
         LOGGER.info("published decision %s in %s", request_id, agent.session)
+        return event_ids
 
     async def _poll_message_outbox(self) -> None:
         while True:
@@ -1175,21 +1184,30 @@ class MatrixBridge:
             if agent is None:
                 seen[qitem_id] = int(time.time() * 1000)
                 continue
-            if any(
-                decision.get("qitem_id") == qitem_id
-                for decision in self.state.data["decisions"].values()
-            ):
-                seen[qitem_id] = int(time.time() * 1000)
-                continue
-
             detail = await self.gateway.queue_show(qitem_id)
             title = str(
                 detail.get("summary") or item.get("summary") or "OpenRig update"
             ).strip()
             body = str(detail.get("body") or "").strip()
-            if detail.get("humanIntent") == "decision":
+            decision = next(
+                (
+                    decision
+                    for decision in self.state.data["decisions"].values()
+                    if decision.get("qitem_id") == qitem_id
+                ),
+                None,
+            )
+            if decision is not None:
+                event_ids = decision.get("event_ids")
+                if not isinstance(event_ids, list) or not event_ids:
+                    raise ValueError(
+                        f"published decision for {qitem_id} has no Matrix event id"
+                    )
+                message_ts = str(event_ids[0])
+                close_update = False
+            elif detail.get("humanIntent") == "decision":
                 request_id = f"queue-{qitem_id}"
-                await self._publish_decision(
+                event_ids = await self._publish_decision(
                     {
                         "id": request_id,
                         "agent": agent.key,
@@ -1199,17 +1217,29 @@ class MatrixBridge:
                         "questions": normalize_questions(detail.get("humanQuestions")),
                     }
                 )
+                if not event_ids:
+                    raise ValueError(
+                        f"decision publish for {qitem_id} returned no Matrix event id"
+                    )
+                message_ts = event_ids[0]
+                close_update = False
             else:
                 text = f"**{title}**"
                 if body:
                     text += f"\n\n{body}"
-                await self._publish_message(
+                message_ts = await self._publish_message(
                     {
                         "id": f"queue-{qitem_id}",
                         "agent": agent.key,
                         "text": text,
                     }
                 )
+                close_update = True
+            await self.gateway.record_human_delivery(
+                qitem_id,
+                message_ts,
+                close_update=close_update,
+            )
             seen[qitem_id] = int(time.time() * 1000)
             self.state.save()
         if len(seen) > 2000:
@@ -1234,7 +1264,7 @@ class MatrixBridge:
                 continue
             os.replace(path, self.message_sent / path.name)
 
-    async def _publish_message(self, request: dict[str, Any]) -> None:
+    async def _publish_message(self, request: dict[str, Any]) -> str:
         request_id = str(request.get("id") or "").strip()
         agent_key = str(request.get("agent") or "").strip()
         text = str(request.get("text") or "").strip()
@@ -1247,6 +1277,12 @@ class MatrixBridge:
         if not room:
             raise ValueError(f"no Matrix room configured for: {agent.key}")
 
+        existing = self.state.data.get("messages", {}).get(request_id)
+        if isinstance(existing, dict):
+            event_id = existing.get("event_id")
+            if isinstance(event_id, str) and event_id:
+                return event_id
+
         response = await self._send(str(room["room_id"]), text)
         if not isinstance(response, RoomSendResponse):
             raise ConnectionError(f"message delivery failed: {response}")
@@ -1257,6 +1293,7 @@ class MatrixBridge:
         }
         self.state.save()
         LOGGER.info("published message %s in %s", request_id, agent.session)
+        return response.event_id
 
     async def _poll_media_outbox(self) -> None:
         while True:

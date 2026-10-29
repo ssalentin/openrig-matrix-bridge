@@ -43,6 +43,7 @@ def state_root() -> Path:
 def _default_state() -> dict[str, Any]:
     return {
         "queue": {},
+        "next_transition_id": 1000,
         "prompts": [],
         "steers": [],
         "calls": [],
@@ -373,14 +374,24 @@ def handle_queue(root: Path, args: list[str]) -> None:
         if injected_failure == "create":
             raise SystemExit("injected queue create failure")
         qitem_id = f"qitem-fake-{uuid.uuid4().hex[:12]}"
+        human_intent = option(args, "--human-intent")
+        destination = option(args, "--destination")
+        human_questions_raw = option(args, "--human-questions-file")
+        human_questions = (
+            json.loads(Path(human_questions_raw).read_text(encoding="utf-8"))
+            if human_questions_raw
+            else None
+        )
         item = {
             "qitemId": qitem_id,
             "sourceSession": option(args, "--source"),
-            "destinationSession": option(args, "--destination"),
+            "destinationSession": destination,
             "summary": option(args, "--summary"),
             "body": option(args, "--body"),
             "priority": option(args, "--priority"),
             "tags": (option(args, "--tags") or "").split(","),
+            "humanIntent": human_intent,
+            "humanQuestions": human_questions,
             "state": "pending",
             "history": [{"state": "pending", "at": time.time()}],
         }
@@ -400,6 +411,34 @@ def handle_queue(root: Path, args: list[str]) -> None:
             ]
 
         def create(state: dict[str, Any]) -> None:
+            transition_id = int(state.get("next_transition_id", 1000))
+            state["next_transition_id"] = transition_id + 1
+            human_notification = None
+            if str(destination).endswith("@external"):
+                human_notification = (
+                    ("human-update", "NOTICE")
+                    if human_intent == "update"
+                    else ("human-required", "ALERT")
+                )
+            item["transitions"] = [
+                {
+                    "transitionId": transition_id,
+                    "qitemId": qitem_id,
+                    "ts": time.time(),
+                    "state": "pending",
+                    "transitionNote": "created",
+                    "actorSession": option(args, "--source"),
+                    "closureReason": None,
+                    "closureTarget": None,
+                    "identityProvenance": "transport:v1",
+                    "ownerNotificationKind": (
+                        human_notification[0] if human_notification else None
+                    ),
+                    "ownerNotificationLevel": (
+                        human_notification[1] if human_notification else None
+                    ),
+                }
+            ]
             state["queue"][qitem_id] = item
             if item["state"] == "done":
                 state.setdefault("self_completed", []).append(qitem_id)
@@ -413,6 +452,10 @@ def handle_queue(root: Path, args: list[str]) -> None:
     if command == "show":
         qitem_id = args[1]
         print_json(read_state(root)["queue"][qitem_id])
+        return
+    if command == "transitions":
+        qitem_id = args[1]
+        print_json(read_state(root)["queue"][qitem_id].get("transitions", []))
         return
     if command in {"claim", "update"}:
         qitem_id = args[1]
@@ -446,9 +489,28 @@ def handle_queue(root: Path, args: list[str]) -> None:
                         "append accepts only --note (and an optional same --state); "
                         "state-write fields were supplied"
                     )
+                previous_state = item["state"]
                 item["state"] = option(args, "--state") or item["state"]
                 item["closure_reason"] = option(args, "--closure-reason")
                 item["resolution"] = option(args, "--resolution")
+                transition_id = int(state.get("next_transition_id", 1000))
+                state["next_transition_id"] = transition_id + 1
+                item.setdefault("transitions", []).append(
+                    {
+                        "transitionId": transition_id,
+                        "qitemId": qitem_id,
+                        "ts": time.time(),
+                        "state": item["state"],
+                        "transitionNote": option(args, "--note")
+                        or f"{previous_state}->{item['state']}",
+                        "actorSession": os.environ.get("OPENRIG_SESSION_NAME"),
+                        "closureReason": item["closure_reason"],
+                        "closureTarget": option(args, "--closure-target"),
+                        "identityProvenance": "transport:v1",
+                        "ownerNotificationKind": None,
+                        "ownerNotificationLevel": "RECORD",
+                    }
+                )
             item.setdefault("history", []).append(
                 {"state": item["state"], "at": time.time()}
             )

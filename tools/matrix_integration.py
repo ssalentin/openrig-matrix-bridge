@@ -108,6 +108,7 @@ CHECKS = (
     "audio_gap",
     "voice_status_edit",
     "decision_and_poll",
+    "human_delivery_receipt",
     "proactive_message",
     "related_gallery_text",
     "related_voice_text_attachments",
@@ -5138,6 +5139,195 @@ class IntegrationRun:
                 "Decision brief and MSC3381 poll were published and pinned; "
                 "an encrypted poll response was returned to the fake transport "
                 "as a decision prompt and the decision events were unpinned."
+            ),
+        )
+
+    async def check_human_delivery_receipt(self, room_id: str) -> None:
+        assert self.owner is not None
+        owner = self.owner
+        fake = ROOT / "tools" / "fake_openrig.py"
+
+        def create_human_item(
+            *,
+            summary: str,
+            body: str,
+            human_intent: str,
+            questions_file: Path | None = None,
+        ) -> str:
+            command = [
+                sys.executable,
+                str(fake),
+                "queue",
+                "create",
+                "--source",
+                SESSION,
+                "--destination",
+                "owner@external",
+                "--summary",
+                summary,
+                "--body",
+                body,
+                "--priority",
+                "routine",
+                "--tags",
+                "integration,delivery-receipt",
+                "--human-intent",
+                human_intent,
+                "--no-nudge",
+                "--json",
+            ]
+            if questions_file is not None:
+                command.extend(["--human-questions-file", str(questions_file)])
+            result = run(command, env=self.env())
+            return str(json.loads(result.stdout)["qitemId"])
+
+        def read_fake_state() -> dict[str, Any]:
+            return json.loads(
+                (self.fake_state / "fake-openrig.json").read_text(encoding="utf-8")
+            )
+
+        update_body = "Human delivery receipt update probe."
+        update_qitem = create_human_item(
+            summary="Human delivery receipt update",
+            body=update_body,
+            human_intent="update",
+        )
+        update_owner_transition = read_fake_state()["queue"][update_qitem][
+            "transitions"
+        ][0]
+        update_transition_id = update_owner_transition["transitionId"]
+        await owner.sync_until(
+            lambda: sum(
+                message["sender"] == BRIDGE_USER and update_body in str(message["body"])
+                for message in owner.messages
+            )
+            == 1,
+            self.args.timeout,
+            description="informational human update in Matrix",
+        )
+
+        deadline = time.monotonic() + self.args.timeout
+        while time.monotonic() < deadline:
+            item = read_fake_state()["queue"][update_qitem]
+            if item["state"] == "done":
+                break
+            await asyncio.sleep(0.1)
+        else:
+            raise CheckFailure("informational human update did not close")
+        transitions = item.get("transitions", [])
+        receipt = next(
+            (
+                transition
+                for transition in transitions
+                if str(transition.get("transitionNote", "")).startswith(
+                    "slack-owner-notification-posted "
+                )
+            ),
+            None,
+        )
+        if receipt is None:
+            raise CheckFailure("informational human update has no owner receipt")
+        expected_key = f"{update_qitem}:{update_transition_id}"
+        if f"notification_key={expected_key}" not in str(
+            receipt.get("transitionNote")
+        ).split():
+            raise CheckFailure(f"informational receipt has wrong key: {receipt}")
+        if item.get("closure_reason") != "no-follow-on":
+            raise CheckFailure(
+                "informational human update did not close without follow-on"
+            )
+
+        questions_file = self.work / "human-delivery-questions.json"
+        questions_file.write_text(
+            json.dumps(
+                [
+                    {
+                        "id": "receipt",
+                        "question": "Record the receipt and remain open?",
+                        "options": [
+                            {"id": "yes", "label": "Yes", "recommended": True},
+                            {"id": "no", "label": "No"},
+                        ],
+                    }
+                ]
+            ),
+            encoding="utf-8",
+        )
+        decision_body = "Human delivery receipt decision probe."
+        decision_qitem = create_human_item(
+            summary="Human delivery receipt decision",
+            body=decision_body,
+            human_intent="decision",
+            questions_file=questions_file,
+        )
+        decision_owner_transition = read_fake_state()["queue"][decision_qitem][
+            "transitions"
+        ][0]
+        decision_transition_id = decision_owner_transition["transitionId"]
+        await owner.sync_until(
+            lambda: sum(
+                message["sender"] == BRIDGE_USER
+                and decision_body in str(message["body"])
+                for message in owner.messages
+            )
+            == 1,
+            self.args.timeout,
+            description="human decision in Matrix",
+        )
+        deadline = time.monotonic() + self.args.timeout
+        while time.monotonic() < deadline:
+            item = read_fake_state()["queue"][decision_qitem]
+            receipt = next(
+                (
+                    transition
+                    for transition in item.get("transitions", [])
+                    if str(transition.get("transitionNote", "")).startswith(
+                        "slack-owner-notification-posted "
+                    )
+                ),
+                None,
+            )
+            if receipt is not None:
+                break
+            await asyncio.sleep(0.1)
+        else:
+            raise CheckFailure("human decision has no owner receipt")
+        expected_key = f"{decision_qitem}:{decision_transition_id}"
+        if f"notification_key={expected_key}" not in str(
+            receipt.get("transitionNote")
+        ).split():
+            raise CheckFailure(f"decision receipt has wrong key: {receipt}")
+        if item["state"] != "pending":
+            raise CheckFailure("decision closed before an answer")
+
+        cleanup = run(
+            [
+                sys.executable,
+                str(fake),
+                "queue",
+                "update",
+                decision_qitem,
+                "--state",
+                "canceled",
+                "--closure-reason",
+                "canceled",
+                "--note",
+                "integration cleanup",
+                "--json",
+            ],
+            env=self.env(),
+        )
+        if cleanup.returncode != 0:
+            raise CheckFailure(f"decision cleanup failed: {cleanup.stderr}")
+        self.record(
+            "human-delivery-receipts",
+            "pass",
+            (
+                "A human update and decision each crossed the real Matrix bridge "
+                "subprocess path once. Both wrote an episode-keyed "
+                "`slack-owner-notification-posted` receipt; the update closed "
+                "`done/no-follow-on`, while the decision remained pending until "
+                "integration cleanup."
             ),
         )
 
