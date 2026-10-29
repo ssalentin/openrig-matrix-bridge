@@ -33,6 +33,7 @@ PUBLISHED_DOCS = {
     "docs/USER_GUIDE.md",
     "docs/VERIFICATION.md",
     "docs/artifacts/README.md",
+    "docs/artifacts/final-0.12.4-integration-report.json",
     "docs/artifacts/final-0.12.3-integration-report.json",
     "docs/artifacts/final-0.12.2-integration-report.json",
     "docs/artifacts/final-0.12.1-integration-report.json",

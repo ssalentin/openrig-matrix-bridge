@@ -1,0 +1,422 @@
+{
+  "bridge_state_summary": {
+    "processed_matrix_events": 133,
+    "rejected_rooms": 1,
+    "rooms": 0
+  },
+  "duration_seconds": 872.1,
+  "environment": {
+    "command": "python tools/matrix_integration.py",
+    "element_sas": "not exercised; requires a human client action",
+    "matrix_homeserver": "ephemeral Synapse on loopback",
+    "openrig_transport": "tools/fake_openrig.py subprocess protocol; not live Codex",
+    "synapse_image": "matrixdotorg/synapse@sha256:390f5e67227378eb87c84627b57f0582cdb235fcc8159d89f371f37bf7cccfd7",
+    "voice_model": "not downloaded or executed"
+  },
+  "evidence_valid": true,
+  "generated_at": "2026-10-29T07:49:23.970747+00:00",
+  "known_gaps": [
+    "Real Codex prompt delivery and native transcript completion are represented by the fake OpenRig subprocess transport.",
+    "The Parakeet model and real voice transcription were not run.",
+    "Element device-to-device SAS verification was not run.",
+    "Federation, public homeserver policy, and production E2EE device trust were not exercised."
+  ],
+  "redaction": {
+    "access_tokens": "not written to the report or bridge log",
+    "ephemeral_state": "removed after the run unless --keep-workdir is set",
+    "room_ids": "omitted",
+    "user_ids": "synthetic localhost fixtures"
+  },
+  "results": [
+    {
+      "automated": true,
+      "evidence": "Started disposable Synapse matrixdotorg/synapse@sha256:390f5e67227378eb87c84627b57f0582cdb235fcc8159d89f371f37bf7cccfd7 on loopback; the container and state directory are removed at exit unless `--keep-workdir` is set.",
+      "id": "ephemeral-matrix",
+      "status": "pass"
+    },
+    {
+      "automated": true,
+      "evidence": "`setup` wrote one agent room; `doctor` exited 0 (validating Matrix access token...); a second `setup` without `--replace-config` failed with that next step. Single-message checks run with timing correlation off (burst_inactivity_seconds: 0); the related-context checks run with the production defaults.",
+      "id": "setup-and-doctor",
+      "status": "pass"
+    },
+    {
+      "automated": true,
+      "evidence": "Synapse accepted the owner invite and join; the room uses `m.megolm.v1.aes-sha2`, has a managed room avatar, exposes a downloadable Relay bridge-account profile avatar with identical bytes, and publishes ready topic plus `dev.openrig.agent_status` state.",
+      "id": "room-status-avatar",
+      "status": "pass"
+    },
+    {
+      "automated": true,
+      "evidence": "Owner text was encrypted by matrix-nio; the fake OpenRig subprocess received it exactly once, and the recorded qitem history is pending -> in-progress -> done. Typing was observed, commentary was mirrored in one activity-labelled card, and the final answer returned separately in-thread. The raw thread relation references the owner prompt. The homeserver API reported the final event as raw `m.room.encrypted` with Megolm ciphertext.",
+      "id": "encrypted-chat-queue-typing",
+      "status": "pass"
+    },
+    {
+      "automated": true,
+      "evidence": "An encrypted owner prompt already in m.thread survived a bridge restart while the fake seat was busy. Commentary and final answer were each delivered once under the canonical thread root, and the single Matrix qitem completed pending -> in-progress -> done. Bridge typing was observed for the reply inside the existing thread; SIGTERM stopped the running bridge gracefully (exit 0) and the restarted bridge restored typing before the answer.",
+      "id": "threaded-prompt-restart",
+      "status": "pass"
+    },
+    {
+      "automated": true,
+      "evidence": "The bridge exited immediately after claiming an OpenRig qitem. Restart recognized the in-progress qitem, resumed the unsent prompt exactly once, and completed the same qitem.",
+      "id": "qitem-claim-crash-recovery",
+      "status": "pass"
+    },
+    {
+      "automated": true,
+      "evidence": "The bridge process exited immediately after the final Matrix answer send. Restart retried with the persisted transaction ID, Matrix deduplicated to the same event, and the single qitem completed.",
+      "id": "answer-crash-recovery",
+      "status": "pass"
+    },
+    {
+      "automated": true,
+      "evidence": "The bridge exited right after Matrix accepted the initial activity card and before the card's event ID was recorded. The restarted bridge resent it with the same transaction ID, Matrix returned the same event, and the request kept exactly one card; every edit targeted it, one answer was sent and the single qitem completed (issue #39).",
+      "id": "activity-card-crash-recovery",
+      "status": "pass"
+    },
+    {
+      "automated": true,
+      "evidence": "While the first request was the only one, no queue card was pinned (issue #86). A second owner message arrived during the deliberately slow first turn; Matrix showed one pinned queue card with the active prompt followed by the ordered waiting preview, the card was unpinned once the queue drained, and the fake OpenRig transport received the second prompt only after recording completion of the first (1793259333.5962543 < 1793259333.9834704). Between the two answers the owner timeline showed no ready status and no gap in the bridge typing indicator.",
+      "id": "fifo-queue-notice",
+      "status": "pass"
+    },
+    {
+      "automated": true,
+      "evidence": "Disposable-Synapse probes verified queue mode remains FIFO, steer mode injects one ordered two-event same-thread batch under its canonical root, and auto mode steers only the short same-thread follow-up while top-level and other-thread requests advance FIFO. All source qitems closed, and an unrelated human transcript turn did not steal the Matrix answer.",
+      "id": "steering-modes-and-batch",
+      "status": "pass"
+    },
+    {
+      "automated": true,
+      "evidence": "In steer mode, a new top-level message and a reply in another thread sent during a slow active turn were injected as one ordered steering batch that marks where each came from (issue #87). Neither started its own turn; exactly one answer was posted in the active request's thread naming all three source event IDs, and all three qitems closed once.",
+      "id": "steering-cross-thread",
+      "status": "pass"
+    },
+    {
+      "automated": true,
+      "evidence": "With a 3.4 s node inventory, as on the production fleet (issue #96), 20 idle prompts had intake-to-injection median 177.1 ms and p95 194.3 ms (target 1500/3000), 19 prompts right after a finished turn median 212.4 ms and p95 248.1 ms (same target), and 20 steered follow-ups median 472.2 ms and p95 541.7 ms (target 2000/4000); every source was prompted or steered exactly once. Deterministic fake transport and loopback Synapse, not a live seat.",
+      "id": "inventory-latency",
+      "status": "pass"
+    },
+    {
+      "automated": true,
+      "evidence": "A fake seat closed two bridge-created qitems itself before the bridge claimed them (issue #91): a top-level message and, in steer mode, a same-thread follow-up during a slow turn. Neither was prompted or steered, no bridge message carried qitem IDs, states or lifecycle notices, the next request ran normally, and each prompted request got exactly one answer.",
+      "id": "self-completed-qitems",
+      "status": "pass"
+    },
+    {
+      "automated": true,
+      "evidence": "With the fake transport refusing busy injection, the complete two-message batch remained durably queued and was sent once as one normal fallback turn. A process crash immediately after successful pane injection recovered from transcript admission without resending the batch.",
+      "id": "steering-fallback-restart",
+      "status": "pass"
+    },
+    {
+      "automated": true,
+      "evidence": "The deterministic transport retained a busy-pane follow-up without a transcript user record past the initial admission grace, completed the root turn first, then materialized the follow-up as a later turn. Matrix received one answer with both the follow-up source ID and canonical completed-root thread; the batch appeared exactly once in the transcript and was never sent as a fallback prompt. Between the root answer and the follow-up answer the room never turned ready and bridge typing never stopped.",
+      "id": "steering-late-admission",
+      "status": "pass"
+    },
+    {
+      "automated": true,
+      "evidence": "Owner reaction reached the fake OpenRig transport as silent feedback and did not create a visible bot reply.",
+      "id": "silent-reaction-feedback",
+      "status": "pass"
+    },
+    {
+      "automated": true,
+      "evidence": "Synapse's relation index showed exactly one bridge `m.annotation` reaction with key \ud83d\udc4d on each of 93 accepted owner events, including 6 events joined into steering batches. A bridge crash immediately after the reaction send left the acknowledgement pending; restart reused the persisted transaction and still showed one reaction. An untrusted room member's message received no reaction, no acceptance record and no OpenRig prompt.",
+      "id": "acceptance-reaction",
+      "status": "pass"
+    },
+    {
+      "automated": true,
+      "evidence": "With `openrig.acceptance_reaction_enabled` removed from the bridge config (the default), an owner message was queued, the bridge typing indicator was observed, the answer arrived and its single qitem completed, while Synapse's relation index showed no bridge reaction and the bridge recorded no acceptance. The room status topic was not separately asserted for this probe.",
+      "id": "acceptance-reaction-default-off",
+      "status": "pass"
+    },
+    {
+      "automated": true,
+      "evidence": "Owner PNG was decrypted, signature-checked, stored byte-for-byte, and forwarded; `send-image` produced an encrypted Matrix image that the owner client downloaded and decrypted byte-for-byte.",
+      "id": "encrypted-images",
+      "status": "pass"
+    },
+    {
+      "automated": true,
+      "evidence": "Encrypted PDF and unknown binary attachments were transferred in both directions through disposable Synapse, and markerless audio used the generic attachment path. Inbound files were stored under generated agent inbox paths with original metadata; outbound m.file events used private snapshots with preserved filename, MIME type and size, decrypted byte-for-byte, and were Megolm-encrypted on the wire.",
+      "id": "encrypted-files",
+      "status": "pass"
+    },
+    {
+      "automated": true,
+      "details": {
+        "event_id": "$3PBMvb4dcAiAH4XlsUgBy5B6Yjrgt53K-C3a7FJqMeI",
+        "sha256": "b8ca16cd0d5fd17a7319ff2c7eed389c769c2f4374a4e78ba6d4f562f10380ab",
+        "size": 710
+      },
+      "evidence": "A nonzero shipping-label-shaped PDF sent with `send-file --json` returned event $3PBMvb4dcAiAH4XlsUgBy5B6Yjrgt53K-C3a7FJqMeI in the agent room; the owner found that exact event, decrypted it to SHA-256 b8ca16cd0d5fd17a7319ff2c7eed389c769c2f4374a4e78ba6d4f562f10380ab matching the reported value, and saw `m.file`, `application/pdf` and the original filename on an encrypted wire event. Empty, missing and oversize files exited non-zero before any outbox request or Matrix event.",
+      "id": "agent-file-delivery",
+      "status": "pass"
+    },
+    {
+      "automated": true,
+      "evidence": "A generic-file request was durably queued while the bridge was stopped, then delivered exactly once after restart. The persisted success record names the same Matrix event ID observed by the owner; the delivered bytes came from the private snapshot even after the mutable source was replaced.",
+      "id": "attachment-restart-recovery",
+      "status": "pass"
+    },
+    {
+      "automated": true,
+      "evidence": "A PDF and markerless audio sent from inside an existing m.thread were stored and forwarded (within the burst span as related context of the thread). Every file status and final bridge message used the original canonical thread root, and each input created one completed qitem.",
+      "id": "threaded-files",
+      "status": "pass"
+    },
+    {
+      "automated": true,
+      "evidence": "One encrypted dm.filament.gallery event with four HEIC items and JPEG thumbnails reached the fake transport as one prompt and one completed qitem. The prompt listed every item in source order with filename, MIME type, size and dimensions; each original and each preview was decrypted into the generated agent inbox byte-for-byte, and the answer was threaded to the gallery event.",
+      "id": "element-x-gallery",
+      "status": "pass"
+    },
+    {
+      "automated": true,
+      "evidence": "The bridge exited immediately after persisting the first of four gallery items. Restart resumed the remaining three without downloading the first again: each original exists exactly once in the agent inbox, the single prompt lists all four in order, and one qitem completed.",
+      "id": "gallery-restart",
+      "status": "pass"
+    },
+    {
+      "automated": true,
+      "evidence": "With media.transfer_notices_enabled: false an encrypted image, a PDF and a four-item gallery were each stored byte-for-byte and forwarded to the agent as before, the gallery as one prompt with its answer, while no received, progress or stored notice reached the room (issue #95).",
+      "id": "media-transfer-notices-off",
+      "status": "pass"
+    },
+    {
+      "automated": true,
+      "evidence": "An encrypted Matrix audio event reached the bridge and received the configured disabled-voice response after a controlled configuration restart. Real Parakeet quality remains an explicit gap; the successful voice path uses a deterministic local transcriber.",
+      "id": "voice-disabled-path",
+      "status": "pass"
+    },
+    {
+      "automated": true,
+      "evidence": "A deterministic transcriber produced one local transcript for an encrypted voice note. Matrix showed one threaded progress event edited in place by `m.replace`; no transcript-only reply was sent. The prompt and single qitem each completed exactly once. Real Parakeet execution and Element rendering remain explicit gaps.",
+      "id": "voice-status-edit",
+      "status": "pass"
+    },
+    {
+      "automated": true,
+      "evidence": "Decision brief and MSC3381 poll were published and pinned; an encrypted poll response was returned to the fake transport as a decision prompt and the decision events were unpinned.",
+      "id": "decision-and-poll",
+      "status": "pass"
+    },
+    {
+      "automated": true,
+      "evidence": "A human update and decision each crossed the real Matrix bridge subprocess path once. Both wrote an episode-keyed `slack-owner-notification-posted` receipt; the update closed `done/no-follow-on`, while the decision remained pending until integration cleanup.",
+      "id": "human-delivery-receipts",
+      "status": "pass"
+    },
+    {
+      "automated": true,
+      "evidence": "`send-message` delivered an encrypted proactive message to the owner.",
+      "id": "proactive-message",
+      "status": "pass"
+    },
+    {
+      "automated": true,
+      "details": {
+        "related-1s": {
+          "origin_gap_ms": 1038,
+          "text_delivered_by": "steer"
+        },
+        "related-30s": {
+          "origin_gap_ms": 30040,
+          "text_delivered_by": "prompt"
+        }
+      },
+      "evidence": "With the production defaults (45 s inactivity, 300 s span), a top-level four-item gallery followed by a top-level text about 1 s and about 30 s later reached the agent as one related exchange each time: the text was linked to the gallery, every item and the text arrived in source order, every local path matched its SHA-256, each event completed exactly one qitem, and every answer was threaded under the gallery. After 30 s the gallery turn had ended, so the text arrived as a continuation restating all four items.",
+      "id": "related-gallery-then-text",
+      "status": "pass"
+    },
+    {
+      "automated": true,
+      "details": {
+        "delivered_by": [
+          "prompt",
+          "prompt",
+          "prompt",
+          "prompt"
+        ]
+      },
+      "evidence": "A voice note with 4 s injected transcription latency, then a text, an image and a PDF one second apart reached the agent in source order: the text and attachments waited for the transcript instead of overtaking it, every path matched its SHA-256, each event completed exactly one qitem, and every answer was threaded under the voice note.",
+      "id": "related-voice-text-attachments",
+      "status": "pass"
+    },
+    {
+      "automated": true,
+      "details": {
+        "delivered_by": [
+          "prompt",
+          "prompt",
+          "prompt",
+          "prompt",
+          "prompt"
+        ]
+      },
+      "evidence": "Two four-item galleries, a PDF, a CSV and a text sent as one exchange reached the agent linked to the first gallery, in source order, with every gallery item and file path matching its SHA-256; each event completed exactly one qitem and every answer was threaded under the first gallery.",
+      "id": "related-galleries-and-files",
+      "status": "pass"
+    },
+    {
+      "automated": true,
+      "details": {
+        "delivered_by": [
+          "prompt",
+          "prompt",
+          "prompt"
+        ]
+      },
+      "evidence": "After a gallery completed, the bridge restarted; the next part, a PDF, crashed the bridge right after its intake was persisted and before its download. On restart the download resumed once (one stored copy), and the PDF and a later text reached the agent linked to the gallery, in order, with digests verified, one completed qitem per event, and every answer under the gallery.",
+      "id": "related-restart",
+      "status": "pass"
+    },
+    {
+      "automated": true,
+      "evidence": "Two plain top-level texts two seconds apart, inside the inactivity boundary, stayed separate requests with their own answers; a thread reply to the first joined only the first text's thread.",
+      "id": "related-unrelated-isolation",
+      "status": "pass"
+    },
+    {
+      "automated": true,
+      "details": {
+        "delivered_by": [
+          "prompt",
+          "prompt",
+          "steer"
+        ],
+        "root_to_gallery_ms": 53528
+      },
+      "evidence": "A gallery and a text sent into an existing thread more than 45 s after its root joined the root's context by relation: all three reached the agent in order, linked, digest-verified, once each, with every answer in the thread. A top-level message sent in between stayed a separate request with its own answer.",
+      "id": "related-thread",
+      "status": "pass"
+    },
+    {
+      "automated": true,
+      "evidence": "An advisor-style commentary with two internal /root/.openrig paths reached the room's activity card as the full progress text with each path replaced by [lokaler Pfad]; no bridge message carried the path bytes (issue #70).",
+      "id": "commentary-redaction",
+      "status": "pass"
+    },
+    {
+      "automated": true,
+      "evidence": "With openrig.commentary_redaction_enabled: false the same advisor-style commentary reached the activity card unredacted, with both /root/.openrig paths, and the bridge logged exactly one startup warning; the default instance above redacted it (issue #93).",
+      "id": "commentary-redaction-opt-out",
+      "status": "pass"
+    },
+    {
+      "automated": true,
+      "evidence": "Stopping and restarting the bridge preserved the exact Matrix room mapping and returned the room to ready status without creating a duplicate room.",
+      "id": "restart-recovery",
+      "status": "pass"
+    },
+    {
+      "automated": true,
+      "evidence": "Four bridge 0.10.0 pending requests (no prompt, answer or qitem phase fields; one unstarted and one started with a captured answer, both for a done qitem; two unstarted for canceled qitems, one of them referencing an event Synapse rejects) were reconciled against OpenRig at startup: the queue drained without a claim, a prompt or any qitem update, the done requests left no message, the deliverable canceled one produced exactly one notice without qitem IDs or states (issue #91), the undeliverable one was dropped without a retry loop, and a second restart changed nothing.",
+      "id": "legacy-pending-reconcile",
+      "status": "pass"
+    },
+    {
+      "automated": true,
+      "evidence": "`doctor` exited non-zero and told the owner to create a new token.",
+      "id": "doctor-invalid-token",
+      "status": "pass"
+    },
+    {
+      "automated": true,
+      "evidence": "Owner leave was detected, the bridge left the room, persisted a rejection tombstone, and a restart did not recreate it.",
+      "id": "rejected-room-recovery",
+      "status": "pass"
+    }
+  ],
+  "schema_version": 1,
+  "status": "pass",
+  "steering_latency": {
+    "boundary": "Deterministic fake OpenRig subprocess transport and loopback Synapse; not live Codex. Admission includes up to one bridge transcript poll interval. Samples include crash, restart and deliberately delayed probes, so maxima bound those paths rather than an idle seat; late_steer includes the fake transport's intentional materialization delay.",
+    "by_kind": {
+      "fallback": {
+        "intake_to_acknowledgement_ms": {
+          "count": 2,
+          "max": 220.0,
+          "median": 167.9
+        },
+        "intake_to_admission_ms": {
+          "count": 2,
+          "max": 10649.6,
+          "median": 10649.6
+        },
+        "intake_to_injection_ms": {
+          "count": 2,
+          "max": 10356.6,
+          "median": 10356.6
+        }
+      },
+      "late_steer": {
+        "intake_to_acknowledgement_ms": {
+          "count": 1,
+          "max": 102.3,
+          "median": 102.3
+        },
+        "intake_to_admission_ms": {
+          "count": 3,
+          "max": 8454.4,
+          "median": 1120.6
+        },
+        "intake_to_injection_ms": {
+          "count": 3,
+          "max": 591.5,
+          "median": 508.4
+        }
+      },
+      "prompt": {
+        "intake_to_acknowledgement_ms": {
+          "count": 75,
+          "max": 1151.1,
+          "median": 396.2
+        },
+        "intake_to_admission_ms": {
+          "count": 94,
+          "max": 10411.6,
+          "median": 447.5
+        },
+        "intake_to_injection_ms": {
+          "count": 94,
+          "max": 10158.8,
+          "median": 225.0
+        }
+      },
+      "steer": {
+        "intake_to_acknowledgement_ms": {
+          "count": 26,
+          "max": 190.3,
+          "median": 106.0
+        },
+        "intake_to_admission_ms": {
+          "count": 28,
+          "max": 1578.5,
+          "median": 492.4
+        },
+        "intake_to_injection_ms": {
+          "count": 27,
+          "max": 744.1,
+          "median": 480.1
+        }
+      }
+    },
+    "method": "Per source event, the bridge persists time.time() at prompt intake (entry into prompt enqueue, after sender, age and media checks), after the OpenRig pane-input command returned (injection), when it first observed the matching transcript user record (admission), and when Matrix accepted its acceptance reaction. Values are milliseconds from intake, grouped by kind: prompt (normal turn), steer (same-turn steering), late_steer (steering input materialized as a later turn) and fallback (batch sent as one normal turn)."
+  },
+  "target": {
+    "package": "openrig-matrix-bridge",
+    "source": {
+      "commit": "3691acb3f7d074abf7c61d8d0c6daba9f46dfe79",
+      "source": "git",
+      "worktree_clean": true
+    },
+    "version": "0.12.4"
+  }
+}

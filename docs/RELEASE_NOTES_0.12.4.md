@@ -41,7 +41,11 @@ closure, receipt formatting and episode keys, receipt idempotency, recovery for
 an already-published decision that lacks a receipt, complete transition reads,
 and message retry without a duplicate Matrix send. The committed integration
 harness continues to exercise the real Matrix protocol path against a
-disposable Synapse with a deterministic OpenRig transport.
+disposable Synapse with a deterministic OpenRig transport. The retained final
+candidate report records 43 of 43 checks at
+`3691acb3f7d074abf7c61d8d0c6daba9f46dfe79`, including update closure, decision
+delivery without closure, both owner receipts, and a one-message duplicate
+check; `evidence_valid: true` and `worktree_clean: true`.
 
 The production deployment is verified after publication with one informational
 update and one decision: both must report `deliveryOutcome: posted`; the update
