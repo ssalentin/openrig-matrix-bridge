@@ -333,3 +333,108 @@ def test_claims_and_finishes_qitem_as_destination_agent(monkeypatch):
     assert "--closure-reason" in finish_args
     assert claim_kwargs["env"]["OPENRIG_SESSION_NAME"] == "advisor-lead@kernel"
     assert finish_kwargs["env"]["OPENRIG_SESSION_NAME"] == "advisor-lead@kernel"
+
+
+def test_records_matrix_human_delivery_with_episode_key(monkeypatch):
+    calls = []
+    responses = iter(
+        [
+            json.dumps(
+                [
+                    {
+                        "transitionId": 42,
+                        "state": "pending",
+                        "ownerNotificationKind": "human-update",
+                        "ownerNotificationLevel": "NOTICE",
+                        "transitionNote": "created",
+                    }
+                ]
+            ).encode(),
+            b'{"qitemId":"qitem-human","state":"done"}\n',
+        ]
+    )
+
+    class Process:
+        returncode = 0
+
+        async def communicate(self):
+            return next(responses), b""
+
+    async def create_subprocess(*args, **kwargs):
+        calls.append((args, kwargs))
+        return Process()
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", create_subprocess)
+    gateway = OpenRigGateway("/opt/rig", "matrix-bridge@kernel")
+
+    asyncio.run(
+        gateway.record_human_delivery(
+            "qitem-human",
+            "$matrix-event",
+            close_update=True,
+        )
+    )
+
+    transitions_args, _ = calls[0]
+    update_args, update_kwargs = calls[1]
+    assert transitions_args == (
+        "/opt/rig",
+        "queue",
+        "transitions",
+        "qitem-human",
+        "--full",
+        "--json",
+    )
+    assert update_args[:4] == ("/opt/rig", "queue", "update", "qitem-human")
+    assert update_args[update_args.index("--state") + 1] == "done"
+    assert update_args[update_args.index("--closure-reason") + 1] == "no-follow-on"
+    note = update_args[update_args.index("--note") + 1]
+    assert "slack-owner-notification-posted" in note
+    assert "notification_key=qitem-human:42" in note
+    assert "level=NOTICE" in note
+    assert "kind=human-update" in note
+    assert "message_ts=$matrix-event" in note
+    assert update_kwargs["env"]["OPENRIG_SESSION_NAME"] == "matrix-bridge@kernel"
+
+
+def test_human_delivery_receipt_is_idempotent(monkeypatch):
+    calls = []
+
+    class Process:
+        returncode = 0
+
+        async def communicate(self):
+            return (
+                json.dumps(
+                    [
+                        {
+                            "transitionId": 42,
+                            "state": "pending",
+                            "ownerNotificationKind": "human-required",
+                            "ownerNotificationLevel": "ALERT",
+                            "transitionNote": (
+                                "slack-owner-notification-posted "
+                                "notification_key=qitem-human:42"
+                            ),
+                        }
+                    ]
+                ).encode(),
+                b"",
+            )
+
+    async def create_subprocess(*args, **kwargs):
+        calls.append((args, kwargs))
+        return Process()
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", create_subprocess)
+    gateway = OpenRigGateway("/opt/rig", "matrix-bridge@kernel")
+
+    asyncio.run(
+        gateway.record_human_delivery(
+            "qitem-human",
+            "$matrix-event",
+            close_update=False,
+        )
+    )
+
+    assert len(calls) == 1

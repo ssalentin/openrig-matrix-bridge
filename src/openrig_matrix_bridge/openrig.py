@@ -309,6 +309,91 @@ class OpenRigGateway:
             raise GatewayError("OpenRig queue show returned an invalid shape")
         return payload
 
+    async def queue_transitions(self, qitem_id: str) -> list[dict[str, Any]]:
+        payload = await self._run_json(
+            "queue",
+            "transitions",
+            qitem_id,
+            "--full",
+            "--json",
+        )
+        entries = payload.get("transitions", []) if isinstance(payload, dict) else payload
+        if not isinstance(entries, list):
+            raise GatewayError("OpenRig queue transitions returned an invalid shape")
+        return [entry for entry in entries if isinstance(entry, dict)]
+
+    async def record_human_delivery(
+        self,
+        qitem_id: str,
+        message_ts: str,
+        *,
+        close_update: bool,
+    ) -> None:
+        """Record the owner-delivery receipt the OpenRig Slack subsystem owns.
+
+        Matrix is the active human transport.  The OpenRig gateway schema still
+        calls that connector kind "slack", so the bridge must write the same
+        episode-keyed receipt after a successful Matrix post.  Otherwise the row
+        is reported as never-posted even though the user received it.
+        """
+        transitions = await self.queue_transitions(qitem_id)
+        owner = next(
+            (
+                transition
+                for transition in reversed(transitions)
+                if transition.get("state") == "pending"
+                and transition.get("ownerNotificationKind")
+                in {"human-required", "human-update"}
+            ),
+            None,
+        )
+        if owner is None:
+            raise GatewayError(
+                f"no current human notification transition for {qitem_id}"
+            )
+        transition_id = owner.get("transitionId")
+        if not isinstance(transition_id, int):
+            raise GatewayError(
+                f"human notification transition for {qitem_id} has no integer id"
+            )
+        notification_key = f"{qitem_id}:{transition_id}"
+        note_prefix = "slack-owner-notification-posted"
+        already_posted = any(
+            str(transition.get("transitionNote") or "").startswith(f"{note_prefix} ")
+            and f"notification_key={notification_key}"
+            in str(transition.get("transitionNote") or "").split()
+            for transition in transitions
+        )
+        if already_posted:
+            return
+
+        args = ["queue", "update", qitem_id]
+        if close_update:
+            args.extend(
+                ["--state", "done", "--closure-reason", "no-follow-on"]
+            )
+        args.extend(
+            [
+                "--note",
+                " ".join(
+                    [
+                        note_prefix,
+                        f"notification_key={notification_key}",
+                        f"level={owner.get('ownerNotificationLevel') or 'RECORD'}",
+                        f"kind={owner.get('ownerNotificationKind')}",
+                        f"message_ts={message_ts}",
+                        f"thread_ts={message_ts}",
+                    ]
+                ),
+                "--json",
+            ]
+        )
+        environment = os.environ.copy()
+        environment["OPENRIG_SESSION_NAME"] = self.sender_session
+        payload = await self._run_json(*args, environment=environment)
+        if not isinstance(payload, dict):
+            raise GatewayError("OpenRig queue update returned an invalid shape")
+
     async def queue_create(
         self,
         *,

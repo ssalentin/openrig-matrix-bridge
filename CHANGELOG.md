@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.12.4
+
+- Record OpenRig's owner-notification delivery receipt after a human update or
+  decision is successfully published to Matrix. Informational updates close as
+  no-follow-on after delivery; decision rows stay open for the answer. Retries
+  reconcile an existing Matrix event instead of posting a duplicate (#101).
+
 ## 0.12.3
 
 Patch release for two findings from production on 0.12.2: per-transfer status
